@@ -115,12 +115,6 @@ pub struct ColorAccountRow {
     pub label: String,
     pub icon: String,
     pub color: String,
-    pub icon_choices: Vec<IconChoice>,
-}
-
-pub struct IconChoice {
-    pub id: String,
-    pub selected: bool,
 }
 
 pub struct FolderPrefRow {
@@ -192,21 +186,11 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
     let account_order = prefs_snap.ordered_accounts(&known);
     let color_accounts: Vec<ColorAccountRow> = account_order
         .iter()
-        .map(|n| {
-            let icon = prefs_snap.account_icon(n);
-            ColorAccountRow {
-                color: prefs_snap.account_color(n),
-                label: prefs_snap.account_label(n),
-                icon: icon.clone(),
-                icon_choices: crate::account_colors::ACCOUNT_ICON_CHOICES
-                    .iter()
-                    .map(|id| IconChoice {
-                        selected: *id == icon,
-                        id: (*id).into(),
-                    })
-                    .collect(),
-                name: n.clone(),
-            }
+        .map(|n| ColorAccountRow {
+            color: prefs_snap.account_color(n),
+            label: prefs_snap.account_label(n),
+            icon: prefs_snap.account_icon(n),
+            name: n.clone(),
         })
         .collect();
 
@@ -398,20 +382,17 @@ async fn save_ui_sizes(
     axum::http::StatusCode::NO_CONTENT
 }
 
-#[derive(Deserialize)]
-pub struct MoveDefaultsForm {
-    pub account: Vec<String>,
-    pub folder: Vec<String>,
-}
-
 async fn save_move_defaults(
     State(state): State<Arc<AppState>>,
-    Form(form): Form<MoveDefaultsForm>,
+    axum::extract::RawForm(raw): axum::extract::RawForm,
 ) -> impl IntoResponse {
+    let map = crate::form_util::parse_form_lists(&raw);
+    let accounts = crate::form_util::form_values(&map, "account");
+    let folders = crate::form_util::form_values(&map, "folder");
     {
         let mut prefs = state.prefs.lock().await;
         prefs.default_move.clear();
-        for (a, f) in form.account.iter().zip(form.folder.iter()) {
+        for (a, f) in accounts.iter().zip(folders.iter()) {
             let a = a.trim();
             let f = f.trim();
             if !a.is_empty() && !f.is_empty() {
@@ -468,38 +449,31 @@ async fn save_account_order(
     Redirect::to("/settings#accounts").into_response()
 }
 
-#[derive(Deserialize)]
-pub struct ColorsForm {
-    #[serde(default)]
-    pub name: Vec<String>,
-    #[serde(default)]
-    pub color: Vec<String>,
-    #[serde(default)]
-    pub label: Vec<String>,
-    #[serde(default)]
-    pub icon: Vec<String>,
-}
-
 async fn save_account_colors(
     State(state): State<Arc<AppState>>,
-    Form(form): Form<ColorsForm>,
+    axum::extract::RawForm(raw): axum::extract::RawForm,
 ) -> impl IntoResponse {
+    let map = crate::form_util::parse_form_lists(&raw);
+    let names = crate::form_util::form_values(&map, "name");
+    let colors = crate::form_util::form_values(&map, "color");
+    let labels = crate::form_util::form_values(&map, "label");
+    let icons = crate::form_util::form_values(&map, "icon");
     {
         let mut prefs = state.prefs.lock().await;
-        let n = form.name.len();
+        let n = names.len();
         for i in 0..n {
-            let name = form.name.get(i).map(|s| s.trim()).unwrap_or("");
+            let name = names.get(i).map(|s| s.trim()).unwrap_or("");
             if name.is_empty() {
                 continue;
             }
-            if let Some(c) = form.color.get(i).map(|s| s.trim()) {
+            if let Some(c) = colors.get(i).map(|s| s.trim()) {
                 if c.starts_with('#') && (c.len() == 7 || c.len() == 4) {
                     prefs
                         .account_colors
                         .insert(name.to_string(), c.to_ascii_lowercase());
                 }
             }
-            if let Some(label) = form.label.get(i) {
+            if let Some(label) = labels.get(i) {
                 let l = label.trim();
                 if l.is_empty() || l == name {
                     prefs.account_labels.remove(name);
@@ -507,11 +481,11 @@ async fn save_account_colors(
                     prefs.account_labels.insert(name.to_string(), l.to_string());
                 }
             }
-            if let Some(icon) = form.icon.get(i) {
+            if let Some(icon) = icons.get(i) {
                 let ic = icon.trim();
                 if ic.is_empty() || ic == "circle-user" {
                     prefs.account_icons.remove(name);
-                } else if crate::account_colors::ACCOUNT_ICON_CHOICES.contains(&ic) {
+                } else if crate::form_util::is_safe_icon_name(ic) {
                     prefs.account_icons.insert(name.to_string(), ic.to_string());
                 }
             }

@@ -88,22 +88,38 @@
 
       <form method="post" action="/settings/account/colors" class="space-y-3 mt-4">
         <span class="label">Apparence des comptes</span>
-        <p class="muted tiny mb-2">Nom affiché + icône (compact) + couleur. Le nom Himalaya reste inchangé en coulisses.</p>
+        <p class="muted tiny mb-2">Nom affiché + icône Lucide + couleur. Le nom Himalaya reste inchangé en coulisses.</p>
         <div class="color-accounts">
           {% for a in color_accounts %}
-          <div class="acct-identity-row">
+          <div class="acct-identity-row"
+               x-data="accountAppearance({ color: '{{ a.color }}', icon: '{{ a.icon }}' })">
             <input type="hidden" name="name" value="{{ a.name }}" />
-            <span class="acct-icon-preview" style="color: {{ a.color }}" title="{{ a.name }}">
-              <i data-lucide="{{ a.icon }}"></i>
-            </span>
-            <input type="color" name="color" value="{{ a.color }}" title="Couleur" />
+            <input type="hidden" name="icon" :value="icon" />
+            <div class="icon-picker" :style="{ color: color }">
+              <button type="button" class="icon-picker-trigger" @click="toggle()"
+                      :title="'Icône : ' + icon">
+                <i :data-lucide="icon"></i>
+              </button>
+              <div class="icon-picker-panel" x-show="open" x-cloak
+                   @click.outside="open = false" @keydown.escape.window="open = false">
+                <input type="search" class="input w-full" placeholder="Rechercher une icône Lucide…"
+                       x-model="q" @input.debounce.80ms="filter()" />
+                <div class="icon-picker-grid">
+                  <template x-for="name in shown" :key="name">
+                    <button type="button" class="icon-picker-item"
+                            :class="{ 'is-active': name === icon }"
+                            :title="name" @click="pick(name)">
+                      <i :data-lucide="name"></i>
+                    </button>
+                  </template>
+                </div>
+                <p class="muted tiny" x-text="statusLabel()"></p>
+              </div>
+            </div>
+            <input type="color" name="color" :value="color"
+                   @input="color = $event.target.value" title="Couleur" />
             <input class="input" type="text" name="label" value="{{ a.label }}"
                    placeholder="{{ a.name }}" title="Nom affiché" />
-            <select name="icon" class="select" title="Icône">
-              {% for ic in a.icon_choices %}
-              <option value="{{ ic.id }}" {% if ic.selected %}selected{% endif %}>{{ ic.id }}</option>
-              {% endfor %}
-            </select>
             <span class="muted tiny acct-tech-name">{{ a.name }}</span>
           </div>
           {% else %}

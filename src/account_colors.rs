@@ -13,7 +13,8 @@ pub const ACCOUNT_PALETTE: &[&str] = &[
     "#4f46e5", // indigo
 ];
 
-/// Icônes Lucide proposées pour les comptes (UI).
+/// Icônes Lucide de secours (le picker charge le catalogue complet via CDN).
+#[allow(dead_code)]
 pub const ACCOUNT_ICON_CHOICES: &[&str] = &[
     "circle-user",
     "mail",
@@ -32,7 +33,6 @@ pub const ACCOUNT_ICON_CHOICES: &[&str] = &[
     "shield",
     "users",
 ];
-
 pub fn default_color_for(name: &str) -> String {
     let mut h: u32 = 0;
     for b in name.as_bytes() {

@@ -5,6 +5,7 @@ mod calendar_import;
 mod cli;
 mod config_fix;
 mod contacts_import;
+mod form_util;
 mod prefs;
 mod routes;
 mod sanitize;

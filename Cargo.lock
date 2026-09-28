@@ -440,6 +440,7 @@ dependencies = [
  "axum",
  "chrono",
  "dirs",
+ "form_urlencoded",
  "mime_guess",
  "regex",
  "rusqlite",

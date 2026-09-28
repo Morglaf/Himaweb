@@ -354,7 +354,7 @@ button, select, input, textarea { font: inherit; color: inherit; }
 }
 .acct-identity-row {
   display: grid;
-  grid-template-columns: auto auto minmax(6rem, 1fr) 9rem;
+  grid-template-columns: auto auto minmax(6rem, 1fr);
   gap: 0.5rem;
   align-items: center;
 }
@@ -369,10 +369,79 @@ button, select, input, textarea { font: inherit; color: inherit; }
 .acct-tech-name { grid-column: 1 / -1; opacity: 0.75; }
 @media (min-width: 720px) {
   .acct-identity-row {
-    grid-template-columns: auto auto minmax(7rem, 1fr) 9rem minmax(5rem, auto);
+    grid-template-columns: auto auto minmax(7rem, 1fr) minmax(5rem, auto);
   }
   .acct-tech-name { grid-column: auto; }
 }
+.icon-picker {
+  position: relative;
+}
+.icon-picker-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius, 0.4rem);
+  background: var(--surface, #fff);
+  color: inherit;
+  cursor: pointer;
+}
+.icon-picker-trigger:hover {
+  border-color: color-mix(in srgb, currentColor 40%, var(--line));
+}
+.icon-picker-trigger i {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+.icon-picker-panel {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 0.35rem);
+  left: 0;
+  width: min(22rem, 85vw);
+  padding: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius, 0.4rem);
+  background: var(--bg, #fff);
+  box-shadow: 0 10px 30px color-mix(in srgb, #000 12%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.icon-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 0.25rem;
+  max-height: 14rem;
+  overflow: auto;
+  padding: 0.15rem;
+}
+.icon-picker-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  border: 1px solid transparent;
+  border-radius: 0.3rem;
+  background: transparent;
+  color: var(--fg, #111);
+  cursor: pointer;
+  padding: 0.3rem;
+}
+.icon-picker-item:hover {
+  background: color-mix(in srgb, var(--fg, #111) 6%, transparent);
+}
+.icon-picker-item.is-active {
+  border-color: currentColor;
+  color: inherit;
+}
+.icon-picker-item i {
+  width: 1rem;
+  height: 1rem;
+}
+[x-cloak] { display: none !important; }
 .color-account-row {
   display: flex;
   align-items: center;

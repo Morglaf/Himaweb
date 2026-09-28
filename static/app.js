@@ -28,9 +28,89 @@ function composeForm(opts) {
   };
 }
 
+const LUCIDE_FALLBACK = [
+  'circle-user', 'mail', 'briefcase', 'home', 'building-2', 'graduation-cap',
+  'laptop', 'smartphone', 'globe', 'heart', 'star', 'zap', 'coffee', 'bookmark',
+  'shield', 'users', 'inbox', 'send', 'at-sign', 'key', 'lock', 'cloud',
+];
+
+window.__lucideIconNames = null;
+
+async function loadLucideIconNames() {
+  if (window.__lucideIconNames) return window.__lucideIconNames;
+  try {
+    const res = await fetch('https://unpkg.com/lucide-static@0.469.0/tags.json');
+    if (!res.ok) throw new Error('tags');
+    const tags = await res.json();
+    window.__lucideIconNames = Object.keys(tags).sort();
+  } catch (_) {
+    window.__lucideIconNames = LUCIDE_FALLBACK.slice();
+  }
+  return window.__lucideIconNames;
+}
+
+function accountAppearance(opts) {
+  opts = opts || {};
+  return {
+    color: opts.color || '#2563eb',
+    icon: opts.icon || 'circle-user',
+    open: false,
+    q: '',
+    loading: false,
+    all: [],
+    shown: [],
+    matchCount: 0,
+    init() {
+      this.refreshIcons();
+    },
+    async toggle() {
+      this.open = !this.open;
+      if (this.open) {
+        if (!this.all.length) await this.load();
+        else this.filter();
+        this.refreshIcons();
+      }
+    },
+    async load() {
+      this.loading = true;
+      this.all = await loadLucideIconNames();
+      this.loading = false;
+      this.filter();
+    },
+    filter() {
+      const q = (this.q || '').trim().toLowerCase();
+      const matched = q
+        ? this.all.filter((n) => n.includes(q) || n.replace(/-/g, ' ').includes(q))
+        : this.all;
+      this.matchCount = matched.length;
+      this.shown = matched.slice(0, 240);
+      this.refreshIcons();
+    },
+    pick(name) {
+      this.icon = name;
+      this.open = false;
+      this.refreshIcons();
+    },
+    statusLabel() {
+      if (this.loading) return 'Chargement des icônes Lucide…';
+      if (!this.all.length) return '';
+      if (this.matchCount > this.shown.length) {
+        return `${this.shown.length} / ${this.matchCount} — affinez la recherche`;
+      }
+      return `${this.matchCount} icône${this.matchCount > 1 ? 's' : ''}`;
+    },
+    refreshIcons() {
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+      });
+    },
+  };
+}
+
 document.addEventListener('alpine:init', () => {
   if (window.Alpine) {
     Alpine.data('composeForm', composeForm);
+    Alpine.data('accountAppearance', accountAppearance);
   }
 });
 
