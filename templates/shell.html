@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="{{ theme }}" data-layout="{{ layout }}" style="{{ ui_style }}">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script defer src="/static/app.js?v=20260928f"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
+  <script src="https://unpkg.com/lucide@0.469.0"></script>
+  <link rel="stylesheet" href="/static/app.css?v=20260928f" />
+</head>
+<body>
+  <header class="topbar">
+    <a href="/" class="brand">
+      <i data-lucide="mountain"></i>
+      <span>HimaWeb</span>
+    </a>
+    <nav class="top-nav">
+      <a href="/" class="tab {% if active_tab == "mail" %}tab-active{% endif %}"><i data-lucide="mail"></i> Mail <span id="unread-badge" class="nav-badge" hidden>0</span></a>
+      <a href="/search" class="tab {% if active_tab == "search" %}tab-active{% endif %}"><i data-lucide="search"></i> Recherche</a>
+      <a href="/contacts" class="tab {% if active_tab == "contacts" %}tab-active{% endif %}"><i data-lucide="contact"></i> Contacts</a>
+      <a href="/calendar" class="tab {% if active_tab == "calendar" %}tab-active{% endif %}"><i data-lucide="calendar"></i> Calendrier</a>
+      <a href="/settings" class="tab {% if active_tab == "settings" %}tab-active{% endif %}"><i data-lucide="settings"></i> Paramètres</a>
+    </nav>
+    <div class="top-status">
+      {% if offline %}<span class="badge-offline">Hors-ligne</span>{% endif %}
+      {% if !himalaya_available %}<span class="badge-warn">Himalaya absent</span>{% endif %}
+    </div>
+  </header>
+
+  {% if let Some(err) = error %}
+  <div class="page-error">{{ err }}</div>
+  {% endif %}
+
+  <main class="page-main {% if active_tab == "mail" || active_tab == "search" %}page-main-mail{% endif %}">
+    {{ content|safe }}
+  </main>
+
+  <script>lucide.createIcons()</script>
+</body>
+</html>

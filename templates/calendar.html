@@ -1,0 +1,126 @@
+<section class="calendar-view">
+  <div class="contacts-head">
+    <h1 class="font-display text-2xl">Calendrier</h1>
+    <div class="flex gap-2">
+      <a class="btn secondary" href="/calendar?view={{ view }}&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id_enc }}&refresh=1">Rafraîchir</a>
+      <a class="btn secondary" href="/settings#calendar">Ajouter un CalDAV</a>
+    </div>
+  </div>
+
+  {% if !calendula_available %}
+  <div class="error-banner">Calendula est introuvable. Installez-le, puis ajoutez un compte CalDAV dans Paramètres.</div>
+  {% else %}
+  {% if let Some(e) = error %}
+  <div class="error-banner mb-3">{{ e }}</div>
+  {% endif %}
+  {% if from_cache %}
+  <p class="muted tiny mb-2">Affichage depuis le cache local — rafraîchissement en arrière-plan.</p>
+  {% endif %}
+
+  {% if !account_hints.is_empty() %}
+  <div class="cal-accounts muted tiny mb-3">
+    Comptes :
+    {% for a in account_hints %}
+    <code>{{ a }}</code>{% if !loop.last %} · {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if calendars.is_empty() %}
+  <div class="empty-list">
+    <i data-lucide="calendar-off"></i>
+    <p>Aucun calendrier chargé</p>
+    <a class="btn mt-3" href="/settings#calendar">Configurer CalDAV</a>
+  </div>
+  {% else %}
+  <div class="cal-toolbar">
+    <div class="cal-nav">
+      <a class="icon-btn" title="Précédent"
+         href="/calendar?view={{ view }}&year={{ prev_year }}&month={{ prev_month }}&day={{ prev_day }}&calendar={{ current_id }}">
+        <i data-lucide="chevron-left"></i>
+      </a>
+      <h2 class="cal-title font-display">{{ title_label }}</h2>
+      <a class="icon-btn" title="Suivant"
+         href="/calendar?view={{ view }}&year={{ next_year }}&month={{ next_month }}&day={{ next_day }}&calendar={{ current_id }}">
+        <i data-lucide="chevron-right"></i>
+      </a>
+    </div>
+    <div class="cal-views">
+      <a class="btn {% if view == "day" %}primary{% else %}ghost{% endif %}"
+         href="/calendar?view=day&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id }}">Jour</a>
+      <a class="btn {% if view == "week" %}primary{% else %}ghost{% endif %}"
+         href="/calendar?view=week&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id }}">Semaine</a>
+      <a class="btn {% if view == "month" %}primary{% else %}ghost{% endif %}"
+         href="/calendar?view=month&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id }}">Mois</a>
+    </div>
+    <form method="get" action="/calendar" class="cal-cal-select">
+      <input type="hidden" name="view" value="{{ view }}" />
+      <input type="hidden" name="year" value="{{ year }}" />
+      <input type="hidden" name="month" value="{{ month }}" />
+      <input type="hidden" name="day" value="{{ day }}" />
+      <select name="calendar" class="select" onchange="this.form.submit()">
+        <option value="__all__" {% if current_id == "__all__" %}selected{% endif %}>Tous les calendriers</option>
+        {% for c in calendars %}
+        <option value="{{ c.id }}" {% if c.id == current_id %}selected{% endif %}>{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  {% if view == "month" %}
+  <div class="cal-grid-head">
+    <span>Lun</span><span>Mar</span><span>Mer</span><span>Jeu</span><span>Ven</span><span>Sam</span><span>Dim</span>
+  </div>
+  <div class="cal-grid cal-grid-rich">
+    {% for d in days %}
+      {% if d.in_month %}
+      <a class="cal-day {% if d.selected %}selected{% endif %} {% if d.has_events %}has-events{% endif %}"
+         href="/calendar?view=day&calendar={{ current_id }}&year={{ year }}&month={{ month }}&day={{ d.day }}">
+        <span class="cal-day-num">{{ d.day }}</span>
+        <ul class="cal-day-events">
+          {% for p in d.previews %}
+          <li><span class="cal-ev-time">{% if !p.time.is_empty() %}{{ p.time }} {% endif %}</span>{{ p.title }}</li>
+          {% endfor %}
+          {% if d.more > 0 %}<li class="cal-more">+{{ d.more }}</li>{% endif %}
+        </ul>
+      </a>
+      {% else %}
+      <div class="cal-day empty"></div>
+      {% endif %}
+    {% endfor %}
+  </div>
+  {% else if view == "week" %}
+  <div class="cal-week">
+    {% for col in week_days %}
+    <div class="cal-week-col {% if col.selected %}selected{% endif %}">
+      <a class="cal-week-head" href="/calendar?view=day&calendar={{ current_id }}&year={{ col.year }}&month={{ col.month }}&day={{ col.day }}">{{ col.label }}</a>
+      <ul class="cal-week-list">
+        {% for ev in col.events %}
+        <li class="cal-week-ev">
+          <span class="cal-ev-time">{% if !ev.time.is_empty() %}{{ ev.time }}{% endif %}</span>
+          <span class="cal-ev-title">{{ ev.summary }}</span>
+        </li>
+        {% else %}
+        <li class="muted tiny">—</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="cal-day-view">
+    <h2 class="font-display text-xl mb-3">{{ title_label }}</h2>
+    {% include "calendar_events.html" %}
+  </div>
+  {% endif %}
+
+  {% if view == "month" %}
+  <div id="cal-events" class="cal-events mt-6">
+    <h2 class="font-display text-xl mb-3">Événements du {{ day }} {{ month_name }} {{ year }}</h2>
+    {% include "calendar_events.html" %}
+  </div>
+  {% endif %}
+  {% endif %}
+  {% endif %}
+</section>
+<script>lucide.createIcons()</script>

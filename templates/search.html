@@ -1,0 +1,91 @@
+<div class="gmail-shell search-shell" id="search-root">
+  <aside class="rail search-filters">
+    <form class="search-form" method="get" action="/search">
+      <label class="label">Rechercher</label>
+      <div class="search-q-row">
+        <input class="input w-full" type="search" name="q" value="{{ query }}"
+               placeholder="De ou sujet…" autofocus autocomplete="off" />
+        <button class="btn primary" type="submit" title="Chercher">
+          <i data-lucide="search"></i>
+        </button>
+      </div>
+
+      <label class="label" style="margin-top:1rem">Comptes</label>
+      <div class="filter-checks">
+        {% for a in accounts %}
+        <label class="check-row">
+          <input type="checkbox" name="account" value="{{ a.name }}" {% if a.selected %}checked{% endif %} />
+          <span class="acct-ico" style="color: {{ a.color }}"><i data-lucide="{{ a.icon }}"></i></span>
+          <span title="{{ a.name }}">{{ a.label }}</span>
+        </label>
+        {% endfor %}
+      </div>
+
+      <label class="label" style="margin-top:1rem">Dossiers</label>
+      <div class="filter-checks">
+        {% for f in folders %}
+        <label class="check-row">
+          <input type="checkbox" name="folder" value="{{ f.name }}"
+                 {% if f.selected %}checked{% endif %}
+                 {% if all_folders %}disabled{% endif %} />
+          <span>{{ f.label }}</span>
+        </label>
+        {% endfor %}
+        <label class="check-row check-all">
+          <input type="checkbox" name="all_folders" value="1" {% if all_folders %}checked{% endif %}
+                 onchange="document.querySelectorAll('input[name=folder]').forEach(el=>{el.disabled=this.checked; if(this.checked) el.checked=false})" />
+          <span>Tous les dossiers (sauf corbeille / spam)</span>
+        </label>
+      </div>
+
+      <label class="label" style="margin-top:1rem">Trier par</label>
+      <select name="sort" class="select w-full">
+        <option value="date_desc" {% if sort == "date_desc" %}selected{% endif %}>Date ↓ (récentes)</option>
+        <option value="date_asc" {% if sort == "date_asc" %}selected{% endif %}>Date ↑ (anciennes)</option>
+        <option value="from_asc" {% if sort == "from_asc" %}selected{% endif %}>Expéditeur A→Z</option>
+        <option value="from_desc" {% if sort == "from_desc" %}selected{% endif %}>Expéditeur Z→A</option>
+        <option value="to_asc" {% if sort == "to_asc" %}selected{% endif %}>Destinataire A→Z</option>
+        <option value="to_desc" {% if sort == "to_desc" %}selected{% endif %}>Destinataire Z→A</option>
+      </select>
+
+      <label class="check-row" style="margin-top:0.85rem">
+        <input type="checkbox" name="body" value="1" {% if include_body %}checked{% endif %} />
+        <span>Inclure le corps des messages</span>
+      </label>
+      <p class="muted tiny" style="margin-top:0.35rem">
+        Par défaut : expéditeur et sujet (rapide). Le corps est beaucoup plus lent.
+      </p>
+    </form>
+  </aside>
+  <div class="col-resizer" data-resize="rail" title="Redimensionner"></div>
+
+  <section class="list-pane">
+    <div class="list-toolbar">
+      <div class="list-title">
+        <i data-lucide="search"></i>
+        <span>Résultats</span>
+      </div>
+    </div>
+    <div id="search-results" class="envelope-list"
+         hx-get="{{ results_url }}"
+         hx-trigger="load"
+         hx-swap="innerHTML"
+         hx-indicator="this">
+      <div class="loading search-loading">
+        {% if !query.is_empty() %}Recherche en cours…{% else %}Prêt à chercher…{% endif %}
+      </div>
+      <div class="htmx-indicator search-loading-overlay">
+        <div class="loading">Recherche en cours…</div>
+      </div>
+    </div>
+  </section>
+  <div class="col-resizer" data-resize="list" title="Redimensionner"></div>
+
+  <section class="read-pane" id="message-pane">
+    <div class="empty-read">
+      <i data-lucide="mail-open"></i>
+      <p>Sélectionnez un message</p>
+    </div>
+  </section>
+</div>
+<script>lucide.createIcons()</script>

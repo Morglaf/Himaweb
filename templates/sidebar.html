@@ -1,0 +1,126 @@
+<div class="rail-inner">
+  <div class="account-switch">
+    <label class="sr-only" for="account-select">Compte</label>
+    <form method="post" action="/account/select" class="account-form">
+      <input type="hidden" name="mailbox" value="Inbox" />
+      <div class="account-select-wrap">
+        <i data-lucide="circle-user"></i>
+        <select id="account-select" name="account" class="account-select" onchange="this.form.submit()">
+          <option value="__all__" {% if all_selected %}selected{% endif %}>Tous les comptes</option>
+          {% for a in accounts %}
+          <option value="{{ a.name }}" {% if a.selected %}selected{% endif %}>
+            {{ a.label }}{% if a.is_default %} · défaut{% endif %}
+          </option>
+          {% else %}
+          <option value="">(aucun compte)</option>
+          {% endfor %}
+        </select>
+        <i data-lucide="chevrons-up-down" class="chev"></i>
+      </div>
+    </form>
+    {% if all_selected && !accounts.is_empty() %}
+    <div class="account-legend">
+      {% for a in accounts %}
+      <span class="legend-item" title="{{ a.name }}">
+        <span class="acct-ico" style="color: {{ a.color }}"><i data-lucide="{{ a.icon }}"></i></span>
+        <span class="legend-label">{{ a.label }}</span>
+      </span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <a class="compose-fab" href="/compose">
+    <i data-lucide="pen-square"></i>
+    <span>Nouveau message</span>
+  </a>
+
+  {% if offline %}
+  <div class="badge-offline rail-badge">Cache local</div>
+  {% endif %}
+
+  <nav class="folder-nav" id="folder-nav" aria-label="Dossiers" data-current="{{ current }}">
+    {% if show_merged_inbox %}
+    <a class="folder-link folder-merged {% if merged_inbox_active %}active{% endif %}"
+       href="/?mailbox=Inbox"
+       hx-get="/partials/envelopes?mailbox=Inbox"
+       hx-target="#envelope-list"
+       hx-swap="innerHTML"
+       hx-include="#mail-sort"
+       hx-push-url="/?mailbox=Inbox"
+       data-label="Toutes les Inbox">
+      <i data-lucide="mails"></i>
+      <span class="folder-label">Toutes les Inbox</span>
+      {% if merged_inbox_unread > 0 %}<span class="unread">{{ merged_inbox_unread }}</span>{% endif %}
+    </a>
+    {% endif %}
+
+    {% if !pinned.is_empty() %}
+    <div class="folder-section-label">Épinglés</div>
+    {% for m in pinned %}
+    <a class="folder-link {% if m.active %}active{% endif %}"
+       style="{% if !m.color.is_empty() %}border-left: 3px solid {{ m.color }};{% endif %}"
+       href="/?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+       hx-get="/partials/envelopes?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+       hx-target="#envelope-list"
+       hx-swap="innerHTML"
+       hx-include="#mail-sort"
+       hx-push-url="/?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+       data-label="{{ m.label }}">
+      <i data-lucide="pin"></i>
+      <span class="folder-label" title="{{ m.name }}">{% if all_selected && !m.account.is_empty() %}{{ m.account_label }} · {% endif %}{{ m.label }}</span>
+      {% if m.unread > 0 %}<span class="unread">{{ m.unread }}</span>{% endif %}
+    </a>
+    {% endfor %}
+    {% endif %}
+
+    {% for m in mailboxes %}
+    <div class="folder-row{% if m.depth > 0 %} is-folded{% endif %}"
+         data-tree-id="{{ m.tree_id }}"
+         data-parent="{{ m.parent }}"
+         data-depth="{{ m.depth }}">
+      <div class="folder-item {% if m.active %}active{% endif %} {% if m.is_account_header %}folder-acct{% endif %}"
+           style="padding-left: {{ m.pad }};{% if !m.color.is_empty() %} border-left: 3px solid {{ m.color }};{% endif %}">
+        {% if m.is_account_header %}
+        <span class="folder-ico" style="color: {{ m.color }}"><i data-lucide="{{ m.icon }}"></i></span>
+        {% endif %}
+        {% if m.has_children %}
+        <button type="button" class="folder-twist" data-twist="{{ m.tree_id }}" aria-label="Déplier" aria-expanded="false">
+          <i data-lucide="chevron-right"></i>
+        </button>
+        {% else if !m.is_account_header %}
+        <span class="folder-ico"><i data-lucide="{{ m.icon }}"></i></span>
+        {% endif %}
+        {% if m.is_account_header %}
+        <span class="folder-link-text folder-acct-label" data-label="{{ m.label }}" title="{{ m.account }}">
+          <span class="folder-label">{{ m.label }}</span>
+        </span>
+        {% else %}
+        <a class="folder-link-text"
+           href="/?mailbox={{ m.name_enc }}{% if all_selected && !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+           hx-get="/partials/envelopes?mailbox={{ m.name_enc }}{% if all_selected && !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+           hx-target="#envelope-list"
+           hx-swap="innerHTML"
+           hx-include="#mail-sort"
+           hx-push-url="/?mailbox={{ m.name_enc }}{% if all_selected && !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+           data-label="{{ m.label }}">
+          <span class="folder-label" title="{{ m.name }}">{{ m.label }}</span>
+        </a>
+        {% endif %}
+        {% if m.unread > 0 %}<span class="unread">{{ m.unread }}</span>{% endif %}
+      </div>
+    </div>
+    {% else %}
+      {% if pinned.is_empty() %}
+      <p class="muted tiny">Aucun dossier</p>
+      {% endif %}
+    {% endfor %}
+  </nav>
+</div>
+<script>
+  lucide.createIcons();
+  if (window.HimaWeb) {
+    HimaWeb.bindFolderClicks();
+    HimaWeb.bindFolderTree(true);
+  }
+</script>

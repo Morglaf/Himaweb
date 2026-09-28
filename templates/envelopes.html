@@ -1,0 +1,67 @@
+{% if offline %}
+<div class="offline-strip">Cache local{% if let Some(e) = error %} — {{ e }}{% endif %}</div>
+{% else if let Some(e) = error %}
+<div class="offline-strip">{{ e }}</div>
+{% endif %}
+
+{% if !query.is_empty() %}
+<div class="search-strip muted tiny">Résultats pour « {{ query }} »</div>
+{% endif %}
+
+{% for e in envelopes %}
+<button type="button" class="envelope {% if e.unread %}unread{% endif %}"
+        data-id="{{ e.id }}" data-account="{{ e.account }}"
+        style="{% if !e.color.is_empty() %}border-left: 3px solid {{ e.color }};{% endif %}"
+        hx-get="/partials/message?mailbox={{ mailbox_enc }}&id={{ e.id }}{% if !e.account.is_empty() %}&account={{ e.account_enc }}{% endif %}"
+        hx-target="#message-pane"
+        hx-swap="innerHTML"
+        hx-on::after-request="lucide.createIcons()">
+  <div class="env-avatar" aria-hidden="true" {% if !e.color.is_empty() %}style="background: {{ e.color }}"{% endif %}>{{ e.from_initial }}</div>
+  <div class="env-main">
+    <div class="env-top">
+      <span class="from">{% if e.unread %}<strong>{% endif %}{{ e.from }}{% if e.unread %}</strong>{% endif %}</span>
+      <span class="date">{{ e.date_short }}</span>
+    </div>
+    {% if all_mode && !e.account.is_empty() %}
+    <div class="env-account muted tiny">
+      <span class="acct-ico" style="color: {{ e.color }}"><i data-lucide="{{ e.account_icon }}"></i></span>
+      {{ e.account_label }}
+    </div>
+    {% endif %}
+    <div class="subject">
+      {% if e.has_attachment %}<i data-lucide="paperclip" class="att-ico"></i>{% endif %}
+      {{ e.subject }}
+    </div>
+  </div>
+</button>
+{% else %}
+<div class="empty-list">
+  <i data-lucide="inbox"></i>
+  {% if !query.is_empty() %}
+  <p>Aucun résultat</p>
+  <p class="muted tiny">Essayez d’autres termes ou un autre dossier.</p>
+  {% else %}
+  <p>Aucun message dans ce dossier</p>
+  <p class="muted tiny">Essayez Sent ou un autre dossier — Inbox peut être vide.</p>
+  {% endif %}
+</div>
+{% endfor %}
+
+{% if prev_page.is_some() || next_page.is_some() %}
+<nav class="pager">
+  {% if let Some(p) = prev_page %}
+  <button class="icon-btn" hx-get="/partials/envelopes?mailbox={{ mailbox_enc }}&page={{ p }}&sort={{ sort }}{% if !query_enc.is_empty() %}&q={{ query_enc }}{% endif %}{% if !account_filter_enc.is_empty() %}&account={{ account_filter_enc }}{% endif %}"
+          hx-target="#envelope-list" hx-swap="innerHTML">
+    <i data-lucide="chevron-left"></i>
+  </button>
+  {% endif %}
+  <span class="page-num">Page {{ page }}</span>
+  {% if let Some(p) = next_page %}
+  <button class="icon-btn" hx-get="/partials/envelopes?mailbox={{ mailbox_enc }}&page={{ p }}&sort={{ sort }}{% if !query_enc.is_empty() %}&q={{ query_enc }}{% endif %}{% if !account_filter_enc.is_empty() %}&account={{ account_filter_enc }}{% endif %}"
+          hx-target="#envelope-list" hx-swap="innerHTML">
+    <i data-lucide="chevron-right"></i>
+  </button>
+  {% endif %}
+</nav>
+{% endif %}
+<script>lucide.createIcons()</script>

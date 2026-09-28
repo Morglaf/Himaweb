@@ -1,0 +1,20 @@
+{% if offline %}
+<div class="badge-offline mb-2 text-xs">Cache local</div>
+{% endif %}
+<ul class="folder-list">
+  {% for m in mailboxes %}
+  <li>
+    <a href="/?mailbox={{ m.name }}"
+       class="folder-link {% if m.name == current %}active{% endif %}"
+       hx-get="/mailbox/{{ m.name }}/envelopes"
+       hx-target="#envelope-list"
+       hx-swap="innerHTML"
+       hx-push-url="/?mailbox={{ m.name }}">
+      <span>{{ m.name }}</span>
+      {% if m.unread > 0 %}<span class="unread">{{ m.unread }}</span>{% endif %}
+    </a>
+  </li>
+  {% else %}
+  <li class="muted text-sm px-2">Aucun dossier</li>
+  {% endfor %}
+</ul>

@@ -1,0 +1,80 @@
+<section class="compose" x-data='composeForm({{ compose_init|safe }})'>
+  <h1 class="font-display text-2xl mb-4">{{ title }}</h1>
+  {% if let Some(e) = error %}
+  <div class="error-banner mb-3">{{ e }}</div>
+  {% endif %}
+
+  <form method="post" action="/compose/send" class="compose-form">
+    <label>
+      <span>Envoyer depuis</span>
+      <select name="account" class="select w-full" required>
+        {% for a in accounts %}
+        <option value="{{ a.name }}" {% if a.selected %}selected{% endif %}>
+          {{ a.name }}{% if !a.email.is_empty() %} — {{ a.email }}{% endif %}
+        </option>
+        {% else %}
+        <option value="">(aucun compte)</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>
+      <span>À</span>
+      <div class="suggest-wrap">
+        <input type="text" name="to" x-model="to" @input.debounce.200ms="suggest('to')"
+               autocomplete="off" required />
+        <ul class="suggest" x-show="suggestions.to.length > 0" x-cloak>
+          <template x-for="item in suggestions.to" :key="item.email">
+            <li @mousedown.prevent="pick('to', item)" x-text="item.label"></li>
+          </template>
+        </ul>
+      </div>
+    </label>
+
+    <div class="flex gap-2 text-sm mb-2">
+      <button type="button" class="linkish" @click="showCc = !showCc">Cc / Cci</button>
+    </div>
+
+    <div x-show="showCc || cc || bcc" x-cloak class="space-y-3">
+      <label>
+        <span>Cc</span>
+        <div class="suggest-wrap">
+          <input type="text" name="cc" x-model="cc" @input.debounce.200ms="suggest('cc')"
+                 autocomplete="off" />
+          <ul class="suggest" x-show="suggestions.cc.length > 0" x-cloak>
+            <template x-for="item in suggestions.cc" :key="item.email">
+              <li @mousedown.prevent="pick('cc', item)" x-text="item.label"></li>
+            </template>
+          </ul>
+        </div>
+      </label>
+      <label>
+        <span>Cci</span>
+        <div class="suggest-wrap">
+          <input type="text" name="bcc" x-model="bcc" @input.debounce.200ms="suggest('bcc')"
+                 autocomplete="off" />
+          <ul class="suggest" x-show="suggestions.bcc.length > 0" x-cloak>
+            <template x-for="item in suggestions.bcc" :key="item.email">
+              <li @mousedown.prevent="pick('bcc', item)" x-text="item.label"></li>
+            </template>
+          </ul>
+        </div>
+      </label>
+    </div>
+
+    <label>
+      <span>Sujet</span>
+      <input type="text" name="subject" value="{{ subject }}" />
+    </label>
+
+    <label>
+      <span>Message</span>
+      <textarea name="body" rows="16">{{ body }}</textarea>
+    </label>
+
+    <div class="flex gap-2 mt-4">
+      <button type="submit" class="btn">Envoyer</button>
+      <a href="/" class="btn ghost">Annuler</a>
+    </div>
+  </form>
+</section>

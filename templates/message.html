@@ -1,0 +1,76 @@
+{% if offline %}
+<div class="offline-strip">Message en cache{% if let Some(e) = error %} — {{ e }}{% endif %}</div>
+{% endif %}
+
+<article class="message-view" data-msg-id="{{ id }}" data-msg-account="{{ account }}">
+  <header class="msg-header">
+    <h1 class="msg-subject">{{ subject }}</h1>
+    <div class="msg-meta-row">
+      <div class="msg-avatar">{{ from_initial }}</div>
+      <div class="msg-meta">
+        <div class="msg-from">{{ from }}</div>
+        <div class="msg-to muted tiny">À {{ to }}{% if !cc.is_empty() %} · Cc {{ cc }}{% endif %}</div>
+        <div class="msg-date muted tiny">{{ date }}</div>
+      </div>
+    </div>
+    <div class="msg-actions">
+      <a class="icon-btn" title="Répondre" href="/compose?kind=reply&mailbox={{ mailbox_enc }}&id={{ id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="reply"></i></a>
+      <a class="icon-btn" title="Répondre à tous" href="/compose?kind=reply-all&mailbox={{ mailbox_enc }}&id={{ id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="reply-all"></i></a>
+      <a class="icon-btn" title="Transférer" href="/compose?kind=forward&mailbox={{ mailbox_enc }}&id={{ id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="forward"></i></a>
+      <form class="inline" hx-post="/partials/message/flag" hx-target="#message-pane" hx-swap="innerHTML">
+        <input type="hidden" name="mailbox" value="{{ mailbox }}" />
+        <input type="hidden" name="id" value="{{ id }}" />
+        <input type="hidden" name="account" value="{{ account }}" />
+        {% if unread %}
+        <input type="hidden" name="seen" value="1" />
+        <button class="icon-btn" type="submit" title="Marquer lu"><i data-lucide="mail-open"></i></button>
+        {% else %}
+        <input type="hidden" name="seen" value="0" />
+        <button class="icon-btn" type="submit" title="Marquer non lu"><i data-lucide="mail"></i></button>
+        {% endif %}
+      </form>
+      <form class="inline" hx-post="/partials/message/delete" hx-confirm="Supprimer ce message ?" hx-target="#message-pane" hx-swap="innerHTML">
+        <input type="hidden" name="mailbox" value="{{ mailbox }}" />
+        <input type="hidden" name="id" value="{{ id }}" />
+        <input type="hidden" name="account" value="{{ account }}" />
+        <button class="icon-btn danger" type="submit" title="Supprimer"><i data-lucide="trash-2"></i></button>
+      </form>
+      <form class="inline move-form" hx-post="/partials/message/move" hx-target="#message-pane" hx-swap="innerHTML">
+        <input type="hidden" name="mailbox" value="{{ mailbox }}" />
+        <input type="hidden" name="id" value="{{ id }}" />
+        <input type="hidden" name="account" value="{{ account }}" />
+        <select name="to" class="select sm" title="Dossier de destination">
+          {% for m in mailboxes %}
+          <option value="{{ m.value }}" {% if m.selected %}selected{% endif %}>{{ m.label }}</option>
+          {% endfor %}
+        </select>
+        <button class="icon-btn" type="submit" title="Déplacer"><i data-lucide="folder-input"></i></button>
+      </form>
+    </div>
+  </header>
+
+  {% if !attachments.is_empty() %}
+  <ul class="attachments">
+    {% for a in attachments %}
+    <li>
+      <i data-lucide="paperclip"></i>
+      <a href="/attachments?mailbox={{ mailbox_enc }}&message_id={{ id }}&attachment_id={{ a.id }}">{{ a.filename }}</a>
+      <span class="muted tiny">{{ a.mime }} · {{ a.size }} o</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <div class="msg-body">
+    {{ body|safe }}
+  </div>
+</article>
+<script>
+lucide.createIcons();
+{% if marked_read %}
+if (window.HimaWeb) {
+  window.HimaWeb.markEnvelopeRead("{{ id }}", "{{ account }}");
+  window.HimaWeb.pollUnread();
+}
+{% endif %}
+</script>

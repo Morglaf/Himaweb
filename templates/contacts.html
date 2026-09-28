@@ -1,0 +1,53 @@
+<section class="contacts-page">
+  <div class="contacts-head">
+    <h1 class="font-display text-2xl">Contacts</h1>
+    <div class="flex gap-2">
+      <a class="btn secondary" href="/contacts?refresh=1{% if !query_enc.is_empty() %}&q={{ query_enc }}{% endif %}&book={{ current_book_enc }}">Rafraîchir</a>
+      <a class="btn secondary" href="/settings#contacts">Importer / configurer</a>
+    </div>
+  </div>
+
+  <form method="get" action="/contacts" class="contacts-search">
+    <select name="book" class="select" onchange="this.form.submit()">
+      {% for b in books %}
+      <option value="{{ b.id }}" {% if b.selected %}selected{% endif %}>{{ b.name }}</option>
+      {% endfor %}
+    </select>
+    <input class="input w-full" type="search" name="q" value="{{ query }}"
+           placeholder="Rechercher un nom ou un email…" />
+    <button class="btn" type="submit">Chercher</button>
+  </form>
+
+  <p class="muted tiny mb-3">
+    Source : {{ source }}
+    {% if !cardamum_available %} · Cardamum absent{% endif %}
+    · {{ contacts.len() }} contact(s)
+  </p>
+
+  {% if let Some(e) = error %}
+  <div class="error-banner mb-3">{{ e }}</div>
+  {% endif %}
+
+  {% if contacts.is_empty() %}
+  <div class="empty-list">
+    <i data-lucide="contact"></i>
+    <p>Aucun contact à afficher</p>
+    <p class="muted tiny">Paramètres → Contacts : importez / corrigez CardDAV (`carddav.home`).</p>
+  </div>
+  {% else %}
+  <ul class="contacts-list">
+    {% for c in contacts %}
+    <li class="contact-row">
+      <div class="env-avatar" aria-hidden="true">{{ c.initial }}</div>
+      <div class="contact-main">
+        <div class="contact-name">{% if !c.name.is_empty() %}{{ c.name }}{% else %}<span class="muted">Sans nom</span>{% endif %}</div>
+        <a class="contact-email" href="/compose?to={{ c.email }}">{{ c.email }}</a>
+        {% if !c.book.is_empty() %}<div class="muted tiny">{{ c.book }}</div>{% endif %}
+      </div>
+      <a class="icon-btn" href="/compose?to={{ c.email }}" title="Écrire"><i data-lucide="pen-square"></i></a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+<script>lucide.createIcons()</script>

@@ -1,0 +1,402 @@
+use std::path::Path;
+
+use rusqlite::{params, Connection, OptionalExtension};
+use thiserror::Error;
+
+use crate::cli::himalaya::{Envelope, Mailbox, MessageView};
+
+#[derive(Debug, Error)]
+pub enum CacheError {
+    #[error("sqlite: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("{0}")]
+    Message(String),
+}
+
+pub struct Cache {
+    conn: Connection,
+}
+
+impl Cache {
+    pub fn open(path: &Path) -> Result<Self, CacheError> {
+        let conn = Connection::open(path)?;
+        let cache = Self { conn };
+        cache.migrate()?;
+        Ok(cache)
+    }
+
+    fn migrate(&self) -> Result<(), CacheError> {
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS mailboxes (
+                name TEXT PRIMARY KEY,
+                desc TEXT,
+                unread INTEGER NOT NULL DEFAULT 0,
+                synced_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS envelopes (
+                mailbox TEXT NOT NULL,
+                id TEXT NOT NULL,
+                flags TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                date TEXT NOT NULL,
+                has_attachment INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (mailbox, id)
+            );
+            CREATE TABLE IF NOT EXISTS messages (
+                mailbox TEXT NOT NULL,
+                id TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                recipients TEXT NOT NULL,
+                cc TEXT NOT NULL,
+                date TEXT NOT NULL,
+                flags TEXT NOT NULL,
+                body_html TEXT NOT NULL,
+                body_text TEXT NOT NULL,
+                attachments_json TEXT NOT NULL,
+                PRIMARY KEY (mailbox, id)
+            );
+            CREATE TABLE IF NOT EXISTS contacts (
+                email TEXT PRIMARY KEY,
+                name TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS cal_calendars (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                account TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS cal_events (
+                calendar_id TEXT NOT NULL,
+                id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                start_raw TEXT NOT NULL,
+                end_raw TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (calendar_id, id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cal_events_start ON cal_events(start_raw);
+            "#,
+        )?;
+        Ok(())
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<(), CacheError> {
+        self.conn.execute(
+            "INSERT INTO meta(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>, CacheError> {
+        let v = self
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(v)
+    }
+
+    pub fn save_mailboxes(&self, boxes: &[Mailbox]) -> Result<(), CacheError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM mailboxes", [])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO mailboxes(name, desc, unread, synced_at) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for m in boxes {
+                stmt.execute(params![m.name, m.desc, m.unread as i64, now])?;
+            }
+        }
+        tx.commit()?;
+        self.set_meta("mailboxes_synced_at", &now)?;
+        Ok(())
+    }
+
+    pub fn load_mailboxes(&self) -> Result<Vec<Mailbox>, CacheError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, desc, unread FROM mailboxes ORDER BY name")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Mailbox {
+                name: r.get(0)?,
+                desc: r.get(1)?,
+                unread: r.get::<_, i64>(2)? as u64,
+            })
+        })?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    pub fn save_envelopes(&self, mailbox: &str, envelopes: &[Envelope]) -> Result<(), CacheError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM envelopes WHERE mailbox = ?1", params![mailbox])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO envelopes(mailbox, id, flags, subject, sender, date, has_attachment)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?;
+            for e in envelopes {
+                let flags = e.flags.join(",");
+                stmt.execute(params![
+                    mailbox,
+                    e.id,
+                    flags,
+                    e.subject,
+                    e.from,
+                    e.date,
+                    e.has_attachment as i64
+                ])?;
+            }
+        }
+        tx.commit()?;
+        let now = chrono::Utc::now().to_rfc3339();
+        self.set_meta(&format!("envelopes:{mailbox}"), &now)?;
+        Ok(())
+    }
+
+    pub fn load_envelopes(&self, mailbox: &str) -> Result<Vec<Envelope>, CacheError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, flags, subject, sender, date, has_attachment
+             FROM envelopes WHERE mailbox = ?1 ORDER BY date DESC",
+        )?;
+        let rows = stmt.query_map(params![mailbox], |r| {
+            let flags: String = r.get(1)?;
+            Ok(Envelope {
+                id: r.get(0)?,
+                flags: if flags.is_empty() {
+                    vec![]
+                } else {
+                    flags.split(',').map(str::to_string).collect()
+                },
+                subject: r.get(2)?,
+                from: r.get(3)?,
+                to: String::new(),
+                date: r.get(4)?,
+                has_attachment: r.get::<_, i64>(5)? != 0,
+            })
+        })?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    pub fn save_message(&self, mailbox: &str, msg: &MessageView) -> Result<(), CacheError> {
+        let flags = msg.flags.join(",");
+        let attachments =
+            serde_json::to_string(&msg.attachments).unwrap_or_else(|_| "[]".into());
+        self.conn.execute(
+            "INSERT INTO messages(mailbox, id, subject, sender, recipients, cc, date, flags, body_html, body_text, attachments_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(mailbox, id) DO UPDATE SET
+               subject=excluded.subject, sender=excluded.sender, recipients=excluded.recipients,
+               cc=excluded.cc, date=excluded.date, flags=excluded.flags,
+               body_html=excluded.body_html, body_text=excluded.body_text,
+               attachments_json=excluded.attachments_json",
+            params![
+                mailbox,
+                msg.id,
+                msg.subject,
+                msg.from,
+                msg.to,
+                msg.cc,
+                msg.date,
+                flags,
+                msg.body_html,
+                msg.body_text,
+                attachments
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_message(&self, mailbox: &str, id: &str) -> Result<Option<MessageView>, CacheError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT subject, sender, recipients, cc, date, flags, body_html, body_text, attachments_json
+                 FROM messages WHERE mailbox = ?1 AND id = ?2",
+                params![mailbox, id],
+                |r| {
+                    let flags: String = r.get(5)?;
+                    let attachments_json: String = r.get(8)?;
+                    let attachments = serde_json::from_str(&attachments_json).unwrap_or_default();
+                    Ok(MessageView {
+                        id: id.to_string(),
+                        subject: r.get(0)?,
+                        from: r.get(1)?,
+                        to: r.get(2)?,
+                        cc: r.get(3)?,
+                        date: r.get(4)?,
+                        flags: if flags.is_empty() {
+                            vec![]
+                        } else {
+                            flags.split(',').map(str::to_string).collect()
+                        },
+                        body_html: r.get(6)?,
+                        body_text: r.get(7)?,
+                        attachments,
+                        raw_preview: String::new(),
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    pub fn save_contacts(
+        &self,
+        contacts: &[(String, String)],
+    ) -> Result<(), CacheError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM contacts", [])?;
+        {
+            let mut stmt = tx.prepare("INSERT INTO contacts(email, name) VALUES (?1, ?2)")?;
+            for (email, name) in contacts {
+                if email.is_empty() {
+                    continue;
+                }
+                stmt.execute(params![email, name])?;
+            }
+        }
+        tx.commit()?;
+        let _ = self.set_meta("contacts_synced_at", &chrono::Utc::now().to_rfc3339());
+        Ok(())
+    }
+
+    /// Fusionne sans vider (pour warm / suggest).
+    pub fn merge_contacts(&self, contacts: &[(String, String)]) -> Result<(), CacheError> {
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO contacts(email, name) VALUES (?1, ?2)
+             ON CONFLICT(email) DO UPDATE SET name = excluded.name",
+        )?;
+        for (email, name) in contacts {
+            if email.is_empty() {
+                continue;
+            }
+            stmt.execute(params![email, name])?;
+        }
+        Ok(())
+    }
+
+    pub fn contacts_count(&self) -> Result<i64, CacheError> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM contacts", [], |r| r.get(0))?;
+        Ok(n)
+    }
+
+    pub fn suggest_contacts(&self, query: &str) -> Result<Vec<(String, String)>, CacheError> {
+        let q = format!("%{}%", query.to_ascii_lowercase());
+        let mut stmt = self.conn.prepare(
+            "SELECT email, name FROM contacts
+             WHERE lower(email) LIKE ?1 OR lower(name) LIKE ?1
+             LIMIT 12",
+        )?;
+        let rows = stmt.query_map(params![q], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    pub fn list_contacts(&self, query: &str, limit: i64) -> Result<Vec<(String, String)>, CacheError> {
+        let q = format!("%{}%", query.to_ascii_lowercase());
+        let mut stmt = self.conn.prepare(
+            "SELECT email, name FROM contacts
+             WHERE lower(email) LIKE ?1 OR lower(name) LIKE ?1
+             ORDER BY lower(name), lower(email)
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![q, limit], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    pub fn save_calendars(&self, cals: &[(String, String, String)]) -> Result<(), CacheError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM cal_calendars", [])?;
+        {
+            let mut stmt =
+                tx.prepare("INSERT INTO cal_calendars(id, name, account) VALUES (?1, ?2, ?3)")?;
+            for (id, name, account) in cals {
+                stmt.execute(params![id, name, account])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn load_calendars(&self) -> Result<Vec<(String, String, String)>, CacheError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, account FROM cal_calendars ORDER BY name")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    pub fn replace_calendar_events(
+        &self,
+        calendar_id: &str,
+        events: &[(String, String, String, String, String)],
+    ) -> Result<(), CacheError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM cal_events WHERE calendar_id = ?1",
+            params![calendar_id],
+        )?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO cal_events(calendar_id, id, summary, start_raw, end_raw, description)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for (id, summary, start, end, desc) in events {
+                stmt.execute(params![calendar_id, id, summary, start, end, desc])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Events dont start_raw commence par YYYYMM (compact) ou YYYY-MM
+    pub fn load_events_in_month(
+        &self,
+        calendar_ids: &[String],
+        year: i32,
+        month: u32,
+    ) -> Result<Vec<(String, String, String, String, String, String)>, CacheError> {
+        if calendar_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let prefix_compact = format!("{year:04}{month:02}");
+        let prefix_dash = format!("{year:04}-{month:02}");
+        let mut out = Vec::new();
+        for cid in calendar_ids {
+            let mut stmt = self.conn.prepare(
+                "SELECT calendar_id, id, summary, start_raw, end_raw, description
+                 FROM cal_events
+                 WHERE calendar_id = ?1
+                   AND (start_raw LIKE ?2 OR start_raw LIKE ?3)
+                 ORDER BY start_raw",
+            )?;
+            let like_c = format!("{prefix_compact}%");
+            let like_d = format!("{prefix_dash}%");
+            let rows = stmt.query_map(params![cid, like_c, like_d], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })?;
+            out.extend(rows.filter_map(Result::ok));
+        }
+        Ok(out)
+    }
+}
