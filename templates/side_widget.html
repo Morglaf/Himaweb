@@ -1,0 +1,93 @@
+<div class="side-widget-inner" x-data="quickEventModal">
+  <div class="side-widget-head">
+    <span>Aperçu</span>
+    <button type="button" class="icon-btn" title="Replier" onclick="window.HimaWeb && HimaWeb.toggleSideWidget(false)">
+      <i data-lucide="panel-right-close"></i>
+    </button>
+  </div>
+
+  <section class="side-block">
+    <div class="side-block-title">
+      <i data-lucide="calendar"></i> Prochains RDV
+    </div>
+    {% if events.is_empty() %}
+    <p class="muted tiny">Aucun événement à venir</p>
+    {% else %}
+    <ul class="side-event-list">
+      {% for e in events %}
+      <li>
+        <span class="side-ev-title">{{ e.summary }}</span>
+        <span class="muted tiny">{{ e.when }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <button type="button" class="btn secondary sm side-cta" @click="openModal()" {% if calendars.is_empty() %}disabled{% endif %}>
+      Créer un RDV
+    </button>
+  </section>
+
+  <section class="side-block">
+    <div class="side-block-title">
+      <i data-lucide="contact"></i> Contacts
+    </div>
+    <input class="input w-full" type="search" id="side-contact-q"
+           placeholder="Rechercher…" autocomplete="off"
+           oninput="window.HimaWeb && HimaWeb.sideContactSearch(this.value)" />
+    <ul class="side-contact-list" id="side-contact-results"></ul>
+    <a class="btn secondary sm side-cta" href="/contacts">Ouvrir contacts</a>
+  </section>
+
+  <div class="modal-backdrop" x-show="visible" x-cloak @keydown.escape.window="closeModal()" @click.self="closeModal()">
+    <div class="modal-panel" role="dialog" aria-modal="true" @click.stop style="width:min(28rem,96vw)">
+      <div class="modal-head">
+        <h2 class="font-display text-xl">Nouvel événement</h2>
+        <button type="button" class="icon-btn" @click="closeModal()" title="Fermer"><i data-lucide="x"></i></button>
+      </div>
+      <form method="post" action="/calendar/create" class="space-y-3"
+            hx-post="/calendar/create"
+            hx-target="#htmx-sink"
+            hx-swap="innerHTML"
+            @submit="busy = true">
+        <input type="hidden" name="stay" value="1" />
+        <input type="hidden" name="view" value="month" />
+        <label class="block">
+          <span class="label">Calendrier</span>
+          <select name="calendar" class="select w-full" required>
+            {% for c in calendars %}
+            <option value="{{ c.id }}">{{ c.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="block">
+          <span class="label">Titre</span>
+          <input class="input w-full" name="summary" required placeholder="Réunion…" />
+        </label>
+        <div class="form-row">
+          <label class="block">
+            <span class="label">Date début</span>
+            <input class="input w-full" type="date" name="start_date" value="{{ default_date }}" required />
+          </label>
+          <label class="block">
+            <span class="label">Heure</span>
+            <input class="input w-full" type="time" name="start_time" value="10:00" required />
+          </label>
+        </div>
+        <div class="form-row">
+          <label class="block">
+            <span class="label">Date fin</span>
+            <input class="input w-full" type="date" name="end_date" value="{{ default_date }}" />
+          </label>
+          <label class="block">
+            <span class="label">Heure fin</span>
+            <input class="input w-full" type="time" name="end_time" value="11:00" />
+          </label>
+        </div>
+        <div class="btn-row mt-2">
+          <button type="submit" class="btn" :disabled="busy">Créer</button>
+          <button type="button" class="btn ghost" @click="closeModal()">Annuler</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>

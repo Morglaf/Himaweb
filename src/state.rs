@@ -1,27 +1,35 @@
 use std::sync::Arc;
-use std::time::Duration;
-
-use tokio::sync::{Mutex, Semaphore};
 
 use crate::cache::Cache;
 use crate::cli::calendula::CalendulaClient;
 use crate::cli::cardamum::CardamumClient;
 use crate::cli::himalaya::HimalayaClient;
+use crate::cli::mirador::MiradorClient;
+use crate::cli::neverest::NeverestClient;
+use crate::cli::ortie::OrtieClient;
 use crate::cli::runner::CliRunner;
 use crate::prefs::{self, Prefs};
 use std::path::PathBuf;
+use std::time::Duration;
+use tokio::sync::{Mutex, Semaphore};
 
 #[derive(Clone)]
 pub struct AppState {
     pub himalaya: HimalayaClient,
     pub cardamum: Option<CardamumClient>,
     pub calendula: Option<CalendulaClient>,
+    pub neverest: Option<NeverestClient>,
+    pub mirador: Option<MiradorClient>,
+    pub ortie: Option<OrtieClient>,
     pub cache: Arc<Mutex<Cache>>,
     pub prefs: Arc<Mutex<Prefs>>,
     pub cli_limit: Arc<Semaphore>,
     pub himalaya_available: bool,
     pub cardamum_available: bool,
     pub calendula_available: bool,
+    pub neverest_available: bool,
+    pub mirador_available: bool,
+    pub ortie_available: bool,
 }
 
 impl AppState {
@@ -39,6 +47,18 @@ impl AppState {
             .ok()
             .or_else(|| which::which("calendula").ok().map(|p| p.display().to_string()));
 
+        let neverest_bin = std::env::var("HIMAWEB_NEVEREST_BIN")
+            .ok()
+            .or_else(|| which::which("neverest").ok().map(|p| p.display().to_string()));
+
+        let mirador_bin = std::env::var("HIMAWEB_MIRADOR_BIN")
+            .ok()
+            .or_else(|| which::which("mirador").ok().map(|p| p.display().to_string()));
+
+        let ortie_bin = std::env::var("HIMAWEB_ORTIE_BIN")
+            .ok()
+            .or_else(|| which::which("ortie").ok().map(|p| p.display().to_string()));
+
         let runner = CliRunner::new(Duration::from_secs(60));
         let himalaya = HimalayaClient::new(himalaya_bin.clone(), runner.clone());
         let himalaya_available =
@@ -52,9 +72,24 @@ impl AppState {
             .as_ref()
             .map(|b| which::which(b).is_ok() || PathBuf::from(b).exists())
             .unwrap_or(false);
+        let neverest_available = neverest_bin
+            .as_ref()
+            .map(|b| which::which(b).is_ok() || PathBuf::from(b).exists())
+            .unwrap_or(false);
+        let mirador_available = mirador_bin
+            .as_ref()
+            .map(|b| which::which(b).is_ok() || PathBuf::from(b).exists())
+            .unwrap_or(false);
+        let ortie_available = ortie_bin
+            .as_ref()
+            .map(|b| which::which(b).is_ok() || PathBuf::from(b).exists())
+            .unwrap_or(false);
 
         let cardamum = cardamum_bin.map(|b| CardamumClient::new(b, runner.clone()));
         let calendula = calendula_bin.map(|b| CalendulaClient::new(b, runner.clone()));
+        let neverest = neverest_bin.map(|b| NeverestClient::new(b, runner.clone()));
+        let mirador = mirador_bin.map(|b| MiradorClient::new(b, runner.clone()));
+        let ortie = ortie_bin.map(|b| OrtieClient::new(b, runner.clone()));
 
         let cache_path = cache_db_path()?;
         let cache = Cache::open(&cache_path).map_err(|e| format!("cache SQLite: {e}"))?;
@@ -84,12 +119,18 @@ impl AppState {
             himalaya,
             cardamum,
             calendula,
+            neverest,
+            mirador,
+            ortie,
             cache: Arc::new(Mutex::new(cache)),
             prefs: Arc::new(Mutex::new(prefs)),
             cli_limit: Arc::new(Semaphore::new(6)),
             himalaya_available,
             cardamum_available,
             calendula_available,
+            neverest_available,
+            mirador_available,
+            ortie_available,
         })
     }
 

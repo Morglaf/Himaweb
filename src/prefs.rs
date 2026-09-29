@@ -34,9 +34,21 @@ pub struct Prefs {
     /// En mode tous les comptes : afficher « Toutes les Inbox » en tête
     #[serde(default = "default_true")]
     pub merged_inbox: bool,
+    /// Regrouper les mails par conversation (sujet / In-Reply-To)
+    #[serde(default = "default_true")]
+    pub conversations: bool,
+    /// Panneau latéral agenda / contacts (droite mail)
+    #[serde(default)]
+    pub side_widget: bool,
+    /// Nombre de prochains RDV dans le panneau latéral
+    #[serde(default = "default_side_events")]
+    pub side_widget_events: u16,
     /// Dossier de destination par défaut au déplacement (`compte` → nom dossier)
     #[serde(default)]
     pub default_move: std::collections::BTreeMap<String, String>,
+    /// Comptes dont le serveur refuse UID MOVE : déplacer/supprimer via COPY + purge
+    #[serde(default)]
+    pub imap_copy_move: std::collections::BTreeMap<String, bool>,
     /// Échelle de police (1.0 = 100 %)
     #[serde(default = "default_font_scale")]
     pub ui_font_scale: f32,
@@ -52,6 +64,38 @@ pub struct Prefs {
     /// Largeur colonne liste (px)
     #[serde(default = "default_list")]
     pub ui_list: u16,
+    /// Watch Mirador (complète le poll)
+    #[serde(default)]
+    pub mirador_enabled: bool,
+    /// Notifications NTFY
+    #[serde(default)]
+    pub ntfy_enabled: bool,
+    #[serde(default = "default_ntfy_server")]
+    pub ntfy_server: String,
+    #[serde(default)]
+    pub ntfy_topic: String,
+    /// Assistant IA
+    #[serde(default)]
+    pub ai_enabled: bool,
+    /// `ollama` | `gemini`
+    #[serde(default = "default_ai_provider")]
+    pub ai_provider: String,
+    #[serde(default = "default_ai_endpoint")]
+    pub ai_endpoint: String,
+    #[serde(default = "default_ai_model")]
+    pub ai_model: String,
+    #[serde(default)]
+    pub ai_remote_endpoint: String,
+    /// Clé API Gemini (ou autre distant)
+    #[serde(default)]
+    pub ai_api_key: String,
+    /// Apparence comptes Calendula (comme mail)
+    #[serde(default)]
+    pub cal_account_colors: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub cal_account_labels: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub cal_account_icons: std::collections::BTreeMap<String, String>,
 }
 
 fn default_true() -> bool {
@@ -74,6 +118,26 @@ fn default_list() -> u16 {
     380
 }
 
+fn default_ntfy_server() -> String {
+    "https://ntfy.sh".into()
+}
+
+fn default_ai_endpoint() -> String {
+    "http://127.0.0.1:11434".into()
+}
+
+fn default_ai_model() -> String {
+    "llama3.2".into()
+}
+
+fn default_ai_provider() -> String {
+    "ollama".into()
+}
+
+fn default_side_events() -> u16 {
+    6
+}
+
 impl Default for Prefs {
     fn default() -> Self {
         Self {
@@ -89,12 +153,29 @@ impl Default for Prefs {
             account_labels: Default::default(),
             account_icons: Default::default(),
             merged_inbox: true,
+            conversations: true,
+            side_widget: false,
+            side_widget_events: default_side_events(),
             default_move: Default::default(),
+            imap_copy_move: Default::default(),
             ui_font_scale: default_font_scale(),
             ui_radius: default_radius(),
             ui_space: default_font_scale(),
             ui_rail: default_rail(),
             ui_list: default_list(),
+            mirador_enabled: false,
+            ntfy_enabled: false,
+            ntfy_server: default_ntfy_server(),
+            ntfy_topic: String::new(),
+            ai_enabled: false,
+            ai_provider: default_ai_provider(),
+            ai_endpoint: default_ai_endpoint(),
+            ai_model: default_ai_model(),
+            ai_remote_endpoint: String::new(),
+            ai_api_key: String::new(),
+            cal_account_colors: Default::default(),
+            cal_account_labels: Default::default(),
+            cal_account_icons: Default::default(),
         }
     }
 }
@@ -224,6 +305,44 @@ impl Prefs {
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| "circle-user".into())
+    }
+
+    /// Serveur sans UID MOVE : COPY + purge au lieu de `message move`.
+    pub fn uses_copy_move(&self, account: &str) -> bool {
+        self.imap_copy_move.get(account).copied().unwrap_or(false)
+    }
+
+    pub fn set_copy_move(&mut self, account: &str, enabled: bool) {
+        if enabled {
+            self.imap_copy_move.insert(account.to_string(), true);
+        } else {
+            self.imap_copy_move.remove(account);
+        }
+    }
+
+    pub fn cal_account_color(&self, name: &str) -> String {
+        self.cal_account_colors
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| crate::account_colors::default_color_for(name))
+    }
+
+    pub fn cal_account_label(&self, name: &str) -> String {
+        self.cal_account_labels
+            .get(name)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| name.to_string())
+    }
+
+    pub fn cal_account_icon(&self, name: &str) -> String {
+        self.cal_account_icons
+            .get(name)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| "calendar".into())
     }
 
     pub fn ordered_accounts(&self, known: &[String]) -> Vec<String> {

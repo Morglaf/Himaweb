@@ -248,6 +248,139 @@ impl CalendulaClient {
             })
             .collect()
     }
+
+    pub async fn read_event(&self, calendar_ref: &str, event_id: &str) -> CliResult<String> {
+        let (account, cal_id) = split_cal_ref(calendar_ref);
+        let mut args = Vec::new();
+        if let Some(a) = account.as_deref() {
+            args.push("--account".into());
+            args.push(a.to_string());
+        }
+        args.extend([
+            "event".into(),
+            "read".into(),
+            "-k".into(),
+            cal_id,
+            event_id.to_string(),
+        ]);
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let v = self.runner.run_json(&self.bin, &refs).await?;
+        Ok(v
+            .get("contents")
+            .or_else(|| v.get("content"))
+            .or_else(|| v.get("ical"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string())
+    }
+
+    pub async fn create_event(&self, calendar_ref: &str, ical: &[u8]) -> CliResult<String> {
+        let (account, cal_id) = split_cal_ref(calendar_ref);
+        let mut args = Vec::new();
+        if let Some(a) = account.as_deref() {
+            args.push("--account".into());
+            args.push(a.to_string());
+        }
+        args.extend([
+            "event".into(),
+            "create".into(),
+            "-k".into(),
+            cal_id,
+            "-".into(),
+        ]);
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let v = self.runner.run_with_stdin(&self.bin, &refs, ical).await?;
+        Ok(v
+            .get("id")
+            .map(|x| match x {
+                Value::String(s) => s.clone(),
+                Value::Number(n) => n.to_string(),
+                _ => String::new(),
+            })
+            .unwrap_or_default())
+    }
+
+    pub async fn update_event(
+        &self,
+        calendar_ref: &str,
+        event_id: &str,
+        ical: &[u8],
+        etag: Option<&str>,
+    ) -> CliResult<()> {
+        let (account, cal_id) = split_cal_ref(calendar_ref);
+        let mut args = Vec::new();
+        if let Some(a) = account.as_deref() {
+            args.push("--account".into());
+            args.push(a.to_string());
+        }
+        args.extend(["event".into(), "update".into(), "-k".into(), cal_id]);
+        if let Some(e) = etag.filter(|s| !s.is_empty()) {
+            args.push("--if-match".into());
+            args.push(e.to_string());
+        }
+        args.push(event_id.to_string());
+        args.push("-".into());
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        self.runner.run_with_stdin(&self.bin, &refs, ical).await?;
+        Ok(())
+    }
+
+    pub async fn delete_event(&self, calendar_ref: &str, event_id: &str) -> CliResult<()> {
+        let (account, cal_id) = split_cal_ref(calendar_ref);
+        let mut args = Vec::new();
+        if let Some(a) = account.as_deref() {
+            args.push("--account".into());
+            args.push(a.to_string());
+        }
+        args.extend([
+            "event".into(),
+            "delete".into(),
+            "-k".into(),
+            cal_id,
+            event_id.to_string(),
+        ]);
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        self.runner.run_json(&self.bin, &refs).await?;
+        Ok(())
+    }
+
+    /// iCalendar VEVENT (timestamps locaux flottants + récurrence optionnelle).
+    pub fn build_ical(
+        summary: &str,
+        start: &str,
+        end: &str,
+        description: &str,
+        location: &str,
+        rrule: &str,
+    ) -> String {
+        let uid = uuid::Uuid::new_v4();
+        let dtstamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+        let dtstart = ical_datetime(start);
+        let dtend = ical_datetime(if end.trim().is_empty() { start } else { end });
+        let mut lines = vec![
+            "BEGIN:VCALENDAR".into(),
+            "VERSION:2.0".into(),
+            "PRODID:-//HimaWeb//EN".into(),
+            "BEGIN:VEVENT".into(),
+            format!("UID:{uid}"),
+            format!("DTSTAMP:{dtstamp}"),
+            format!("DTSTART:{dtstart}"),
+            format!("DTEND:{dtend}"),
+            format!("SUMMARY:{}", escape_ical(summary)),
+        ];
+        if !description.trim().is_empty() {
+            lines.push(format!("DESCRIPTION:{}", escape_ical(description.trim())));
+        }
+        if !location.trim().is_empty() {
+            lines.push(format!("LOCATION:{}", escape_ical(location.trim())));
+        }
+        if let Some(rule) = normalize_rrule(rrule) {
+            lines.push(format!("RRULE:{rule}"));
+        }
+        lines.push("END:VEVENT".into());
+        lines.push("END:VCALENDAR".into());
+        lines.join("\r\n")
+    }
 }
 
 fn with_account(account: Option<&str>, rest: &[&str]) -> Vec<String> {
@@ -266,4 +399,56 @@ fn split_cal_ref(calendar_ref: &str) -> (Option<String>, String) {
     } else {
         (None, calendar_ref.to_string())
     }
+}
+
+fn escape_ical(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace(',', "\\,")
+        .replace(';', "\\;")
+}
+
+fn normalize_rrule(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.is_empty() || t.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    let upper = t.to_ascii_uppercase();
+    let rule = if upper.starts_with("FREQ=") || upper.starts_with("RRULE:") {
+        upper.trim_start_matches("RRULE:").to_string()
+    } else {
+        match t.to_ascii_lowercase().as_str() {
+            "daily" | "quotidien" => "FREQ=DAILY".into(),
+            "weekly" | "hebdo" | "hebdomadaire" => "FREQ=WEEKLY".into(),
+            "monthly" | "mensuel" => "FREQ=MONTHLY".into(),
+            "yearly" | "annuel" => "FREQ=YEARLY".into(),
+            other => format!("FREQ={}", other.to_ascii_uppercase()),
+        }
+    };
+    Some(rule)
+}
+
+fn ical_datetime(raw: &str) -> String {
+    let t = raw.trim();
+    if t.is_empty() {
+        return chrono::Local::now().format("%Y%m%dT%H%M%S").to_string();
+    }
+    if t.chars().all(|c| c.is_ascii_digit() || c == 'T' || c == 'Z') && t.len() >= 8 {
+        return t.to_string();
+    }
+    let cleaned = t.replace(' ', "T");
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&cleaned, "%Y-%m-%dT%H:%M") {
+        return dt.format("%Y%m%dT%H%M%S").to_string();
+    }
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&cleaned, "%Y-%m-%dT%H:%M:%S") {
+        return dt.format("%Y%m%dT%H%M%S").to_string();
+    }
+    // datetime-local HTML: 2024-01-15T10:30
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&cleaned, "%Y-%m-%dT%H:%M") {
+        return dt.format("%Y%m%dT%H%M%S").to_string();
+    }
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d") {
+        return d.format("%Y%m%d").to_string();
+    }
+    t.replace(['-', ':', ' '], "")
 }

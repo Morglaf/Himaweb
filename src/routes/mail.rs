@@ -20,6 +20,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/partials/message/flag", post(flag))
         .route("/partials/message/move", post(move_msg))
         .route("/partials/message/delete", post(delete_msg))
+        .route("/partials/message/delete-batch", post(delete_batch))
         .route("/account/select", post(select_account))
         .route("/api/mail/unread", get(unread_counts))
         .route("/mailboxes", get(sidebar))
@@ -77,7 +78,7 @@ pub struct MailboxRow {
     pub is_account_header: bool,
 }
 
-fn mailbox_icon(name: &str) -> &'static str {
+pub(crate) fn mailbox_icon(name: &str) -> &'static str {
     let n = name.to_ascii_lowercase();
     if n == "inbox" || n.ends_with("/inbox") {
         "inbox"
@@ -449,6 +450,7 @@ struct EnvelopesTemplate {
     pub sort: String,
 }
 
+#[derive(Clone)]
 pub struct EnvelopeRow {
     pub id: String,
     pub subject: String,
@@ -464,6 +466,13 @@ pub struct EnvelopeRow {
     pub account_label: String,
     pub account_icon: String,
     pub color: String,
+    /// Nombre de messages dans la conversation (≥ 1)
+    pub thread_count: u32,
+    /// Aperçu participants (conversations)
+    pub participants: String,
+    /// IDs du fil (ordre chrono croissant), séparés par des virgules
+    pub thread_ids: String,
+    pub thread_ids_enc: String,
 }
 
 fn envelope_rows(list: &[Envelope], account: &str, prefs: &Prefs) -> Vec<EnvelopeRow> {
@@ -478,7 +487,12 @@ fn envelope_rows(list: &[Envelope], account: &str, prefs: &Prefs) -> Vec<Envelop
     } else {
         prefs.account_icon(account)
     };
-    envelope_rows_styled(list, account, &color, &label, &icon)
+    let rows = envelope_rows_styled(list, account, &color, &label, &icon);
+    if prefs.conversations {
+        collapse_conversations(list, rows)
+    } else {
+        rows
+    }
 }
 
 fn envelope_rows_styled(
@@ -515,9 +529,183 @@ fn envelope_rows_styled(
                 account_label: account_label.to_string(),
                 account_icon: account_icon.to_string(),
                 color: color.to_string(),
+                thread_count: 1,
+                participants: String::new(),
+                thread_ids: e.id.clone(),
+                thread_ids_enc: urlencoding::encode(&e.id).into_owned(),
             }
         })
         .collect()
+}
+
+fn normalize_subject(subject: &str) -> String {
+    let mut s = subject.trim().to_lowercase();
+    loop {
+        let before = s.clone();
+        for p in [
+            "re:", "fwd:", "fw:", "aw:", "sv:", "tr:", "ré:", "rép:", "réponse:", "reponse:",
+        ] {
+            if let Some(rest) = s.strip_prefix(p) {
+                s = rest.trim_start().to_string();
+            }
+        }
+        // "[tag] " prefixes sometimes
+        if s.starts_with('[') {
+            if let Some(end) = s.find(']') {
+                s = s[end + 1..].trim_start().to_string();
+                continue;
+            }
+        }
+        if s == before {
+            break;
+        }
+    }
+    s
+}
+
+/// Regroupe par Message-ID / In-Reply-To / References, puis par sujet normalisé.
+fn collapse_conversations(list: &[Envelope], rows: Vec<EnvelopeRow>) -> Vec<EnvelopeRow> {
+    if list.is_empty() || rows.len() != list.len() {
+        return rows;
+    }
+    let n = list.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    let find = |parent: &mut [usize], mut i: usize| -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    };
+    let union = |parent: &mut [usize], a: usize, b: usize| {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra != rb {
+            parent[rb] = ra;
+        }
+    };
+
+    use std::collections::HashMap;
+    let mut by_msgid: HashMap<String, usize> = HashMap::new();
+    for (i, e) in list.iter().enumerate() {
+        if !e.message_id.is_empty() {
+            by_msgid.insert(e.message_id.clone(), i);
+        }
+    }
+    for (i, e) in list.iter().enumerate() {
+        for id in e.in_reply_to.iter().chain(e.references.iter()) {
+            if let Some(&j) = by_msgid.get(id) {
+                union(&mut parent, i, j);
+            }
+        }
+    }
+    // Sujet normalisé (même compte / boîte déjà homogène dans `list`)
+    let mut by_subj: HashMap<String, usize> = HashMap::new();
+    for (i, e) in list.iter().enumerate() {
+        let key = normalize_subject(&e.subject);
+        if key.is_empty() {
+            continue;
+        }
+        if let Some(&j) = by_subj.get(&key) {
+            union(&mut parent, i, j);
+        } else {
+            by_subj.insert(key, i);
+        }
+    }
+
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        groups.entry(r).or_default().push(i);
+    }
+
+    let mut out: Vec<EnvelopeRow> = Vec::with_capacity(groups.len());
+    for mut idxs in groups.into_values() {
+        idxs.sort_by(|&a, &b| list[b].date.cmp(&list[a].date));
+        let head = idxs[0];
+        let mut row = rows[head].clone();
+        row.thread_count = idxs.len() as u32;
+        // Prefer first unread as open target if any
+        if let Some(&u) = idxs.iter().find(|&&i| {
+            !list[i].flags.iter().any(|f| {
+                let x = f.to_ascii_lowercase();
+                x == "seen" || x == "\\seen"
+            })
+        }) {
+            row.id = list[u].id.clone();
+            row.unread = true;
+            row.from = list[u].from.clone();
+            row.from_initial = list[u]
+                .from
+                .chars()
+                .next()
+                .unwrap_or('?')
+                .to_uppercase()
+                .to_string();
+            row.date = list[u].date.clone();
+            row.date_short = short_date(&list[u].date);
+            row.has_attachment = idxs.iter().any(|&i| list[i].has_attachment);
+        } else {
+            row.has_attachment = idxs.iter().any(|&i| list[i].has_attachment);
+        }
+        // Clean subject display (without endless Re:)
+        let clean = normalize_subject(&list[head].subject);
+        if !clean.is_empty() {
+            // restore light capitalization from original if possible
+            row.subject = list[head].subject.clone();
+            // strip leading Re:/Fwd: for display
+            let mut display = list[head].subject.trim().to_string();
+            loop {
+                let before = display.clone();
+                for p in ["Re:", "RE:", "Fwd:", "FWD:", "Fw:", "Aw:", "SV:"] {
+                    if let Some(rest) = display.strip_prefix(p) {
+                        display = rest.trim_start().to_string();
+                    }
+                }
+                if display == before {
+                    break;
+                }
+            }
+            if !display.is_empty() {
+                row.subject = display;
+            }
+        }
+        let mut parts: Vec<String> = Vec::new();
+        for &i in &idxs {
+            let name = list[i]
+                .from
+                .split('<')
+                .next()
+                .unwrap_or(&list[i].from)
+                .trim()
+                .trim_matches('"')
+                .to_string();
+            if !name.is_empty() && !parts.iter().any(|p| p.eq_ignore_ascii_case(&name)) {
+                parts.push(name);
+            }
+            if parts.len() >= 3 {
+                break;
+            }
+        }
+        row.participants = parts.join(", ");
+        let mut chrono = idxs.clone();
+        chrono.sort_by(|&a, &b| list[a].date.cmp(&list[b].date));
+        row.thread_ids = chrono
+            .iter()
+            .map(|&i| list[i].id.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        // Encoder chaque UID séparément ; garder les virgules littérales
+        // (sinon %2C n'est pas re-découpé et on n'affiche qu'un message).
+        row.thread_ids_enc = chrono
+            .iter()
+            .map(|&i| urlencoding::encode(&list[i].id).into_owned())
+            .collect::<Vec<_>>()
+            .join(",");
+        out.push(row);
+    }
+    out.sort_by(|a, b| b.date.cmp(&a.date));
+    out
 }
 
 fn short_date(date: &str) -> String {
@@ -880,6 +1068,19 @@ pub struct MessageQuery {
     pub mailbox: String,
     pub id: String,
     pub account: Option<String>,
+    /// IDs du fil (séparés par virgules), ordre chrono
+    pub thread: Option<String>,
+}
+
+fn parse_thread_ids(raw: &str) -> Vec<String> {
+    // Tolère un éventuel %2C résiduel (double encodage) en plus des virgules.
+    let normalized = raw.replace("%2C", ",").replace("%2c", ",");
+    normalized
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 #[derive(Template)]
@@ -889,20 +1090,28 @@ struct MessageTemplate {
     pub mailbox_enc: String,
     pub id: String,
     pub subject: String,
+    pub account: String,
+    pub account_enc: String,
+    pub mailboxes: Vec<MoveOpt>,
+    pub offline: bool,
+    pub error: Option<String>,
+    pub marked_read: bool,
+    pub thread_count: u32,
+    pub thread: Vec<ThreadPart>,
+}
+
+pub struct ThreadPart {
+    pub id: String,
+    pub subject: String,
     pub from: String,
     pub from_initial: String,
     pub to: String,
     pub cc: String,
     pub date: String,
     pub unread: bool,
-    pub marked_read: bool,
     pub body: String,
     pub attachments: Vec<AttRow>,
-    pub mailboxes: Vec<MoveOpt>,
-    pub offline: bool,
-    pub error: Option<String>,
-    pub account: String,
-    pub account_enc: String,
+    pub is_focus: bool,
 }
 
 pub struct MoveOpt {
@@ -923,37 +1132,70 @@ async fn message(
     Query(q): Query<MessageQuery>,
 ) -> impl IntoResponse {
     let name = q.mailbox;
-    let id = q.id;
+    let focus_id = q.id;
     let account = if let Some(a) = q.account.filter(|s| !s.is_empty()) {
         Some(a)
     } else {
         state.account().await
     };
     let account_ref = account.as_deref();
+    let prefs_snap = state.prefs.lock().await.clone();
+
+    let mut thread_ids: Vec<String> = parse_thread_ids(q.thread.as_deref().unwrap_or(""));
+    if thread_ids.is_empty() || !prefs_snap.conversations {
+        thread_ids = vec![focus_id.clone()];
+    } else if !thread_ids.iter().any(|id| id == &focus_id) {
+        thread_ids.push(focus_id.clone());
+    }
+    // Cap to keep UI responsive
+    if thread_ids.len() > 25 {
+        // keep focus and neighbours around it
+        if let Some(pos) = thread_ids.iter().position(|id| id == &focus_id) {
+            let start = pos.saturating_sub(12);
+            let end = (start + 25).min(thread_ids.len());
+            thread_ids = thread_ids[start..end].to_vec();
+        } else {
+            thread_ids.truncate(25);
+        }
+    }
+
     let _permit = state.cli_limit.acquire().await.ok();
 
-    let (msg, offline, error) = if state.himalaya_available {
-        match state.himalaya.read_message(&name, &id, account_ref).await {
-            Ok(msg) => {
-                let cache = state.cache.lock().await;
-                let _ = cache.save_message(&name, &msg);
-                (Some(msg), false, None)
-            }
-            Err(e) => {
-                let cache = state.cache.lock().await;
-                (
-                    cache.load_message(&name, &id).ok().flatten(),
-                    true,
-                    Some(e.to_string()),
-                )
-            }
-        }
-    } else {
-        let cache = state.cache.lock().await;
-        (cache.load_message(&name, &id).ok().flatten(), true, None)
-    };
+    let mut loaded: Vec<(String, Option<crate::cli::himalaya::MessageView>, bool, Option<String>)> =
+        Vec::with_capacity(thread_ids.len());
+    let mut offline_any = false;
+    let mut first_err: Option<String> = None;
 
-    let prefs_snap = state.prefs.lock().await.clone();
+    for tid in &thread_ids {
+        let (msg, offline, error) = if state.himalaya_available {
+            match state.himalaya.read_message(&name, tid, account_ref).await {
+                Ok(msg) => {
+                    let cache = state.cache.lock().await;
+                    let _ = cache.save_message(&name, &msg);
+                    (Some(msg), false, None)
+                }
+                Err(e) => {
+                    let cache = state.cache.lock().await;
+                    (
+                        cache.load_message(&name, tid).ok().flatten(),
+                        true,
+                        Some(e.to_string()),
+                    )
+                }
+            }
+        } else {
+            let cache = state.cache.lock().await;
+            (cache.load_message(&name, tid).ok().flatten(), true, None)
+        };
+        if offline {
+            offline_any = true;
+        }
+        if first_err.is_none() {
+            first_err = error.clone();
+        }
+        loaded.push((tid.clone(), msg, offline, error));
+    }
+
     let default_move = account
         .as_deref()
         .and_then(|a| prefs_snap.default_move_for(a).map(str::to_string));
@@ -1016,79 +1258,133 @@ async fn message(
             .collect()
     };
 
-    let Some(msg) = msg else {
+    if loaded.iter().all(|(_, m, _, _)| m.is_none()) {
         return Html(format!(
             r#"<div class="empty-read"><i data-lucide="mail-x"></i><p>Message introuvable{}</p></div>
                <script>lucide.createIcons()</script>"#,
-            error.map(|e| format!(" ({e})")).unwrap_or_default()
+            first_err
+                .map(|e| format!(" ({e})"))
+                .unwrap_or_default()
         ))
         .into_response();
-    };
-
-    let was_unread = !msg.flags.iter().any(|f| {
-        let x = f.to_ascii_lowercase();
-        x == "seen" || x == "\\seen"
-    });
+    }
 
     let mut marked_read = false;
-    if was_unread && state.himalaya_available && !offline {
-        let himalaya = state.himalaya.clone();
-        let mb = name.clone();
-        let mid = id.clone();
-        let acc = account.clone();
-        tokio::spawn(async move {
-            let _ = himalaya
-                .set_flag(&mb, &mid, "seen", true, acc.as_deref())
-                .await;
+    let mut thread_parts: Vec<ThreadPart> = Vec::new();
+    let mut thread_subject = String::new();
+
+    for (tid, msg_opt, _off, _err) in loaded {
+        let Some(msg) = msg_opt else {
+            continue;
+        };
+        let was_unread = !msg.flags.iter().any(|f| {
+            let x = f.to_ascii_lowercase();
+            x == "seen" || x == "\\seen"
         });
-        marked_read = true;
+        if was_unread && state.himalaya_available && !offline_any {
+            let himalaya = state.himalaya.clone();
+            let mb = name.clone();
+            let mid = tid.clone();
+            let acc = account.clone();
+            tokio::spawn(async move {
+                let _ = himalaya
+                    .set_flag(&mb, &mid, "seen", true, acc.as_deref())
+                    .await;
+            });
+            if tid == focus_id {
+                marked_read = true;
+            }
+        }
+        let unread = was_unread && !(tid == focus_id && marked_read);
+
+        let body = if !msg.body_html.is_empty() {
+            sanitize_html(&msg.body_html)
+        } else if !msg.body_text.is_empty() {
+            plain_to_html(&msg.body_text)
+        } else if !msg.raw_preview.is_empty() {
+            plain_to_html(&msg.raw_preview)
+        } else {
+            "<p class=\"muted\">(corps vide)</p>".into()
+        };
+
+        let attachments = msg
+            .attachments
+            .into_iter()
+            .map(|a| AttRow {
+                id: a.id,
+                filename: a.filename,
+                mime: a.mime,
+                size: a.size,
+            })
+            .collect();
+
+        if thread_subject.is_empty() {
+            thread_subject = msg.subject.clone();
+        }
+        // Prefer cleaned subject from focus
+        if tid == focus_id {
+            thread_subject = msg.subject.clone();
+        }
+
+        thread_parts.push(ThreadPart {
+            is_focus: tid == focus_id,
+            id: msg.id,
+            subject: msg.subject,
+            from_initial: msg
+                .from
+                .chars()
+                .next()
+                .unwrap_or('?')
+                .to_uppercase()
+                .to_string(),
+            from: msg.from,
+            to: msg.to,
+            cc: msg.cc,
+            date: msg.date,
+            unread,
+            body,
+            attachments,
+        });
     }
-    let unread = was_unread && !marked_read;
 
-    let body = if !msg.body_html.is_empty() {
-        sanitize_html(&msg.body_html)
-    } else if !msg.body_text.is_empty() {
-        plain_to_html(&msg.body_text)
-    } else if !msg.raw_preview.is_empty() {
-        plain_to_html(&msg.raw_preview)
-    } else {
-        "<p class=\"muted\">(corps vide)</p>".into()
-    };
+    if thread_parts.is_empty() {
+        return Html(
+            r#"<div class="empty-read"><i data-lucide="mail-x"></i><p>Message introuvable</p></div>
+               <script>lucide.createIcons()</script>"#
+                .to_string(),
+        )
+        .into_response();
+    }
 
-    let attachments = msg
-        .attachments
-        .into_iter()
-        .map(|a| AttRow {
-            id: a.id,
-            filename: a.filename,
-            mime: a.mime,
-            size: a.size,
-        })
-        .collect();
+    // Display subject without cascading Re:
+    let mut display_subject = thread_subject.trim().to_string();
+    loop {
+        let before = display_subject.clone();
+        for p in ["Re:", "RE:", "Fwd:", "FWD:", "Fw:", "Aw:", "SV:"] {
+            if let Some(rest) = display_subject.strip_prefix(p) {
+                display_subject = rest.trim_start().to_string();
+            }
+        }
+        if display_subject == before {
+            break;
+        }
+    }
+    if display_subject.is_empty() {
+        display_subject = thread_subject;
+    }
 
+    let thread_count = thread_parts.len() as u32;
     render(MessageTemplate {
         mailbox_enc: urlencoding::encode(&name).into_owned(),
         mailbox: name,
-        id: msg.id,
-        subject: msg.subject,
-        from_initial: msg
-            .from
-            .chars()
-            .next()
-            .unwrap_or('?')
-            .to_uppercase()
-            .to_string(),
-        from: msg.from,
-        to: msg.to,
-        cc: msg.cc,
-        date: msg.date,
-        unread,
-        marked_read,
-        body,
-        attachments,
+        id: focus_id,
+        subject: display_subject,
         mailboxes,
-        offline,
-        error,
+        offline: offline_any,
+        error: first_err,
+        marked_read,
+        thread_count,
+        thread: thread_parts,
         account_enc: urlencoding::encode(account.as_deref().unwrap_or("")).into_owned(),
         account: account.unwrap_or_default(),
     })
@@ -1100,6 +1396,9 @@ pub struct FlagForm {
     pub id: String,
     pub seen: Option<String>,
     pub account: Option<String>,
+    pub thread: Option<String>,
+    /// Si présent : ne pas renvoyer le message (ex. action depuis la liste / clic droit)
+    pub quiet: Option<String>,
 }
 
 async fn flag(
@@ -1107,6 +1406,8 @@ async fn flag(
     Form(form): Form<FlagForm>,
 ) -> impl IntoResponse {
     let add = form.seen.as_deref() == Some("1") || form.seen.as_deref() == Some("true");
+    let quiet =
+        form.quiet.as_deref() == Some("1") || form.quiet.as_deref() == Some("true");
     let account = form
         .account
         .filter(|s| !s.is_empty())
@@ -1124,6 +1425,21 @@ async fn flag(
         .await
     {
         Ok(()) => {
+            if quiet {
+                let id_js = serde_json::to_string(&form.id).unwrap_or_else(|_| "\"\"".into());
+                let acc_js = serde_json::to_string(account.as_deref().unwrap_or(""))
+                    .unwrap_or_else(|_| "\"\"".into());
+                let seen_js = if add { "true" } else { "false" };
+                return Html(format!(
+                    r##"<script>
+if (window.HimaWeb) {{
+  window.HimaWeb.applyEnvelopeSeen({id_js}, {acc_js}, {seen_js});
+  window.HimaWeb.pollUnread();
+}}
+</script>"##
+                ))
+                .into_response();
+            }
             let mut url = format!(
                 "/partials/message?mailbox={}&id={}",
                 urlencoding::encode(&form.mailbox),
@@ -1131,6 +1447,17 @@ async fn flag(
             );
             if let Some(a) = account.as_deref() {
                 url.push_str(&format!("&account={}", urlencoding::encode(a)));
+            }
+            if let Some(t) = form.thread.as_deref().filter(|s| !s.is_empty()) {
+                let ids = parse_thread_ids(t);
+                if ids.len() > 1 {
+                    let enc = ids
+                        .iter()
+                        .map(|id| urlencoding::encode(id).into_owned())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    url.push_str(&format!("&thread={enc}"));
+                }
             }
             Redirect::to(&url).into_response()
         }
@@ -1165,14 +1492,35 @@ async fn move_msg(
         )
         .await
     {
-        Ok(()) => Html(format!(
-            r##"<div class="toast ok">Déplacé vers {}</div>
-               <div hx-get="/partials/envelopes?mailbox={}" hx-trigger="load" hx-target="#envelope-list" hx-swap="innerHTML"></div>
-               <script>document.getElementById('message-pane').innerHTML='<div class="empty-read"><p class="muted">Sélectionnez un message</p></div>'; lucide.createIcons();</script>"##,
-            html_escape(&form.to),
-            urlencoding::encode(&form.mailbox)
-        ))
-        .into_response(),
+        Ok(()) => {
+            let id_js = serde_json::to_string(&form.id).unwrap_or_else(|_| "\"\"".into());
+            let mb_js = serde_json::to_string(&form.mailbox).unwrap_or_else(|_| "\"\"".into());
+            let acc = account.as_deref().unwrap_or("");
+            let acc_js = serde_json::to_string(acc).unwrap_or_else(|_| "\"\"".into());
+            let to_js = serde_json::to_string(&form.to).unwrap_or_else(|_| "\"\"".into());
+            Html(format!(
+                r##"<div class="empty-read" data-mail-event="moved" data-id="{id}" data-mailbox="{mb}" data-account="{acc}" data-to="{to}">
+  <i data-lucide="folder-input"></i>
+  <p class="muted">Déplacé vers {to_label}</p>
+</div>
+<script>
+if (window.HimaWeb) {{
+  window.HimaWeb.onMessageMoved({{ id: {id_js}, mailbox: {mb_js}, account: {acc_js}, to: {to_js} }});
+}}
+if (window.lucide) lucide.createIcons();
+</script>"##,
+                id = html_escape(&form.id),
+                mb = html_escape(&form.mailbox),
+                acc = html_escape(acc),
+                to = html_escape(&form.to),
+                to_label = html_escape(&form.to),
+                id_js = id_js,
+                mb_js = mb_js,
+                acc_js = acc_js,
+                to_js = to_js,
+            ))
+            .into_response()
+        }
         Err(e) => Html(format!(r#"<div class="error">{e}</div>"#)).into_response(),
     }
 }
@@ -1198,15 +1546,131 @@ async fn delete_msg(
         .delete_message(&form.mailbox, &form.id, account.as_deref())
         .await
     {
-        Ok(()) => Html(format!(
-            r##"<div class="toast ok">Supprimé</div>
-               <div hx-get="/partials/envelopes?mailbox={}" hx-trigger="load" hx-target="#envelope-list" hx-swap="innerHTML"></div>
-               <script>document.getElementById('message-pane').innerHTML='<div class="empty-read"><p class="muted">Sélectionnez un message</p></div>'; lucide.createIcons();</script>"##,
-            urlencoding::encode(&form.mailbox)
-        ))
-        .into_response(),
+        Ok(()) => {
+            let id_js = serde_json::to_string(&form.id).unwrap_or_else(|_| "\"\"".into());
+            let mb_js = serde_json::to_string(&form.mailbox).unwrap_or_else(|_| "\"\"".into());
+            let acc_js = serde_json::to_string(account.as_deref().unwrap_or(""))
+                .unwrap_or_else(|_| "\"\"".into());
+            Html(format!(
+                r##"<div class="empty-read" data-mail-event="deleted" data-id="{}" data-mailbox="{}" data-account="{}">
+  <i data-lucide="mail-open"></i><p class="muted">Message supprimé</p>
+</div>
+<script>
+if (window.HimaWeb) {{
+  window.HimaWeb.onMessageDeleted({{ id: {id_js}, mailbox: {mb_js}, account: {acc_js} }});
+}}
+if (window.lucide) lucide.createIcons();
+</script>"##,
+                html_escape(&form.id),
+                html_escape(&form.mailbox),
+                html_escape(account.as_deref().unwrap_or("")),
+            ))
+            .into_response()
+        }
         Err(e) => Html(format!(r#"<div class="error">{e}</div>"#)).into_response(),
     }
+}
+
+#[derive(Deserialize)]
+pub struct DeleteBatchForm {
+    /// JSON : `[{"mailbox":"...","id":"...","account":"..."}, ...]`
+    pub items: String,
+}
+
+async fn delete_batch(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<DeleteBatchForm>,
+) -> impl IntoResponse {
+    #[derive(Deserialize)]
+    struct Item {
+        mailbox: String,
+        id: String,
+        #[serde(default)]
+        account: String,
+    }
+    let items: Vec<Item> = match serde_json::from_str(&form.items) {
+        Ok(v) => v,
+        Err(e) => {
+            return Html(format!(r#"<div class="error">Sélection invalide: {e}</div>"#))
+                .into_response();
+        }
+    };
+    if items.is_empty() {
+        return Html(r#"<div class="error">Aucun message sélectionné</div>"#.to_string())
+            .into_response();
+    }
+    if items.len() > 50 {
+        return Html(r#"<div class="error">Maximum 50 messages à la fois</div>"#.to_string())
+            .into_response();
+    }
+
+    let default_account = state.account().await;
+    let mut ok = 0u32;
+    let mut errors: Vec<String> = Vec::new();
+    let mut last_ok: Option<(String, String, String)> = None;
+
+    for it in &items {
+        let _permit = state.cli_limit.acquire().await.ok();
+        let account = if it.account.is_empty() {
+            default_account.clone()
+        } else {
+            Some(it.account.clone())
+        };
+        match state
+            .himalaya
+            .delete_message(&it.mailbox, &it.id, account.as_deref())
+            .await
+        {
+            Ok(()) => {
+                ok += 1;
+                last_ok = Some((
+                    it.id.clone(),
+                    it.mailbox.clone(),
+                    account.unwrap_or_default(),
+                ));
+            }
+            Err(e) => errors.push(format!("{}: {e}", it.id)),
+        }
+    }
+
+    let err_html = if errors.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<div class="error">{} échec(s) : {}</div>"#,
+            errors.len(),
+            html_escape(&errors.join(" · "))
+        )
+    };
+
+    let (id, mb, acc) = last_ok.unwrap_or_default();
+    let id_js = serde_json::to_string(&id).unwrap_or_else(|_| "\"\"".into());
+    let mb_js = serde_json::to_string(&mb).unwrap_or_else(|_| "\"\"".into());
+    let acc_js = serde_json::to_string(&acc).unwrap_or_else(|_| "\"\"".into());
+    let ids_js = serde_json::to_string(
+        &items
+            .iter()
+            .map(|i| {
+                serde_json::json!({
+                    "id": i.id,
+                    "account": i.account,
+                    "mailbox": i.mailbox,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".into());
+
+    Html(format!(
+        r##"{err_html}<div class="empty-read"><i data-lucide="mail-open"></i><p class="muted">{ok} message(s) supprimé(s)</p></div>
+<script>
+if (window.HimaWeb) {{
+  window.HimaWeb.onMessagesDeleted({{ items: {ids_js}, last: {{ id: {id_js}, mailbox: {mb_js}, account: {acc_js} }} }});
+}}
+if (window.lucide) lucide.createIcons();
+</script>"##
+    ))
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -1302,10 +1766,37 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     }
 
     let total: u64 = folders.iter().map(|f| f.unread).sum();
+
+    // Plugin NTFY : notifie seulement si le total augmente
+    if prefs_snap.ntfy_enabled && !prefs_snap.ntfy_topic.is_empty() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_NTFY_TOTAL: AtomicU64 = AtomicU64::new(0);
+        let prev = LAST_NTFY_TOTAL.load(Ordering::Relaxed);
+        if total > prev {
+            LAST_NTFY_TOTAL.store(total, Ordering::Relaxed);
+            let server = prefs_snap.ntfy_server.clone();
+            let topic = prefs_snap.ntfy_topic.clone();
+            let title = format!("HimaWeb — {total} non-lu(s)");
+            let body = folders
+                .iter()
+                .map(|f| format!("{}: {}", f.label, f.unread))
+                .collect::<Vec<_>>()
+                .join("\n");
+            tokio::spawn(async move {
+                if let Err(e) = crate::plugins::ntfy_publish(&server, &topic, &title, &body).await {
+                    tracing::debug!("ntfy: {e}");
+                }
+            });
+        } else if total < prev {
+            LAST_NTFY_TOTAL.store(total, Ordering::Relaxed);
+        }
+    }
+
     axum::Json(serde_json::json!({
         "notifications": notifications,
         "total": total,
         "folders": folders,
+        "mirador": prefs_snap.mirador_enabled,
     }))
     .into_response()
 }

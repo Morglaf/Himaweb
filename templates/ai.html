@@ -1,0 +1,49 @@
+<section class="ai-page">
+  <div class="contacts-head">
+    <h1 class="font-display text-2xl">Assistant IA</h1>
+    <a class="btn secondary" href="/settings#ai">Configurer</a>
+  </div>
+
+  <p class="muted text-sm mb-4">
+    Fournisseur : <strong>{{ provider }}</strong>
+    · modèle <code>{{ model }}</code>
+    {% if provider == "ollama" %} · <code>{{ endpoint }}</code>{% endif %}.
+    Toute sortie doit être validée avant envoi / écriture.
+  </p>
+
+  {% if !enabled %}
+  <div class="error-banner mb-3">IA désactivée — activez-la dans Paramètres → IA.</div>
+  {% endif %}
+  {% if let Some(e) = error %}
+  <div class="error-banner mb-3">{{ e }}</div>
+  {% endif %}
+
+  <form method="post" action="/ai/draft" class="compose-form space-y-3">
+    <label class="block">
+      <span class="label">Type</span>
+      <select name="kind" class="select w-full">
+        <option value="compose">Nouveau mail</option>
+        <option value="reply">Réponse</option>
+      </select>
+    </label>
+    <label class="block">
+      <span class="label">Consigne</span>
+      <textarea class="input w-full" name="prompt" rows="3" required
+                placeholder="Ex. : réponds poliment pour proposer un créneau mardi matin"></textarea>
+    </label>
+    <label class="block">
+      <span class="label">Contexte (mail d’origine, notes…)</span>
+      <textarea class="input w-full" name="context" rows="6"></textarea>
+    </label>
+    <button type="submit" class="btn" {% if !enabled %}disabled{% endif %}>Générer un brouillon</button>
+  </form>
+
+  {% if let Some(d) = draft %}
+  <div class="ai-draft mt-4">
+    <h2 class="font-display text-lg mb-2">Brouillon (à valider)</h2>
+    <pre class="toml-preview">{{ d }}</pre>
+    <a class="btn mt-3" href="/compose">Ouvrir Compose</a>
+    <p class="muted tiny mt-2">Rien n’est envoyé automatiquement.</p>
+  </div>
+  {% endif %}
+</section>

@@ -8,22 +8,26 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-  <script defer src="/static/app.js?v=20260928g"></script>
+  <script>
+    // App locale de confiance : autoriser les scripts dans les fragments HTMX
+    htmx.config.allowScriptTags = true;
+  </script>
+  <script defer src="/static/app.js?v=20260929e"></script>
   <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
   <script src="https://unpkg.com/lucide@0.469.0"></script>
-  <link rel="stylesheet" href="/static/app.css?v=20260928g" />
+  <link rel="stylesheet" href="/static/app.css?v=20260929e" />
 </head>
 <body>
   <header class="topbar">
-    <a href="/" class="brand">
+    <a href="/" class="brand" title="HimaWeb" aria-label="HimaWeb">
       <i data-lucide="mountain"></i>
-      <span>HimaWeb</span>
     </a>
     <nav class="top-nav">
       <a href="/" class="tab {% if active_tab == "mail" %}tab-active{% endif %}"><i data-lucide="mail"></i> Mail <span id="unread-badge" class="nav-badge" hidden>0</span></a>
       <a href="/search" class="tab {% if active_tab == "search" %}tab-active{% endif %}"><i data-lucide="search"></i> Recherche</a>
       <a href="/contacts" class="tab {% if active_tab == "contacts" %}tab-active{% endif %}"><i data-lucide="contact"></i> Contacts</a>
       <a href="/calendar" class="tab {% if active_tab == "calendar" %}tab-active{% endif %}"><i data-lucide="calendar"></i> Calendrier</a>
+      <a href="/ai" class="tab {% if active_tab == "ai" %}tab-active{% endif %}"><i data-lucide="sparkles"></i> IA</a>
       <a href="/settings" class="tab {% if active_tab == "settings" %}tab-active{% endif %}"><i data-lucide="settings"></i> Paramètres</a>
     </nav>
     <div class="top-status">
@@ -39,6 +43,9 @@
   <main class="page-main {% if active_tab == "mail" || active_tab == "search" %}page-main-mail{% endif %}">
     {{ content|safe }}
   </main>
+
+  <div id="compose-layer" aria-live="polite"></div>
+  <div id="htmx-sink" class="sr-only" aria-hidden="true"></div>
 
   <script>lucide.createIcons()</script>
 </body>

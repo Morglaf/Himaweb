@@ -1,10 +1,10 @@
 <div class="rail-inner">
-  <div class="account-switch">
+  <div class="rail-actions">
     <label class="sr-only" for="account-select">Compte</label>
     <form method="post" action="/account/select" class="account-form">
       <input type="hidden" name="mailbox" value="Inbox" />
-      <div class="account-select-wrap">
-        <i data-lucide="circle-user"></i>
+      <div class="account-select-wrap" title="Changer de compte">
+        <i data-lucide="circle-user" class="acct-select-ico"></i>
         <select id="account-select" name="account" class="account-select" onchange="this.form.submit()">
           <option value="__all__" {% if all_selected %}selected{% endif %}>Tous les comptes</option>
           {% for a in accounts %}
@@ -18,22 +18,10 @@
         <i data-lucide="chevrons-up-down" class="chev"></i>
       </div>
     </form>
-    {% if all_selected && !accounts.is_empty() %}
-    <div class="account-legend">
-      {% for a in accounts %}
-      <span class="legend-item" title="{{ a.name }}">
-        <span class="acct-ico" style="color: {{ a.color }}"><i data-lucide="{{ a.icon }}"></i></span>
-        <span class="legend-label">{{ a.label }}</span>
-      </span>
-      {% endfor %}
-    </div>
-    {% endif %}
+    <a class="icon-btn compose-icon-btn" href="/compose" title="Nouveau message">
+      <i data-lucide="pen-square"></i>
+    </a>
   </div>
-
-  <a class="compose-fab" href="/compose">
-    <i data-lucide="pen-square"></i>
-    <span>Nouveau message</span>
-  </a>
 
   {% if offline %}
   <div class="badge-offline rail-badge">Cache local</div>
@@ -48,10 +36,13 @@
        hx-swap="innerHTML"
        hx-include="#mail-sort"
        hx-push-url="/?mailbox=Inbox"
-       data-label="Toutes les Inbox">
+       data-label="Toutes les Inbox"
+       data-folder-icon="mails"
+       data-folder-key="Inbox"
+       data-account="">
       <i data-lucide="mails"></i>
       <span class="folder-label">Toutes les Inbox</span>
-      {% if merged_inbox_unread > 0 %}<span class="unread">{{ merged_inbox_unread }}</span>{% endif %}
+      {% if merged_inbox_unread > 0 %}<span class="unread" data-unread-for="Inbox">{{ merged_inbox_unread }}</span>{% endif %}
     </a>
     {% endif %}
 
@@ -66,10 +57,14 @@
        hx-swap="innerHTML"
        hx-include="#mail-sort"
        hx-push-url="/?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
-       data-label="{{ m.label }}">
+       data-label="{{ m.label }}"
+       data-folder-icon="{{ m.icon }}"
+       data-folder-key="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}"
+       data-account="{{ m.account }}"
+       data-account-color="{{ m.color }}">
       <i data-lucide="pin"></i>
       <span class="folder-label" title="{{ m.name }}">{% if all_selected && !m.account.is_empty() %}{{ m.account_label }} · {% endif %}{{ m.label }}</span>
-      {% if m.unread > 0 %}<span class="unread">{{ m.unread }}</span>{% endif %}
+      {% if m.unread > 0 %}<span class="unread" data-unread-for="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}">{{ m.unread }}</span>{% endif %}
     </a>
     {% endfor %}
     {% endif %}
@@ -103,11 +98,15 @@
            hx-swap="innerHTML"
            hx-include="#mail-sort"
            hx-push-url="/?mailbox={{ m.name_enc }}{% if all_selected && !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
-           data-label="{{ m.label }}">
+           data-label="{{ m.label }}"
+           data-folder-icon="{{ m.icon }}"
+           data-folder-key="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}"
+           data-account="{{ m.account }}"
+           data-account-color="{{ m.color }}">
           <span class="folder-label" title="{{ m.name }}">{{ m.label }}</span>
         </a>
         {% endif %}
-        {% if m.unread > 0 %}<span class="unread">{{ m.unread }}</span>{% endif %}
+        {% if m.unread > 0 %}<span class="unread" data-unread-for="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}">{{ m.unread }}</span>{% endif %}
       </div>
     </div>
     {% else %}

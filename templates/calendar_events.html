@@ -2,8 +2,15 @@
 <div class="error-banner mb-2">{{ e }}</div>
 {% endif %}
 {% for ev in events %}
-<article class="cal-event">
-  <h3>{% if !ev.time.is_empty() %}<span class="cal-ev-time">{{ ev.time }}</span> {% endif %}{{ ev.summary }}</h3>
+<article class="cal-event cal-ev-click"
+         role="button"
+         tabindex="0"
+         @click="openEditJson($event.currentTarget.getAttribute('data-ev'))"
+         @keydown.enter="openEditJson($event.currentTarget.getAttribute('data-ev'))"
+         data-ev="{{ ev.ev_json }}">
+  <div class="cal-event-head">
+    <h3>{% if !ev.time.is_empty() %}<span class="cal-ev-time">{{ ev.time }}</span> {% endif %}{{ ev.summary }}</h3>
+  </div>
   <div class="muted text-sm">{{ ev.when }}</div>
   {% if !ev.description.is_empty() %}
   <p class="mt-1 text-sm">{{ ev.description }}</p>

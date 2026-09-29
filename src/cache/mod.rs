@@ -184,6 +184,9 @@ impl Cache {
                 to: String::new(),
                 date: r.get(4)?,
                 has_attachment: r.get::<_, i64>(5)? != 0,
+                message_id: String::new(),
+                in_reply_to: vec![],
+                references: vec![],
             })
         })?;
         Ok(rows.filter_map(Result::ok).collect())
@@ -396,6 +399,45 @@ impl Cache {
                 ))
             })?;
             out.extend(rows.filter_map(Result::ok));
+        }
+        Ok(out)
+    }
+
+    /// Prochains événements (start_raw >= maintenant, limite N).
+    pub fn load_upcoming_events(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(String, String, String, String)>, CacheError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, summary, start_raw, calendar_id FROM cal_events
+             ORDER BY start_raw ASC LIMIT 200",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        let now = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let now_compact = chrono::Local::now().format("%Y%m%d").to_string();
+        let mut out = Vec::new();
+        for row in rows.flatten() {
+            let start = &row.2;
+            let ok = if start.len() >= 10 && start.as_bytes().get(4) == Some(&b'-') {
+                start[..10] >= *now.as_str()
+            } else if start.len() >= 8 {
+                start[..8] >= *now_compact.as_str()
+            } else {
+                true
+            };
+            if ok {
+                out.push(row);
+                if out.len() >= limit {
+                    break;
+                }
+            }
         }
         Ok(out)
     }

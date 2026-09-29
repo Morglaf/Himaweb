@@ -1,80 +1,138 @@
-<section class="compose" x-data='composeForm({{ compose_init|safe }})'>
-  <h1 class="font-display text-2xl mb-4">{{ title }}</h1>
-  {% if let Some(e) = error %}
-  <div class="error-banner mb-3">{{ e }}</div>
-  {% endif %}
-
-  <form method="post" action="/compose/send" class="compose-form">
-    <label>
-      <span>Envoyer depuis</span>
-      <select name="account" class="select w-full" required>
-        {% for a in accounts %}
-        <option value="{{ a.name }}" {% if a.selected %}selected{% endif %}>
-          {{ a.name }}{% if !a.email.is_empty() %} — {{ a.email }}{% endif %}
-        </option>
-        {% else %}
-        <option value="">(aucun compte)</option>
-        {% endfor %}
-      </select>
-    </label>
-
-    <label>
-      <span>À</span>
-      <div class="suggest-wrap">
-        <input type="text" name="to" x-model="to" @input.debounce.200ms="suggest('to')"
-               autocomplete="off" required />
-        <ul class="suggest" x-show="suggestions.to.length > 0" x-cloak>
-          <template x-for="item in suggestions.to" :key="item.email">
-            <li @mousedown.prevent="pick('to', item)" x-text="item.label"></li>
-          </template>
-        </ul>
+<div class="compose-backdrop"
+     :class="'compose-mode-' + windowMode"
+     x-data="composeForm()"
+     x-init="boot()"
+     @keydown.escape.window="onEscape($event)"
+     @click.self="windowMode === 'normal' && goBack()">
+  <div class="modal-panel compose-modal-panel"
+       role="dialog"
+       aria-modal="true"
+       @click.stop
+       :class="'is-' + windowMode">
+    <div class="modal-head" @dblclick="toggleMinimize()">
+      <h2 class="font-display text-xl compose-title" @click="windowMode === 'minimized' && setWindow('docked')">{{ title }}</h2>
+      <div class="compose-window-actions">
+        <button type="button" class="icon-btn" title="Ancrer en bas" @click="setWindow('docked')" x-show="windowMode === 'normal'">
+          <i data-lucide="panel-bottom"></i>
+        </button>
+        <button type="button" class="icon-btn" title="Plein centre" @click="setWindow('normal')" x-show="windowMode !== 'normal'">
+          <i data-lucide="maximize-2"></i>
+        </button>
+        <button type="button" class="icon-btn" title="Réduire" @click="setWindow('minimized')" x-show="windowMode !== 'minimized'">
+          <i data-lucide="minus"></i>
+        </button>
+        <button type="button" class="icon-btn" title="Agrandir" @click="setWindow('docked')" x-show="windowMode === 'minimized'">
+          <i data-lucide="square"></i>
+        </button>
+        <button type="button" class="icon-btn" title="Fermer" @click="goBack()"><i data-lucide="x"></i></button>
       </div>
-    </label>
-
-    <div class="flex gap-2 text-sm mb-2">
-      <button type="button" class="linkish" @click="showCc = !showCc">Cc / Cci</button>
     </div>
 
-    <div x-show="showCc || cc || bcc" x-cloak class="space-y-3">
-      <label>
-        <span>Cc</span>
-        <div class="suggest-wrap">
-          <input type="text" name="cc" x-model="cc" @input.debounce.200ms="suggest('cc')"
-                 autocomplete="off" />
-          <ul class="suggest" x-show="suggestions.cc.length > 0" x-cloak>
-            <template x-for="item in suggestions.cc" :key="item.email">
-              <li @mousedown.prevent="pick('cc', item)" x-text="item.label"></li>
-            </template>
-          </ul>
+    <div class="compose-body" x-show="windowMode !== 'minimized'" x-cloak>
+      {% if let Some(e) = error %}
+      <div class="error-banner mb-3">{{ e }}</div>
+      {% endif %}
+
+      <script type="application/json" id="compose-boot">{{ compose_boot|safe }}</script>
+      <textarea id="compose-body-seed" class="sr-only" readonly>{{ body }}</textarea>
+
+      <template x-if="ai">
+        <div class="ai-fill-box mb-3">
+          <button type="button" class="ai-fill-toggle" @click="aiOpen = !aiOpen; $nextTick(() => lucide.createIcons())" :title="aiOpen ? 'Replier l’IA' : 'Ouvrir l’IA'">
+            <i data-lucide="sparkles"></i>
+            <span x-text="aiOpen ? 'Assistant IA' : 'IA'"></span>
+            <i data-lucide="chevron-up" x-show="aiOpen"></i>
+            <i data-lucide="chevron-down" x-show="!aiOpen"></i>
+          </button>
+          <div class="ai-fill-body" x-show="aiOpen" x-cloak>
+            <label class="block">
+              <span class="label">Décrire avec l’IA</span>
+              <textarea class="input w-full" rows="2" x-model="aiPrompt"
+                        placeholder="Ex. : réponds poliment et propose un créneau mardi matin"></textarea>
+            </label>
+            <button type="button" class="btn secondary mt-2" @click="fillAi()" :disabled="aiBusy"
+                    x-text="aiBusy ? 'Génération…' : 'Remplir le message'"></button>
+            <p class="muted tiny mt-1" x-show="aiError" x-text="aiError"></p>
+          </div>
         </div>
-      </label>
-      <label>
-        <span>Cci</span>
-        <div class="suggest-wrap">
-          <input type="text" name="bcc" x-model="bcc" @input.debounce.200ms="suggest('bcc')"
-                 autocomplete="off" />
-          <ul class="suggest" x-show="suggestions.bcc.length > 0" x-cloak>
-            <template x-for="item in suggestions.bcc" :key="item.email">
-              <li @mousedown.prevent="pick('bcc', item)" x-text="item.label"></li>
-            </template>
-          </ul>
+      </template>
+
+      <form method="post" action="/compose/send" class="space-y-3" @submit="draftBusy = ($event.submitter && $event.submitter.name === 'save_draft')">
+        <label class="block">
+          <span class="label">Envoyer depuis</span>
+          <select class="select w-full" name="account" required>
+            {% for a in accounts %}
+            <option value="{{ a.name }}" {% if a.selected %}selected{% endif %}>
+              {% if !a.email.is_empty() %}{{ a.email }}{% else %}{{ a.name }}{% endif %}
+            </option>
+            {% else %}
+            <option value="" disabled selected>Aucun compte configuré</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="block">
+          <span class="label">À</span>
+          <div class="suggest-wrap">
+            <input class="input w-full" type="text" name="to" x-model="to" @input.debounce.200ms="suggest('to')"
+                   autocomplete="off" required />
+            <ul class="suggest" x-show="suggestions.to.length > 0" x-cloak>
+              <template x-for="item in suggestions.to" :key="item.email">
+                <li @mousedown.prevent="pick('to', item)" x-text="item.label"></li>
+              </template>
+            </ul>
+          </div>
+        </label>
+
+        <div class="btn-row text-sm">
+          <button type="button" class="linkish" @click="showCc = !showCc">Cc / Cci</button>
         </div>
-      </label>
+
+        <div x-show="showCc || cc || bcc" x-cloak class="space-y-3">
+          <label class="block">
+            <span class="label">Cc</span>
+            <div class="suggest-wrap">
+              <input class="input w-full" type="text" name="cc" x-model="cc" @input.debounce.200ms="suggest('cc')"
+                     autocomplete="off" />
+              <ul class="suggest" x-show="suggestions.cc.length > 0" x-cloak>
+                <template x-for="item in suggestions.cc" :key="item.email">
+                  <li @mousedown.prevent="pick('cc', item)" x-text="item.label"></li>
+                </template>
+              </ul>
+            </div>
+          </label>
+          <label class="block">
+            <span class="label">Cci</span>
+            <div class="suggest-wrap">
+              <input class="input w-full" type="text" name="bcc" x-model="bcc" @input.debounce.200ms="suggest('bcc')"
+                     autocomplete="off" />
+              <ul class="suggest" x-show="suggestions.bcc.length > 0" x-cloak>
+                <template x-for="item in suggestions.bcc" :key="item.email">
+                  <li @mousedown.prevent="pick('bcc', item)" x-text="item.label"></li>
+                </template>
+              </ul>
+            </div>
+          </label>
+        </div>
+
+        <label class="block">
+          <span class="label">Sujet</span>
+          <input class="input w-full" type="text" name="subject" x-model="subject" />
+        </label>
+
+        <label class="block">
+          <span class="label">Message</span>
+          <textarea class="input w-full" name="body" rows="10" x-model="body"></textarea>
+        </label>
+
+        <div class="btn-row mt-2">
+          <button type="submit" class="btn">Envoyer</button>
+          <button type="submit" class="btn secondary" formaction="/compose/draft" name="save_draft" value="1"
+                  :disabled="draftBusy" x-text="draftBusy ? 'Enregistrement…' : 'Brouillon'"></button>
+          <button type="button" class="btn ghost" @click="goBack()">Annuler</button>
+        </div>
+      </form>
     </div>
-
-    <label>
-      <span>Sujet</span>
-      <input type="text" name="subject" value="{{ subject }}" />
-    </label>
-
-    <label>
-      <span>Message</span>
-      <textarea name="body" rows="16">{{ body }}</textarea>
-    </label>
-
-    <div class="flex gap-2 mt-4">
-      <button type="submit" class="btn">Envoyer</button>
-      <a href="/" class="btn ghost">Annuler</a>
-    </div>
-  </form>
-</section>
+  </div>
+</div>
+<script>lucide.createIcons()</script>

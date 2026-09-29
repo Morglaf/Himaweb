@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::extract::{Path, Query, State};
-use axum::response::{Html, IntoResponse};
-use axum::routing::get;
-use axum::Router;
+use axum::response::{Html, IntoResponse, Redirect};
+use axum::routing::{get, post};
+use axum::{Form, Router};
 use chrono::{Datelike, Duration, Local, NaiveDate, Weekday};
 use serde::Deserialize;
 
@@ -14,6 +14,9 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/calendar", get(calendar_page))
         .route("/calendar/{id}/events", get(events_fragment))
+        .route("/calendar/create", post(create_event))
+        .route("/calendar/update", post(update_event))
+        .route("/calendar/delete", post(delete_event))
 }
 
 #[derive(Deserialize)]
@@ -24,6 +27,7 @@ pub struct CalQuery {
     pub calendar: Option<String>,
     pub view: Option<String>,
     pub refresh: Option<String>,
+    pub msg: Option<String>,
 }
 
 #[derive(Template)]
@@ -47,7 +51,7 @@ struct ShellTemplate {
 struct CalendarTemplate {
     pub calendula_available: bool,
     pub calendars: Vec<CalRow>,
-    pub account_hints: Vec<String>,
+    pub account_hints: Vec<CalAccountHint>,
     pub current_id: String,
     pub current_id_enc: String,
     pub year: i32,
@@ -66,7 +70,10 @@ struct CalendarTemplate {
     pub week_days: Vec<WeekDayCol>,
     pub events: Vec<EventRow>,
     pub error: Option<String>,
-    pub from_cache: bool,
+    pub flash: Option<String>,
+    pub ai_enabled: bool,
+    pub default_date: String,
+    pub default_calendar: String,
 }
 
 pub struct CalRow {
@@ -74,9 +81,17 @@ pub struct CalRow {
     pub name: String,
 }
 
+pub struct CalAccountHint {
+    pub name: String,
+    pub label: String,
+    pub icon: String,
+    pub color: String,
+}
+
 pub struct EventPreview {
     pub time: String,
     pub title: String,
+    pub ev_json: String,
 }
 
 pub struct DayCell {
@@ -99,11 +114,21 @@ pub struct WeekDayCol {
 
 #[derive(Clone)]
 pub struct EventRow {
+    pub id: String,
+    pub calendar_id: String,
     pub summary: String,
     pub date: String,
+    pub date_iso: String,
+    pub end_iso: String,
+    pub start_time: String,
+    pub end_time: String,
     pub when: String,
     pub time: String,
     pub description: String,
+    pub location: String,
+    pub rrule: String,
+    /// JSON compact pour data-ev (échappé HTML-safe)
+    pub ev_json: String,
 }
 
 const MONTHS_FR: &[&str] = &[
@@ -185,7 +210,17 @@ async fn calendar_page(
         _ => day_events,
     };
 
+    let prefs = state.prefs.lock().await.clone();
     let current_id_enc = urlencoding::encode(&current_id).into_owned();
+    let default_date = format!("{year:04}-{month:02}-{day:02}");
+    let default_calendar = if current_id != "__all__" && !current_id.is_empty() {
+        current_id.clone()
+    } else {
+        calendars
+            .first()
+            .map(|c| c.id.clone())
+            .unwrap_or_default()
+    };
     let inner = CalendarTemplate {
         calendula_available: state.calendula_available,
         calendars,
@@ -208,7 +243,10 @@ async fn calendar_page(
         week_days,
         events: list_events,
         error,
-        from_cache,
+        flash: q.msg,
+        ai_enabled: prefs.ai_enabled,
+        default_date,
+        default_calendar,
     };
 
     let content = match inner.render() {
@@ -241,6 +279,10 @@ async fn calendar_page(
 struct EventsFragment {
     pub events: Vec<EventRow>,
     pub error: Option<String>,
+    pub year: i32,
+    pub month: u32,
+    pub day: u32,
+    pub view: String,
 }
 
 async fn events_fragment(
@@ -252,6 +294,7 @@ async fn events_fragment(
     let year = q.year.unwrap_or(now.year());
     let month = q.month.unwrap_or(now.month());
     let day = q.day.unwrap_or(now.day());
+    let view = q.view.unwrap_or_else(|| "day".into());
 
     let (_cals, _cur, events, error, _hints, _) =
         load_calendar_data(&state, Some(&id), year, month, false).await;
@@ -263,6 +306,10 @@ async fn events_fragment(
     let tpl = EventsFragment {
         events: day_events,
         error,
+        year,
+        month,
+        day,
+        view,
     };
     match tpl.render() {
         Ok(html) => Html(html).into_response(),
@@ -355,14 +402,20 @@ async fn load_calendar_data(
     String,
     Vec<EventRow>,
     Option<String>,
-    Vec<String>,
+    Vec<CalAccountHint>,
     bool,
 ) {
-    let account_hints = crate::calendar_import::list_calendula_accounts()
+    let prefs = state.prefs.lock().await.clone();
+    let account_hints: Vec<CalAccountHint> = crate::calendar_import::list_calendula_accounts()
         .unwrap_or_default()
         .into_iter()
-        .map(|a| a.name)
-        .collect::<Vec<_>>();
+        .map(|a| CalAccountHint {
+            label: prefs.cal_account_label(&a.name),
+            icon: prefs.cal_account_icon(&a.name),
+            color: prefs.cal_account_color(&a.name),
+            name: a.name,
+        })
+        .collect();
 
     if !state.calendula_available {
         return (
@@ -407,8 +460,8 @@ async fn load_calendar_data(
             if !cached_ev.is_empty() {
                 let events: Vec<EventRow> = cached_ev
                     .into_iter()
-                    .map(|(_cid, _id, summary, start, _end, desc)| {
-                        to_event_row(summary, start, desc)
+                    .map(|(cid, id, summary, start, end, desc)| {
+                        with_ev_json(to_event_row(id, cid, summary, start, end, desc))
                     })
                     .collect();
                 return (
@@ -457,7 +510,9 @@ async fn load_calendar_data(
                         .load_events_in_month(&ids, year, month)
                         .unwrap_or_default()
                         .into_iter()
-                        .map(|(_c, _i, s, start, _e, d)| to_event_row(s, start, d))
+                        .map(|(c, i, s, start, e, d)| {
+                            with_ev_json(to_event_row(i, c, s, start, e, d))
+                        })
                         .collect()
                 };
                 return (
@@ -553,7 +608,14 @@ async fn fetch_and_cache_month(
                     let _ = cache.replace_calendar_events(&c.id, &rows);
                 }
                 all_events.extend(list.into_iter().map(|e| {
-                    to_event_row(e.summary, e.date, e.description)
+                    with_ev_json(to_event_row(
+                        e.id,
+                        c.id.clone(),
+                        e.summary,
+                        e.date,
+                        e.end,
+                        e.description,
+                    ))
                 }));
             }
             Err(e) => errs.push(format!("{}: {e}", c.name)),
@@ -580,16 +642,104 @@ pub async fn refresh_calendar_month(
     Ok(cals.len().saturating_add(events.len()))
 }
 
-fn to_event_row(summary: String, date: String, description: String) -> EventRow {
+fn to_event_row(
+    id: String,
+    calendar_id: String,
+    summary: String,
+    date: String,
+    end: String,
+    description: String,
+) -> EventRow {
     let when = format_event_when(&date);
     let time = format_event_time(&date);
+    let date_iso = iso_date(&date);
+    let end_iso = {
+        let e = iso_date(&end);
+        if e.is_empty() {
+            date_iso.clone()
+        } else {
+            e
+        }
+    };
+    let start_time = iso_time(&date);
+    let end_time = {
+        let t = iso_time(&end);
+        if t.is_empty() {
+            start_time.clone()
+        } else {
+            t
+        }
+    };
     EventRow {
+        id,
+        calendar_id,
         summary,
         date,
+        date_iso,
+        end_iso,
+        start_time,
+        end_time,
         when,
         time,
         description,
+        location: String::new(),
+        rrule: String::new(),
+        ev_json: String::new(),
     }
+}
+
+fn with_ev_json(mut e: EventRow) -> EventRow {
+    e.ev_json = serde_json::json!({
+        "id": e.id,
+        "calendar": e.calendar_id,
+        "summary": e.summary,
+        "date": e.date_iso,
+        "endDate": e.end_iso,
+        "startTime": e.start_time,
+        "endTime": e.end_time,
+        "description": e.description,
+        "location": e.location,
+        "rrule": e.rrule,
+    })
+    .to_string();
+    e
+}
+
+fn iso_date(raw: &str) -> String {
+    if let Some(d) = parse_full_date(raw) {
+        return d.format("%Y-%m-%d").to_string();
+    }
+    let t = raw.trim();
+    if t.len() >= 10 && t.as_bytes().get(4) == Some(&b'-') {
+        return t[..10].to_string();
+    }
+    String::new()
+}
+
+fn iso_time(raw: &str) -> String {
+    let t = raw.trim().trim_matches('"');
+    // ISO with T
+    if let Some(pos) = t.find('T') {
+        let rest = &t[pos + 1..];
+        let digits: String = rest
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .take(4)
+            .collect();
+        if digits.len() == 4 {
+            return format!("{}:{}", &digits[..2], &digits[2..]);
+        }
+    }
+    // compact YYYYMMDDHHMM
+    let digits: String = t.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.len() >= 12 {
+        return format!("{}:{}", &digits[8..10], &digits[10..12]);
+    }
+    // already HH:MM
+    if t.len() >= 5 && t.as_bytes().get(2) == Some(&b':') {
+        return t[..5].to_string();
+    }
+    String::new()
 }
 
 fn parse_day(date: &str, year: i32, month: u32) -> Option<u32> {
@@ -676,6 +826,7 @@ fn build_month_grid(year: i32, month: u32, selected_day: u32, events: &[EventRow
             previews.push(EventPreview {
                 time: e.time.clone(),
                 title: e.summary.clone(),
+                ev_json: e.ev_json.clone(),
             });
         }
         let more = list.len().saturating_sub(3) as u32;
@@ -735,4 +886,252 @@ fn days_in_month(year: i32, month: u32) -> u32 {
         .pred_opt()
         .unwrap()
         .day()
+}
+
+#[derive(Deserialize)]
+pub struct CreateEventForm {
+    pub calendar: String,
+    pub summary: String,
+    pub start_date: String,
+    pub start_time: String,
+    pub end_date: Option<String>,
+    pub end_time: Option<String>,
+    pub description: Option<String>,
+    pub location: Option<String>,
+    pub rrule: Option<String>,
+    pub year: Option<i32>,
+    pub month: Option<u32>,
+    pub day: Option<u32>,
+    pub view: Option<String>,
+    /// Si `1` : rester sur la page courante (panneau mail) au lieu d’aller au calendrier
+    pub stay: Option<String>,
+}
+
+async fn create_event(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<CreateEventForm>,
+) -> impl IntoResponse {
+    let stay =
+        form.stay.as_deref() == Some("1") || form.stay.as_deref() == Some("true");
+    let cal = form.calendar.trim();
+    if cal.is_empty() || cal == "__all__" {
+        if stay {
+            return Html(
+                r#"<script>alert('Choisissez un calendrier');</script>"#.to_string(),
+            )
+            .into_response();
+        }
+        return Redirect::to("/calendar?msg=Choisissez%20un%20calendrier").into_response();
+    }
+    let Some(client) = &state.calendula else {
+        if stay {
+            return Html(r#"<script>alert('Calendula absent');</script>"#.to_string())
+                .into_response();
+        }
+        return Redirect::to("/calendar?msg=Calendula%20absent").into_response();
+    };
+    let start = combine_dt(&form.start_date, &form.start_time);
+    let end = combine_dt(
+        form.end_date.as_deref().unwrap_or(&form.start_date),
+        form.end_time.as_deref().unwrap_or(""),
+    );
+    let ical = crate::cli::calendula::CalendulaClient::build_ical(
+        form.summary.trim(),
+        &start,
+        &end,
+        form.description.as_deref().unwrap_or(""),
+        form.location.as_deref().unwrap_or(""),
+        form.rrule.as_deref().unwrap_or("none"),
+    );
+    let _permit = state.cli_limit.acquire().await.ok();
+    let redirect = cal_redirect(
+        cal,
+        form.view.as_deref(),
+        form.year,
+        form.month,
+        form.day,
+    );
+    match client.create_event(cal, ical.as_bytes()).await {
+        Ok(_) => {
+            let now = chrono::Local::now();
+            let y = form.year.unwrap_or_else(|| now.year());
+            let m = form.month.unwrap_or_else(|| now.month());
+            let _ = refresh_calendar_month(&state, y, m).await;
+            if stay {
+                return Html(
+                    r##"<script>
+if (window.HimaWeb) {
+  window.HimaWeb.onQuickEventCreated();
+}
+</script>"##
+                        .to_string(),
+                )
+                .into_response();
+            }
+            Redirect::to(&format!("{redirect}&refresh=1&msg=Événement%20créé")).into_response()
+        }
+        Err(e) => {
+            if stay {
+                let msg = serde_json::to_string(&format!("Erreur: {e}"))
+                    .unwrap_or_else(|_| "\"Erreur\"".into());
+                return Html(format!(r#"<script>alert({msg});</script>"#)).into_response();
+            }
+            let err_s = format!("Erreur: {e}");
+            let msg = urlencoding::encode(&err_s);
+            Redirect::to(&format!("{redirect}&msg={msg}")).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct UpdateEventForm {
+    pub id: String,
+    pub calendar: String,
+    pub summary: String,
+    pub start_date: String,
+    pub start_time: String,
+    pub end_date: Option<String>,
+    pub end_time: Option<String>,
+    pub description: Option<String>,
+    pub location: Option<String>,
+    pub rrule: Option<String>,
+    pub year: Option<i32>,
+    pub month: Option<u32>,
+    pub day: Option<u32>,
+    pub view: Option<String>,
+}
+
+async fn update_event(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<UpdateEventForm>,
+) -> impl IntoResponse {
+    let cal = form.calendar.trim();
+    let id = form.id.trim();
+    if cal.is_empty() || id.is_empty() {
+        return Redirect::to("/calendar?msg=Événement%20incomplet").into_response();
+    }
+    let Some(client) = &state.calendula else {
+        return Redirect::to("/calendar?msg=Calendula%20absent").into_response();
+    };
+    let start = combine_dt(&form.start_date, &form.start_time);
+    let end = combine_dt(
+        form.end_date.as_deref().unwrap_or(&form.start_date),
+        form.end_time.as_deref().unwrap_or(""),
+    );
+    let ical = crate::cli::calendula::CalendulaClient::build_ical(
+        form.summary.trim(),
+        &start,
+        &end,
+        form.description.as_deref().unwrap_or(""),
+        form.location.as_deref().unwrap_or(""),
+        form.rrule.as_deref().unwrap_or("none"),
+    );
+    let _permit = state.cli_limit.acquire().await.ok();
+    let redirect = cal_redirect(
+        cal,
+        form.view.as_deref(),
+        form.year,
+        form.month,
+        form.day,
+    );
+    match client
+        .update_event(cal, id, ical.as_bytes(), None)
+        .await
+    {
+        Ok(()) => {
+            if let (Some(y), Some(m)) = (form.year, form.month) {
+                let _ = refresh_calendar_month(&state, y, m).await;
+            }
+            Redirect::to(&format!("{redirect}&refresh=1&msg=Événement%20modifié")).into_response()
+        }
+        Err(e) => {
+            let err_s = format!("Erreur: {e}");
+            let msg = urlencoding::encode(&err_s);
+            Redirect::to(&format!("{redirect}&msg={msg}")).into_response()
+        }
+    }
+}
+
+fn combine_dt(date: &str, time: &str) -> String {
+    let d = date.trim();
+    let t = time.trim();
+    if d.is_empty() {
+        return String::new();
+    }
+    if t.is_empty() {
+        return d.to_string();
+    }
+    format!("{d} {t}")
+}
+
+#[derive(Deserialize)]
+pub struct DeleteEventForm {
+    pub calendar: String,
+    pub id: String,
+    pub year: Option<i32>,
+    pub month: Option<u32>,
+    pub day: Option<u32>,
+    pub view: Option<String>,
+}
+
+async fn delete_event(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<DeleteEventForm>,
+) -> impl IntoResponse {
+    let Some(client) = &state.calendula else {
+        return Redirect::to("/calendar?msg=Calendula%20absent").into_response();
+    };
+    if form.id.trim().is_empty() || form.calendar.trim().is_empty() {
+        return Redirect::to("/calendar?msg=Événement%20incomplet").into_response();
+    }
+    let _permit = state.cli_limit.acquire().await.ok();
+    let redirect = cal_redirect(
+        form.calendar.trim(),
+        form.view.as_deref(),
+        form.year,
+        form.month,
+        form.day,
+    );
+    match client
+        .delete_event(form.calendar.trim(), form.id.trim())
+        .await
+    {
+        Ok(()) => {
+            if let (Some(y), Some(m)) = (form.year, form.month) {
+                let _ = refresh_calendar_month(&state, y, m).await;
+            }
+            Redirect::to(&format!("{redirect}&refresh=1&msg=Événement%20supprimé")).into_response()
+        }
+        Err(e) => {
+            let err_s = format!("Erreur: {e}");
+            let msg = urlencoding::encode(&err_s);
+            Redirect::to(&format!("{redirect}&msg={msg}")).into_response()
+        }
+    }
+}
+
+fn cal_redirect(
+    calendar: &str,
+    view: Option<&str>,
+    year: Option<i32>,
+    month: Option<u32>,
+    day: Option<u32>,
+) -> String {
+    let mut url = format!(
+        "/calendar?calendar={}",
+        urlencoding::encode(calendar)
+    );
+    if let Some(v) = view {
+        url.push_str(&format!("&view={v}"));
+    }
+    if let Some(y) = year {
+        url.push_str(&format!("&year={y}"));
+    }
+    if let Some(m) = month {
+        url.push_str(&format!("&month={m}"));
+    }
+    if let Some(d) = day {
+        url.push_str(&format!("&day={d}"));
+    }
+    url
 }

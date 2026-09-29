@@ -27,8 +27,17 @@ regex = "1"
 urlencoding = "2"
 toml = "0.8"
 toml_edit = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+uuid = { version = "1", features = ["v4"] }
+winreg = "0.55"
+tray-icon = "0.19"
+muda = "0.15"
+open = "5"
 
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }

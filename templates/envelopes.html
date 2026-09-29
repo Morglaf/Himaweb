@@ -9,18 +9,21 @@
 {% endif %}
 
 {% for e in envelopes %}
-<button type="button" class="envelope {% if e.unread %}unread{% endif %}"
-        data-id="{{ e.id }}" data-account="{{ e.account }}"
+<button type="button" class="envelope {% if e.unread %}unread{% endif %} {% if e.thread_count > 1 %}is-thread{% endif %}"
+        data-id="{{ e.id }}" data-account="{{ e.account }}" data-mailbox="{{ mailbox }}"
         style="{% if !e.color.is_empty() %}border-left: 3px solid {{ e.color }};{% endif %}"
-        hx-get="/partials/message?mailbox={{ mailbox_enc }}&id={{ e.id }}{% if !e.account.is_empty() %}&account={{ e.account_enc }}{% endif %}"
+        hx-get="/partials/message?mailbox={{ mailbox_enc }}&id={{ e.id }}{% if !e.account.is_empty() %}&account={{ e.account_enc }}{% endif %}{% if e.thread_count > 1 %}&thread={{ e.thread_ids_enc }}{% endif %}"
         hx-target="#message-pane"
         hx-swap="innerHTML"
         hx-on::after-request="lucide.createIcons()">
   <div class="env-avatar" aria-hidden="true" {% if !e.color.is_empty() %}style="background: {{ e.color }}"{% endif %}>{{ e.from_initial }}</div>
   <div class="env-main">
     <div class="env-top">
-      <span class="from">{% if e.unread %}<strong>{% endif %}{{ e.from }}{% if e.unread %}</strong>{% endif %}</span>
-      <span class="date">{{ e.date_short }}</span>
+      <span class="from">{% if e.unread %}<strong>{% endif %}{% if e.thread_count > 1 && !e.participants.is_empty() %}{{ e.participants }}{% else %}{{ e.from }}{% endif %}{% if e.unread %}</strong>{% endif %}</span>
+      <span class="env-meta-right">
+        {% if e.thread_count > 1 %}<span class="thread-badge" title="Conversation">{{ e.thread_count }}</span>{% endif %}
+        <span class="date">{{ e.date_short }}</span>
+      </span>
     </div>
     {% if all_mode && !e.account.is_empty() %}
     <div class="env-account muted tiny">
@@ -30,6 +33,7 @@
     {% endif %}
     <div class="subject">
       {% if e.has_attachment %}<i data-lucide="paperclip" class="att-ico"></i>{% endif %}
+      {% if e.thread_count > 1 %}<i data-lucide="messages-square" class="att-ico"></i>{% endif %}
       {{ e.subject }}
     </div>
   </div>

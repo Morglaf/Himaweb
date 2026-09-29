@@ -2,12 +2,13 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::extract::{Query, State};
-use axum::response::{Html, IntoResponse, Json};
-use axum::routing::get;
-use axum::Router;
+use axum::response::{Html, IntoResponse, Json, Redirect};
+use axum::routing::{get, post};
+use axum::{Form, Router};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::cli::cardamum::CardamumClient;
 use crate::state::AppState;
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -15,6 +16,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/contacts", get(contacts_page))
         .route("/api/contacts/suggest", get(suggest))
         .route("/api/contacts/list", get(list_api))
+        .route("/contacts/create", post(create_contact))
+        .route("/contacts/delete", post(delete_contact))
 }
 
 #[derive(Template)]
@@ -45,13 +48,16 @@ struct ContactsTemplate {
     pub source: String,
     pub cardamum_available: bool,
     pub error: Option<String>,
+    pub flash: Option<String>,
 }
 
 pub struct ContactRow {
+    pub id: String,
     pub name: String,
     pub email: String,
     pub initial: String,
     pub book: String,
+    pub book_ref: String,
 }
 
 pub struct BookOpt {
@@ -65,6 +71,7 @@ pub struct ListQuery {
     pub q: Option<String>,
     pub book: Option<String>,
     pub refresh: Option<String>,
+    pub msg: Option<String>,
 }
 
 async fn contacts_page(
@@ -88,6 +95,7 @@ async fn contacts_page(
         source,
         cardamum_available: state.cardamum_available,
         error,
+        flash: q.msg,
     };
     let content = match inner.render() {
         Ok(c) => c,
@@ -111,6 +119,16 @@ async fn contacts_page(
     match shell.render() {
         Ok(html) => Html(html).into_response(),
         Err(e) => Html(format!("<pre>{e}</pre>")).into_response(),
+    }
+}
+
+fn book_ref(account: &str, book: &str) -> String {
+    if account.is_empty() {
+        book.to_string()
+    } else if book.contains("::") {
+        book.to_string()
+    } else {
+        format!("{account}::{book}")
     }
 }
 
@@ -144,15 +162,13 @@ async fn load_contacts(
         cache.contacts_count().unwrap_or(0)
     };
 
-    // Cache-first pour « tous » si on a déjà des contacts
     if !force_refresh && (book == "__all__" || book.is_empty()) && cache_count > 0 {
         let all = load_all_cached(state).await;
         let contacts: Vec<_> = all
             .into_iter()
             .filter(|(email, name)| filter(name, email))
-            .map(|(email, name)| to_row(name, email, String::new()))
+            .map(|(email, name)| to_row(String::new(), name, email, String::new(), String::new()))
             .collect();
-        // Refresh en arrière-plan
         let bg = Arc::clone(state);
         tokio::spawn(async move {
             let _ = refresh_contacts_into_cache(&bg).await;
@@ -210,7 +226,10 @@ async fn load_contacts(
                 let contacts: Vec<_> = items
                     .into_iter()
                     .filter(|c| filter(&c.name, &c.email))
-                    .map(|c| to_row(c.name, c.email, c.addressbook))
+                    .map(|c| {
+                        let bref = book_ref(&c.account, &c.addressbook);
+                        to_row(c.id, c.name, c.email, c.addressbook, bref)
+                    })
                     .collect();
                 return (contacts, books, "cardamum".into(), None);
             }
@@ -220,7 +239,9 @@ async fn load_contacts(
                     let contacts: Vec<_> = all
                         .into_iter()
                         .filter(|(email, name)| filter(name, email))
-                        .map(|(email, name)| to_row(name, email, String::new()))
+                        .map(|(email, name)| {
+                            to_row(String::new(), name, email, String::new(), String::new())
+                        })
                         .collect();
                     return (
                         contacts,
@@ -241,7 +262,9 @@ async fn load_contacts(
                 let contacts: Vec<_> = all
                     .into_iter()
                     .filter(|(email, name)| filter(name, email))
-                    .map(|(email, name)| to_row(name, email, String::new()))
+                    .map(|(email, name)| {
+                        to_row(String::new(), name, email, String::new(), String::new())
+                    })
                     .collect();
                 return (
                     contacts,
@@ -257,7 +280,7 @@ async fn load_contacts(
     let contacts: Vec<_> = all
         .into_iter()
         .filter(|(email, name)| filter(name, email))
-        .map(|(email, name)| to_row(name, email, String::new()))
+        .map(|(email, name)| to_row(String::new(), name, email, String::new(), String::new()))
         .collect();
     let err = if contacts.is_empty() {
         Some(
@@ -270,7 +293,7 @@ async fn load_contacts(
     (contacts, books, "cache".into(), err)
 }
 
-fn to_row(name: String, email: String, book: String) -> ContactRow {
+fn to_row(id: String, name: String, email: String, book: String, book_ref: String) -> ContactRow {
     let initial = name
         .chars()
         .next()
@@ -279,10 +302,12 @@ fn to_row(name: String, email: String, book: String) -> ContactRow {
         .to_uppercase()
         .to_string();
     ContactRow {
+        id,
         name,
         email,
         initial,
         book,
+        book_ref,
     }
 }
 
@@ -341,6 +366,7 @@ async fn list_api(
         "source": source,
         "error": error,
         "items": contacts.into_iter().map(|c| json!({
+            "id": c.id,
             "name": c.name,
             "email": c.email,
             "label": if c.name.is_empty() { c.email.clone() } else { format!("{} <{}>", c.name, c.email) }
@@ -418,4 +444,81 @@ async fn suggest(
     }
 
     Json(json!({ "items": [], "disabled": !state.cardamum_available })).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct CreateContactForm {
+    pub book: String,
+    pub name: String,
+    pub email: String,
+    pub tel: Option<String>,
+}
+
+async fn create_contact(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<CreateContactForm>,
+) -> impl IntoResponse {
+    let Some(client) = &state.cardamum else {
+        return Redirect::to("/contacts?msg=Cardamum%20absent").into_response();
+    };
+    let book = form.book.trim();
+    if book.is_empty() || book == "__all__" {
+        return Redirect::to("/contacts?msg=Choisissez%20un%20carnet").into_response();
+    }
+    let vcard = CardamumClient::build_vcard(
+        form.name.trim(),
+        form.email.trim(),
+        form.tel.as_deref().unwrap_or(""),
+    );
+    let _permit = state.cli_limit.acquire().await.ok();
+    match client.create_card(book, vcard.as_bytes()).await {
+        Ok(()) => {
+            let _ = refresh_contacts_into_cache(&state).await;
+            Redirect::to(&format!(
+                "/contacts?book={}&refresh=1&msg=Contact%20créé",
+                urlencoding::encode(book)
+            ))
+            .into_response()
+        }
+        Err(e) => {
+            let err_s = format!("Erreur: {e}");
+            let msg = urlencoding::encode(&err_s);
+            Redirect::to(&format!("/contacts?book={}&msg={msg}", urlencoding::encode(book)))
+                .into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct DeleteContactForm {
+    pub book: String,
+    pub id: String,
+}
+
+async fn delete_contact(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<DeleteContactForm>,
+) -> impl IntoResponse {
+    let Some(client) = &state.cardamum else {
+        return Redirect::to("/contacts?msg=Cardamum%20absent").into_response();
+    };
+    if form.id.trim().is_empty() || form.book.trim().is_empty() {
+        return Redirect::to("/contacts?msg=Contact%20incomplet").into_response();
+    }
+    let _permit = state.cli_limit.acquire().await.ok();
+    match client.delete_card(form.book.trim(), form.id.trim()).await {
+        Ok(()) => {
+            let _ = refresh_contacts_into_cache(&state).await;
+            Redirect::to(&format!(
+                "/contacts?book={}&refresh=1&msg=Contact%20supprimé",
+                urlencoding::encode(form.book.trim())
+            ))
+            .into_response()
+        }
+        Err(e) => {
+            let err_s = format!("Erreur: {e}");
+            let msg = urlencoding::encode(&err_s);
+            Redirect::to(&format!("/contacts?msg={msg}")).into_response()
+        }
+    }
 }

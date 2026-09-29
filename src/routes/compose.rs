@@ -15,6 +15,7 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/compose", get(compose_get))
         .route("/compose/send", post(compose_send))
+        .route("/compose/draft", post(compose_draft))
 }
 
 #[derive(Deserialize)]
@@ -24,6 +25,10 @@ pub struct ComposeQuery {
     pub id: Option<String>,
     pub account: Option<String>,
     pub to: Option<String>,
+    pub body: Option<String>,
+    pub subject: Option<String>,
+    /// Si `1` : fragment seul (overlay mail), sans shell
+    pub embed: Option<String>,
 }
 
 #[derive(Template)]
@@ -38,7 +43,8 @@ struct ComposeTemplate {
     pub accounts: Vec<AccountOpt>,
     pub selected_account: String,
     pub cardamum_available: bool,
-    pub compose_init: String,
+    /// JSON meta sans le corps (évite de casser x-data)
+    pub compose_boot: String,
     pub error: Option<String>,
 }
 
@@ -46,6 +52,8 @@ pub struct AccountOpt {
     pub name: String,
     pub email: String,
     pub selected: bool,
+    pub icon: String,
+    pub color: String,
 }
 
 #[derive(Template)]
@@ -89,6 +97,12 @@ async fn compose_get(
     if let Some(to) = q.to.filter(|s| !s.is_empty()) {
         draft.to = to;
     }
+    if let Some(body) = q.body.filter(|s| !s.is_empty()) {
+        draft.body = body;
+    }
+    if let Some(subject) = q.subject.filter(|s| !s.is_empty()) {
+        draft.subject = subject;
+    }
 
     if !matches!(kind, ComposeKind::New) {
         if let Some(id) = q.id.as_deref() {
@@ -111,23 +125,28 @@ async fn compose_get(
                         .await
                     {
                         draft.subject = match kind {
-                            ComposeKind::Forward => format!("Fwd: {}", msg.subject),
-                            _ => format!("Re: {}", msg.subject),
+                            ComposeKind::Forward => {
+                                format!("Fwd: {}", crate::cli::himalaya::decode_rfc2047(&msg.subject))
+                            }
+                            _ => format!("Re: {}", crate::cli::himalaya::decode_rfc2047(&msg.subject)),
                         };
                         if !matches!(kind, ComposeKind::Forward) {
-                            draft.to = msg.from.clone();
+                            draft.to = crate::cli::himalaya::normalize_addr_header(&msg.from);
                         }
                         if matches!(kind, ComposeKind::ReplyAll) {
-                            draft.cc = msg.cc.clone();
+                            draft.cc = crate::cli::himalaya::normalize_addr_header(&msg.cc);
                         }
                         let body_src = if msg.body_text.is_empty() {
-                            "(voir HTML)"
+                            "(voir HTML)".to_string()
                         } else {
-                            msg.body_text.as_str()
+                            crate::cli::himalaya::decode_quoted_printable(&msg.body_text)
                         };
                         draft.body = format!(
                             "\n\n----- Message original -----\nDe: {}\nDate: {}\nSujet: {}\n\n{}",
-                            msg.from, msg.date, msg.subject, body_src
+                            crate::cli::himalaya::decode_rfc2047(&msg.from),
+                            msg.date,
+                            crate::cli::himalaya::decode_rfc2047(&msg.subject),
+                            body_src
                         );
                     } else {
                         error = Some(e.to_string());
@@ -156,25 +175,31 @@ async fn compose_get(
         preferred
     };
 
-    let compose_init = serde_json::json!({
+    let compose_boot = serde_json::json!({
         "cardamum": state.cardamum_available,
+        "ai": prefs_snap.ai_enabled,
+        "kind": match kind {
+            ComposeKind::Reply | ComposeKind::ReplyAll => "reply",
+            _ => "compose",
+        },
         "to": draft.to,
         "cc": draft.cc,
         "bcc": draft.bcc,
+        "subject": draft.subject,
     })
     .to_string();
 
     let inner = ComposeTemplate {
         title: title.into(),
-        to: draft.to,
-        cc: draft.cc,
-        bcc: draft.bcc,
-        subject: draft.subject,
+        to: draft.to.clone(),
+        cc: draft.cc.clone(),
+        bcc: draft.bcc.clone(),
+        subject: draft.subject.clone(),
         body: draft.body,
         accounts,
         selected_account,
         cardamum_available: state.cardamum_available,
-        compose_init,
+        compose_boot,
         error,
     };
 
@@ -182,6 +207,12 @@ async fn compose_get(
         Ok(c) => c,
         Err(e) => format!("<pre>{e}</pre>"),
     };
+
+    let embed =
+        q.embed.as_deref() == Some("1") || q.embed.as_deref() == Some("true");
+    if embed {
+        return Html(content).into_response();
+    }
 
     let (theme, layout) = state.theme_layout().await;
     let shell = ShellTemplate {
@@ -204,6 +235,7 @@ async fn compose_get(
 }
 
 async fn load_account_opts(state: &AppState, preferred: &str) -> Vec<AccountOpt> {
+    let prefs = state.prefs.lock().await.clone();
     let editable = crate::accounts_config::list_editable_accounts().unwrap_or_default();
     let list = if state.himalaya_available {
         let _permit = state.cli_limit.acquire().await.ok();
@@ -243,10 +275,14 @@ async fn load_account_opts(state: &AppState, preferred: &str) -> Vec<AccountOpt>
             } else {
                 is_default
             };
+            let icon = prefs.account_icon(&name);
+            let color = prefs.account_color(&name);
             AccountOpt {
                 name,
                 email,
                 selected,
+                icon,
+                color,
             }
         })
         .collect()
@@ -266,9 +302,44 @@ async fn compose_send(
     State(state): State<Arc<AppState>>,
     Form(form): Form<SendForm>,
 ) -> impl IntoResponse {
-    if form.to.trim().is_empty() {
-        return Html(r#"<div class="error">Destinataire requis</div>"#).into_response();
-    }
+    let to = match crate::cli::himalaya::smtp_address_list(&form.to) {
+        Ok(t) => t,
+        Err(e) => {
+            return Html(format!(r#"<div class="error">Destinataire : {e}</div>
+               <p><a href="javascript:history.back()">Retour</a></p>"#))
+                .into_response();
+        }
+    };
+    let cc = form
+        .cc
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| crate::cli::himalaya::smtp_address_list(s))
+        .transpose();
+    let cc = match cc {
+        Ok(v) => v,
+        Err(e) => {
+            return Html(format!(r#"<div class="error">Cc : {e}</div>
+               <p><a href="javascript:history.back()">Retour</a></p>"#))
+                .into_response();
+        }
+    };
+    let bcc = form
+        .bcc
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| crate::cli::himalaya::smtp_address_list(s))
+        .transpose();
+    let bcc = match bcc {
+        Ok(v) => v,
+        Err(e) => {
+            return Html(format!(r#"<div class="error">Cci : {e}</div>
+               <p><a href="javascript:history.back()">Retour</a></p>"#))
+                .into_response();
+        }
+    };
 
     let account = form
         .account
@@ -278,22 +349,50 @@ async fn compose_send(
         .map(str::to_string)
         .or(state.account().await);
 
+    let from_header = account
+        .as_deref()
+        .and_then(|name| {
+            crate::accounts_config::list_editable_accounts()
+                .ok()
+                .and_then(|list| list.into_iter().find(|a| a.name == name))
+        })
+        .map(|a| {
+            if a.display_name.is_empty() {
+                a.email.clone()
+            } else if a.email.is_empty() {
+                a.display_name.clone()
+            } else {
+                format!("{} <{}>", a.display_name, a.email)
+            }
+        })
+        .filter(|s| s.contains('@'));
+
+    let form_norm = SendForm {
+        account: account.clone(),
+        to: to.clone(),
+        cc: cc.clone(),
+        bcc: bcc.clone(),
+        subject: form.subject.clone(),
+        body: form.body.clone(),
+    };
+
     let _permit = state.cli_limit.acquire().await.ok();
     match state
         .himalaya
         .send_message(
-            form.to.trim(),
-            form.cc.as_deref(),
-            form.bcc.as_deref(),
+            &to,
+            cc.as_deref(),
+            bcc.as_deref(),
             &form.subject,
             &form.body,
             account.as_deref(),
+            from_header.as_deref(),
         )
         .await
     {
         Ok(()) => Redirect::to("/").into_response(),
         Err(e) => {
-            let eml = build_eml(&form);
+            let eml = build_eml(&form_norm, from_header.as_deref());
             match state
                 .himalaya
                 .send_raw_eml(eml.as_bytes(), account.as_deref())
@@ -302,7 +401,7 @@ async fn compose_send(
                 Ok(()) => Redirect::to("/").into_response(),
                 Err(e2) => Html(format!(
                     r#"<div class="error">Envoi échoué: {e} / {e2}</div>
-               <p><a href="/compose">Retour</a></p>"#
+               <p><a href="javascript:history.back()">Retour</a></p>"#
                 ))
                 .into_response(),
             }
@@ -310,8 +409,134 @@ async fn compose_send(
     }
 }
 
-fn build_eml(form: &SendForm) -> String {
+async fn compose_draft(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<SendForm>,
+) -> impl IntoResponse {
+    let to = match crate::cli::himalaya::smtp_address_list(&form.to) {
+        Ok(t) => t,
+        Err(e) => {
+            return Html(format!(
+                r#"<div class="error">Destinataire : {e}</div>
+               <p><a href="javascript:history.back()">Retour</a></p>"#
+            ))
+            .into_response();
+        }
+    };
+    let cc = form
+        .cc
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| crate::cli::himalaya::smtp_address_list(s))
+        .transpose();
+    let cc = match cc {
+        Ok(v) => v,
+        Err(e) => {
+            return Html(format!(
+                r#"<div class="error">Cc : {e}</div>
+               <p><a href="javascript:history.back()">Retour</a></p>"#
+            ))
+            .into_response();
+        }
+    };
+    let bcc = form
+        .bcc
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| crate::cli::himalaya::smtp_address_list(s))
+        .transpose();
+    let bcc = match bcc {
+        Ok(v) => v,
+        Err(e) => {
+            return Html(format!(
+                r#"<div class="error">Cci : {e}</div>
+               <p><a href="javascript:history.back()">Retour</a></p>"#
+            ))
+            .into_response();
+        }
+    };
+
+    let account = form
+        .account
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != ACCOUNT_ALL)
+        .map(str::to_string)
+        .or(state.account().await);
+
+    let editable = crate::accounts_config::list_editable_accounts().unwrap_or_default();
+    let drafts_mailbox = account
+        .as_deref()
+        .and_then(|name| editable.iter().find(|a| a.name == name))
+        .map(|a| a.drafts_alias.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "drafts".into());
+
+    let from_header = account
+        .as_deref()
+        .and_then(|name| editable.into_iter().find(|a| a.name == name))
+        .map(|a| {
+            if a.display_name.is_empty() {
+                a.email.clone()
+            } else if a.email.is_empty() {
+                a.display_name.clone()
+            } else {
+                format!("{} <{}>", a.display_name, a.email)
+            }
+        })
+        .filter(|s| s.contains('@'));
+
+    let form_norm = SendForm {
+        account: account.clone(),
+        to: to.clone(),
+        cc: cc.clone(),
+        bcc: bcc.clone(),
+        subject: form.subject.clone(),
+        body: form.body.clone(),
+    };
+
+    let _permit = state.cli_limit.acquire().await.ok();
+    let saved = state
+        .himalaya
+        .save_draft(
+            &to,
+            cc.as_deref(),
+            bcc.as_deref(),
+            &form.subject,
+            &form.body,
+            account.as_deref(),
+            from_header.as_deref(),
+            &drafts_mailbox,
+        )
+        .await;
+
+    match saved {
+        Ok(()) => Redirect::to("/?msg=Brouillon%20enregistré").into_response(),
+        Err(e) => {
+            let eml = build_eml(&form_norm, from_header.as_deref());
+            match state
+                .himalaya
+                .save_raw_draft(eml.as_bytes(), &drafts_mailbox, account.as_deref())
+                .await
+            {
+                Ok(()) => Redirect::to("/?msg=Brouillon%20enregistré").into_response(),
+                Err(e2) => Html(format!(
+                    r#"<div class="error">Brouillon échoué: {e} / {e2}</div>
+               <p><a href="javascript:history.back()">Retour</a></p>"#
+                ))
+                .into_response(),
+            }
+        }
+    }
+}
+
+fn build_eml(form: &SendForm, from: Option<&str>) -> String {
     let mut headers = String::new();
+    if let Some(from) = from.filter(|s| !s.trim().is_empty()) {
+        headers.push_str(&format!("From: {}\r\n", from.trim()));
+    }
     headers.push_str(&format!("To: {}\r\n", form.to.trim()));
     if let Some(cc) = &form.cc {
         if !cc.trim().is_empty() {

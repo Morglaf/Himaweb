@@ -11,6 +11,7 @@ pub struct CardamumClient {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContactSuggest {
+    pub id: String,
     pub name: String,
     pub email: String,
     pub addressbook: String,
@@ -228,6 +229,14 @@ impl CardamumClient {
 
         let mut out = Vec::new();
         for item in arr {
+            let card_id = item
+                .get("id")
+                .map(|x| match x {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
             let name = item
                 .get("fn")
                 .or_else(|| item.get("fn_value"))
@@ -255,6 +264,7 @@ impl CardamumClient {
                 // Afficher quand même les fiches sans email (fn seulement)
                 if !name.is_empty() {
                     out.push(ContactSuggest {
+                        id: card_id.clone(),
                         name: name.clone(),
                         email: String::new(),
                         addressbook: book.to_string(),
@@ -264,6 +274,7 @@ impl CardamumClient {
             } else {
                 for email in emails {
                     out.push(ContactSuggest {
+                        id: card_id.clone(),
                         name: name.clone(),
                         email,
                         addressbook: book.to_string(),
@@ -273,6 +284,126 @@ impl CardamumClient {
             }
         }
         out
+    }
+
+    pub async fn read_card(
+        &self,
+        book_ref: &str,
+        card_id: &str,
+    ) -> CliResult<(String, Option<String>)> {
+        let (account, book_id) = split_ref(book_ref);
+        let mut owned = Vec::new();
+        if let Some(a) = account.as_deref() {
+            owned.push("--account".into());
+            owned.push(a.to_string());
+        }
+        owned.extend([
+            "card".into(),
+            "read".into(),
+            "-k".into(),
+            book_id,
+            card_id.to_string(),
+        ]);
+        let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        let v = self.runner.run_json(&self.bin, &refs).await?;
+        let contents = v
+            .get("contents")
+            .or_else(|| v.get("content"))
+            .or_else(|| v.get("vcard"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let etag = v
+            .get("etag")
+            .and_then(|x| x.as_str())
+            .map(str::to_string);
+        Ok((contents, etag))
+    }
+
+    pub async fn create_card(&self, book_ref: &str, vcard: &[u8]) -> CliResult<()> {
+        let (account, book_id) = split_ref(book_ref);
+        let mut owned = Vec::new();
+        if let Some(a) = account.as_deref() {
+            owned.push("--account".into());
+            owned.push(a.to_string());
+        }
+        owned.extend([
+            "card".into(),
+            "create".into(),
+            "-k".into(),
+            book_id,
+            "-".into(),
+        ]);
+        let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        self.runner
+            .run_with_stdin(&self.bin, &refs, vcard)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_card(
+        &self,
+        book_ref: &str,
+        card_id: &str,
+        vcard: &[u8],
+        etag: Option<&str>,
+    ) -> CliResult<()> {
+        let (account, book_id) = split_ref(book_ref);
+        let mut owned = Vec::new();
+        if let Some(a) = account.as_deref() {
+            owned.push("--account".into());
+            owned.push(a.to_string());
+        }
+        owned.extend(["card".into(), "update".into(), "-k".into(), book_id]);
+        if let Some(e) = etag.filter(|s| !s.is_empty()) {
+            owned.push("--if-match".into());
+            owned.push(e.to_string());
+        }
+        owned.push(card_id.to_string());
+        owned.push("-".into());
+        let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        self.runner
+            .run_with_stdin(&self.bin, &refs, vcard)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_card(&self, book_ref: &str, card_id: &str) -> CliResult<()> {
+        let (account, book_id) = split_ref(book_ref);
+        let mut owned = Vec::new();
+        if let Some(a) = account.as_deref() {
+            owned.push("--account".into());
+            owned.push(a.to_string());
+        }
+        owned.extend([
+            "card".into(),
+            "delete".into(),
+            "-k".into(),
+            book_id,
+            card_id.to_string(),
+        ]);
+        let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        self.runner.run_json(&self.bin, &refs).await?;
+        Ok(())
+    }
+
+    /// Construit une vCard 3.0 minimale.
+    pub fn build_vcard(fn_name: &str, email: &str, tel: &str) -> String {
+        let uid = uuid::Uuid::new_v4();
+        let mut lines = vec![
+            "BEGIN:VCARD".into(),
+            "VERSION:3.0".into(),
+            format!("UID:{uid}"),
+            format!("FN:{}", escape_vcard(fn_name)),
+        ];
+        if !email.trim().is_empty() {
+            lines.push(format!("EMAIL:{}", escape_vcard(email.trim())));
+        }
+        if !tel.trim().is_empty() {
+            lines.push(format!("TEL:{}", escape_vcard(tel.trim())));
+        }
+        lines.push("END:VCARD".into());
+        lines.join("\r\n")
     }
 
     pub async fn suggest(&self, query: &str) -> CliResult<Vec<ContactSuggest>> {
@@ -319,4 +450,11 @@ fn looks_like_gal_id(id: &str) -> bool {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
     has_dot && no_slash && mostly_dns && !id.contains("6650")
+}
+
+fn escape_vcard(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace(',', "\\,")
+        .replace(';', "\\;")
 }

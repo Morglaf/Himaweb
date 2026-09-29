@@ -27,15 +27,25 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/settings/account/delete", post(delete_mail_account))
         .route("/settings/folders", post(save_folders))
         .route("/settings/notify", post(save_notify))
+        .route("/settings/conversations", post(toggle_conversations))
         .route("/settings/thunderbird/import", post(import_thunderbird))
         .route("/settings/calendar/import", post(import_calendar))
         .route("/settings/calendar/add", post(add_caldav))
         .route("/settings/calendar/password", post(set_calendula_password))
         .route("/settings/calendar/delete", post(delete_cal_account))
+        .route("/settings/calendar/colors", post(save_cal_colors))
         .route("/settings/contacts/import", post(import_contacts))
         .route("/settings/contacts/add", post(add_carddav))
         .route("/settings/contacts/password", post(set_cardamum_password))
         .route("/settings/contacts/delete", post(delete_card_account))
+        .route("/settings/ortie/auth", post(ortie_auth))
+        .route("/settings/neverest/sync", post(neverest_sync))
+        .route("/settings/mirador/watch", post(mirador_watch))
+        .route("/settings/plugins/install", post(plugins_install))
+        .route("/settings/plugins/remove", post(plugins_remove))
+        .route("/settings/ntfy", post(save_ntfy))
+        .route("/settings/ai", post(save_ai))
+        .route("/settings/ai/models", post(list_ai_models))
 }
 
 #[derive(Template)]
@@ -71,7 +81,7 @@ struct SettingsTemplate {
     pub cardamum_path: String,
     pub cardamum_exists: bool,
     pub accounts: Vec<AccountRow>,
-    pub editable: Vec<AccountEdit>,
+    pub editable: Vec<EditableAccountRow>,
     pub cardamum_accounts: Vec<CardamumAccountEdit>,
     pub calendula_accounts: Vec<CalendulaAccountEdit>,
     pub account_order: Vec<String>,
@@ -89,9 +99,41 @@ struct SettingsTemplate {
     pub contacts_message: Option<String>,
     pub notifications: bool,
     pub merged_inbox: bool,
+    pub conversations: bool,
+    pub side_widget: bool,
+    pub side_widget_events: u16,
     pub himalaya_available: bool,
     pub calendula_available: bool,
     pub cardamum_available: bool,
+    pub ortie_available: bool,
+    pub neverest_available: bool,
+    pub mirador_available: bool,
+    pub mirador_enabled: bool,
+    pub ortie_message: Option<String>,
+    pub neverest_message: Option<String>,
+    pub mirador_message: Option<String>,
+    pub plugins_dir: String,
+    pub plugins: Vec<PluginRow>,
+    pub plugins_message: Option<String>,
+    pub ntfy_enabled: bool,
+    pub ntfy_server: String,
+    pub ntfy_topic: String,
+    pub ai_enabled: bool,
+    pub ai_provider: String,
+    pub ai_endpoint: String,
+    pub ai_model: String,
+    pub ai_remote_endpoint: String,
+    pub ai_api_key: String,
+    pub ai_api_key_set: bool,
+    pub ai_gemini_model: String,
+    pub ai_message: Option<String>,
+    pub cal_color_accounts: Vec<ColorAccountRow>,
+}
+
+pub struct PluginRow {
+    pub id: String,
+    pub name: String,
+    pub description: String,
 }
 
 pub struct MoveDefaultRow {
@@ -125,6 +167,73 @@ pub struct FolderPrefRow {
     pub watched: bool,
 }
 
+/// Compte éditable + dossiers IMAP pour les menus d’alias (poubelle, etc.).
+pub struct EditableAccountRow {
+    pub name: String,
+    pub email: String,
+    pub display_name: String,
+    pub imap_server: String,
+    pub imap_user: String,
+    pub smtp_server: String,
+    pub smtp_user: String,
+    pub is_default: bool,
+    pub has_imap_password: bool,
+    pub has_smtp_password: bool,
+    pub trash_alias: String,
+    pub sent_alias: String,
+    pub drafts_alias: String,
+    pub mailboxes: Vec<MailboxAliasChoice>,
+    /// Pref HimaWeb : pas de UID MOVE (COPY + purge)
+    pub copy_move: bool,
+}
+
+pub struct MailboxAliasChoice {
+    pub name: String,
+    pub is_trash: bool,
+    pub is_sent: bool,
+    pub is_drafts: bool,
+}
+
+impl EditableAccountRow {
+    fn from_edit(a: AccountEdit, mailbox_names: Vec<String>, copy_move: bool) -> Self {
+        let mut names = mailbox_names;
+        for alias in [&a.trash_alias, &a.sent_alias, &a.drafts_alias] {
+            let alias = alias.trim();
+            if !alias.is_empty()
+                && !names.iter().any(|m| m.eq_ignore_ascii_case(alias))
+            {
+                names.insert(0, alias.to_string());
+            }
+        }
+        let mailboxes = names
+            .into_iter()
+            .map(|name| MailboxAliasChoice {
+                is_trash: name.eq_ignore_ascii_case(&a.trash_alias),
+                is_sent: name.eq_ignore_ascii_case(&a.sent_alias),
+                is_drafts: name.eq_ignore_ascii_case(&a.drafts_alias),
+                name,
+            })
+            .collect();
+        Self {
+            name: a.name,
+            email: a.email,
+            display_name: a.display_name,
+            imap_server: a.imap_server,
+            imap_user: a.imap_user,
+            smtp_server: a.smtp_server,
+            smtp_user: a.smtp_user,
+            is_default: a.is_default,
+            has_imap_password: a.has_imap_password,
+            has_smtp_password: a.has_smtp_password,
+            trash_alias: a.trash_alias,
+            sent_alias: a.sent_alias,
+            drafts_alias: a.drafts_alias,
+            mailboxes,
+            copy_move,
+        }
+    }
+}
+
 struct Flash {
     import_preview: Option<String>,
     import_message: Option<String>,
@@ -132,6 +241,11 @@ struct Flash {
     calendar_message: Option<String>,
     contacts_preview: Option<String>,
     contacts_message: Option<String>,
+    ortie_message: Option<String>,
+    neverest_message: Option<String>,
+    mirador_message: Option<String>,
+    plugins_message: Option<String>,
+    ai_message: Option<String>,
 }
 
 impl Flash {
@@ -143,6 +257,11 @@ impl Flash {
             calendar_message: None,
             contacts_preview: None,
             contacts_message: None,
+            ortie_message: None,
+            neverest_message: None,
+            mirador_message: None,
+            plugins_message: None,
+            ai_message: None,
         }
     }
 }
@@ -194,10 +313,31 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         })
         .collect();
 
-    let editable = accounts_config::list_editable_accounts().unwrap_or_default();
+    let editable_raw = accounts_config::list_editable_accounts().unwrap_or_default();
     let cardamum_accounts = contacts_import::list_cardamum_accounts().unwrap_or_default();
     let calendula_accounts = calendar_import::list_calendula_accounts().unwrap_or_default();
 
+    let editable = {
+        let _permit = state.cli_limit.acquire().await.ok();
+        let mut rows = Vec::with_capacity(editable_raw.len());
+        for a in editable_raw {
+            let copy_move = prefs_snap.uses_copy_move(&a.name);
+            let boxes = if state.himalaya_available {
+                state
+                    .himalaya
+                    .list_mailboxes(Some(&a.name))
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|m| m.name)
+                    .collect::<Vec<_>>()
+            } else {
+                vec![]
+            };
+            rows.push(EditableAccountRow::from_edit(a, boxes, copy_move));
+        }
+        rows
+    };
     let folder_rows = {
         let _permit = state.cli_limit.acquire().await.ok();
         let scope = prefs_snap.selected_account();
@@ -256,6 +396,27 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         .map(|p| p.display().to_string())
         .collect();
 
+    let cal_color_accounts: Vec<ColorAccountRow> = calendula_accounts
+        .iter()
+        .map(|a| ColorAccountRow {
+            color: prefs_snap.cal_account_color(&a.name),
+            label: prefs_snap.cal_account_label(&a.name),
+            icon: prefs_snap.cal_account_icon(&a.name),
+            name: a.name.clone(),
+        })
+        .collect();
+
+    let ai_gemini_model = if prefs_snap.ai_provider == "gemini" {
+        prefs_snap.ai_model.clone()
+    } else {
+        "gemini-2.5-flash".into()
+    };
+    let ai_model_display = if prefs_snap.ai_provider == "gemini" {
+        ai_gemini_model.clone()
+    } else {
+        prefs_snap.ai_model.clone()
+    };
+
     let inner = SettingsTemplate {
         theme: theme.clone(),
         layout: layout.clone(),
@@ -289,9 +450,44 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         contacts_message: flash.contacts_message,
         notifications: prefs_snap.notifications,
         merged_inbox: prefs_snap.merged_inbox,
+        conversations: prefs_snap.conversations,
+        side_widget: prefs_snap.side_widget,
+        side_widget_events: prefs_snap.side_widget_events.max(1),
         himalaya_available: state.himalaya_available,
         calendula_available: state.calendula_available,
         cardamum_available: state.cardamum_available,
+        ortie_available: state.ortie_available,
+        neverest_available: state.neverest_available,
+        mirador_available: state.mirador_available,
+        mirador_enabled: prefs_snap.mirador_enabled,
+        ortie_message: flash.ortie_message,
+        neverest_message: flash.neverest_message,
+        mirador_message: flash.mirador_message,
+        plugins_dir: crate::plugins::plugins_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "(indisponible)".into()),
+        plugins: crate::plugins::list_plugins()
+            .into_iter()
+            .map(|p| PluginRow {
+                id: p.id,
+                name: p.name,
+                description: p.description,
+            })
+            .collect(),
+        plugins_message: flash.plugins_message,
+        ntfy_enabled: prefs_snap.ntfy_enabled,
+        ntfy_server: prefs_snap.ntfy_server.clone(),
+        ntfy_topic: prefs_snap.ntfy_topic.clone(),
+        ai_enabled: prefs_snap.ai_enabled,
+        ai_provider: prefs_snap.ai_provider.clone(),
+        ai_endpoint: prefs_snap.ai_endpoint.clone(),
+        ai_model: ai_model_display,
+        ai_remote_endpoint: prefs_snap.ai_remote_endpoint.clone(),
+        ai_api_key: String::new(),
+        ai_api_key_set: !prefs_snap.ai_api_key.is_empty(),
+        ai_gemini_model,
+        ai_message: flash.ai_message,
+        cal_color_accounts,
     };
 
     let content = match inner.render() {
@@ -507,6 +703,10 @@ pub struct EditAccountForm {
     pub smtp_user: String,
     pub smtp_password: Option<String>,
     pub make_default: Option<String>,
+    pub trash_alias: Option<String>,
+    pub sent_alias: Option<String>,
+    pub drafts_alias: Option<String>,
+    pub copy_move: Option<String>,
 }
 
 async fn edit_account(
@@ -515,6 +715,8 @@ async fn edit_account(
 ) -> impl IntoResponse {
     let make_default =
         form.make_default.as_deref() == Some("1") || form.make_default.as_deref() == Some("on");
+    let copy_move =
+        form.copy_move.as_deref() == Some("1") || form.copy_move.as_deref() == Some("on");
     let imap_pw = form
         .imap_password
         .as_deref()
@@ -537,10 +739,26 @@ async fn edit_account(
         &form.smtp_user,
         smtp_pw,
         make_default,
+        form.trash_alias.as_deref(),
+        form.sent_alias.as_deref(),
+        form.drafts_alias.as_deref(),
     ) {
         Ok(()) => {
+            {
+                let mut prefs = state.prefs.lock().await;
+                prefs.set_copy_move(&form.name, copy_move);
+                let _ = prefs.save();
+            }
             let mut flash = Flash::empty();
-            flash.import_message = Some(format!("Compte « {} » mis à jour (mots de passe inclus si renseignés).", form.name));
+            flash.import_message = Some(format!(
+                "Compte « {} » mis à jour{}.",
+                form.name,
+                if copy_move {
+                    " — déplacements via COPY (sans UID MOVE)"
+                } else {
+                    ""
+                }
+            ));
             render_settings(state, flash).await
         }
         Err(e) => {
@@ -580,6 +798,9 @@ async fn save_folders(
 pub struct NotifyForm {
     pub notifications: Option<String>,
     pub merged_inbox: Option<String>,
+    pub conversations: Option<String>,
+    pub side_widget: Option<String>,
+    pub side_widget_events: Option<u16>,
 }
 
 async fn save_notify(
@@ -592,9 +813,34 @@ async fn save_notify(
             form.notifications.as_deref() == Some("1") || form.notifications.as_deref() == Some("on");
         prefs.merged_inbox =
             form.merged_inbox.as_deref() == Some("1") || form.merged_inbox.as_deref() == Some("on");
+        prefs.conversations = form.conversations.as_deref() == Some("1")
+            || form.conversations.as_deref() == Some("on");
+        prefs.side_widget =
+            form.side_widget.as_deref() == Some("1") || form.side_widget.as_deref() == Some("on");
+        if let Some(n) = form.side_widget_events {
+            prefs.side_widget_events = n.clamp(1, 30);
+        }
         let _ = prefs.save();
     }
     Redirect::to("/settings#folders").into_response()
+}
+
+#[derive(Deserialize)]
+pub struct ConversationsForm {
+    pub enabled: Option<String>,
+}
+
+async fn toggle_conversations(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<ConversationsForm>,
+) -> impl IntoResponse {
+    {
+        let mut prefs = state.prefs.lock().await;
+        prefs.conversations =
+            form.enabled.as_deref() == Some("1") || form.enabled.as_deref() == Some("on");
+        let _ = prefs.save();
+    }
+    axum::http::StatusCode::NO_CONTENT
 }
 
 #[derive(Deserialize)]
@@ -979,4 +1225,353 @@ async fn delete_card_account(
 pub async fn shell_chrome(state: &AppState) -> (String, String) {
     state.theme_layout().await
 }
+
+#[derive(Deserialize)]
+pub struct OrtieForm {
+    pub account: Option<String>,
+}
+
+async fn ortie_auth(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<OrtieForm>,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    let Some(client) = &state.ortie else {
+        flash.ortie_message = Some("Ortie introuvable — installez le binaire ou définissez HIMAWEB_ORTIE_BIN.".into());
+        return render_settings(state, flash).await;
+    };
+    let _permit = state.cli_limit.acquire().await.ok();
+    match client.authorize(form.account.as_deref()).await {
+        Ok(out) => {
+            flash.ortie_message = Some(if out.is_empty() {
+                "OAuth Ortie lancé / terminé.".into()
+            } else {
+                out
+            });
+        }
+        Err(e) => flash.ortie_message = Some(format!("Ortie: {e}")),
+    }
+    drop(_permit);
+    render_settings(state, flash).await
+}
+
+#[derive(Deserialize)]
+pub struct NeverestForm {
+    pub account: Option<String>,
+}
+
+async fn neverest_sync(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<NeverestForm>,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    let Some(client) = &state.neverest else {
+        flash.neverest_message = Some("Neverest introuvable — installez le binaire ou HIMAWEB_NEVEREST_BIN.".into());
+        return render_settings(state, flash).await;
+    };
+    let _permit = state.cli_limit.acquire().await.ok();
+    match client.sync(form.account.as_deref()).await {
+        Ok(out) => {
+            flash.neverest_message = Some(if out.is_empty() {
+                "Sync Neverest terminée.".into()
+            } else {
+                out.chars().take(800).collect()
+            });
+        }
+        Err(e) => flash.neverest_message = Some(format!("Neverest: {e}")),
+    }
+    drop(_permit);
+    render_settings(state, flash).await
+}
+
+#[derive(Deserialize)]
+pub struct MiradorForm {
+    pub enabled: Option<String>,
+}
+
+async fn mirador_watch(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<MiradorForm>,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    let enabled = form.enabled.as_deref() == Some("1");
+    {
+        let mut p = state.prefs.lock().await;
+        p.mirador_enabled = enabled;
+        let _ = p.save();
+    }
+    if enabled {
+        if let Some(client) = &state.mirador {
+            let _permit = state.cli_limit.acquire().await.ok();
+            match client.status().await {
+                Ok(s) => {
+                    flash.mirador_message = Some(format!(
+                        "Watch activé. Mirador: {}",
+                        s.chars().take(200).collect::<String>()
+                    ));
+                }
+                Err(e) => {
+                    flash.mirador_message =
+                        Some(format!("Watch enregistré, mais statut Mirador: {e}"));
+                }
+            }
+            drop(_permit);
+        } else {
+            flash.mirador_message =
+                Some("Watch coché mais Mirador absent — poll navigateur conservé.".into());
+        }
+    } else {
+        flash.mirador_message = Some("Watch Mirador désactivé — poll navigateur seul.".into());
+    }
+    render_settings(state, flash).await
+}
+
+#[derive(Deserialize)]
+pub struct PluginInstallForm {
+    pub repo: String,
+}
+
+async fn plugins_install(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<PluginInstallForm>,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    match crate::plugins::install_from_git(&form.repo) {
+        Ok(p) => {
+            flash.plugins_message = Some(format!("Plugin « {} » installé.", p.name));
+        }
+        Err(e) => flash.plugins_message = Some(format!("Installation: {e}")),
+    }
+    render_settings(state, flash).await
+}
+
+#[derive(Deserialize)]
+pub struct PluginRemoveForm {
+    pub id: String,
+}
+
+async fn plugins_remove(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<PluginRemoveForm>,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    match crate::plugins::remove_plugin(&form.id) {
+        Ok(()) => flash.plugins_message = Some(format!("Plugin « {} » retiré.", form.id)),
+        Err(e) => flash.plugins_message = Some(format!("Retrait: {e}")),
+    }
+    render_settings(state, flash).await
+}
+
+#[derive(Deserialize)]
+pub struct NtfyForm {
+    pub enabled: Option<String>,
+    pub server: String,
+    pub topic: String,
+}
+
+async fn save_ntfy(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<NtfyForm>,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    {
+        let mut p = state.prefs.lock().await;
+        p.ntfy_enabled = form.enabled.as_deref() == Some("1");
+        p.ntfy_server = form.server.trim().to_string();
+        if p.ntfy_server.is_empty() {
+            p.ntfy_server = "https://ntfy.sh".into();
+        }
+        p.ntfy_topic = form.topic.trim().to_string();
+        let _ = p.save();
+    }
+    flash.plugins_message = Some("Préférences NTFY enregistrées.".into());
+    render_settings(state, flash).await
+}
+
+#[derive(Deserialize)]
+pub struct AiSettingsForm {
+    pub enabled: Option<String>,
+    pub provider: Option<String>,
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
+    pub gemini_model: Option<String>,
+    pub remote_endpoint: Option<String>,
+    pub api_key: Option<String>,
+}
+
+async fn save_ai(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<AiSettingsForm>,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    {
+        let mut p = state.prefs.lock().await;
+        p.ai_enabled = form.enabled.as_deref() == Some("1");
+        let provider = form
+            .provider
+            .as_deref()
+            .unwrap_or("ollama")
+            .trim()
+            .to_ascii_lowercase();
+        p.ai_provider = if provider == "gemini" {
+            "gemini".into()
+        } else {
+            "ollama".into()
+        };
+        if p.ai_provider == "gemini" {
+            let gm = form
+                .gemini_model
+                .as_deref()
+                .unwrap_or("gemini-2.5-flash")
+                .trim()
+                .trim_start_matches("models/");
+            p.ai_model = if gm.is_empty() {
+                "gemini-2.5-flash".into()
+            } else {
+                gm.to_string()
+            };
+            if let Some(key) = form.api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                p.ai_api_key = key.to_string();
+            }
+        } else {
+            p.ai_endpoint = form
+                .endpoint
+                .as_deref()
+                .unwrap_or("http://127.0.0.1:11434")
+                .trim()
+                .to_string();
+            if p.ai_endpoint.is_empty() {
+                p.ai_endpoint = "http://127.0.0.1:11434".into();
+            }
+            p.ai_model = form
+                .model
+                .as_deref()
+                .unwrap_or("llama3.2")
+                .trim()
+                .to_string();
+            if p.ai_model.is_empty() {
+                p.ai_model = "llama3.2".into();
+            }
+            p.ai_remote_endpoint = form
+                .remote_endpoint
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+        }
+        let _ = p.save();
+    }
+    flash.ai_message = Some("Préférences IA enregistrées.".into());
+    render_settings(state, flash).await
+}
+
+#[derive(Deserialize)]
+pub struct AiModelsForm {
+    pub api_key: Option<String>,
+}
+
+async fn list_ai_models(
+    State(state): State<Arc<AppState>>,
+    axum::Json(body): axum::Json<AiModelsForm>,
+) -> impl IntoResponse {
+    use axum::Json;
+    use serde_json::json;
+
+    let prefs = state.prefs.lock().await.clone();
+    let key = body
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(prefs.ai_api_key.trim());
+    if key.is_empty() {
+        return Json(json!({ "error": "Clé API Gemini manquante" })).into_response();
+    }
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+    );
+    let client = reqwest::Client::new();
+    match client.get(&url).send().await {
+        Ok(res) if res.status().is_success() => {
+            let v: serde_json::Value = match res.json().await {
+                Ok(v) => v,
+                Err(e) => return Json(json!({ "error": e.to_string() })).into_response(),
+            };
+            let mut models: Vec<String> = v
+                .get("models")
+                .and_then(|m| m.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|m| {
+                    let name = m.get("name")?.as_str()?;
+                    let methods = m.get("supportedGenerationMethods")?.as_array()?;
+                    let ok = methods.iter().any(|x| x.as_str() == Some("generateContent"));
+                    if !ok {
+                        return None;
+                    }
+                    Some(name.trim_start_matches("models/").to_string())
+                })
+                .collect();
+            models.sort();
+            models.dedup();
+            Json(json!({ "models": models })).into_response()
+        }
+        Ok(res) => {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            Json(json!({ "error": format!("HTTP {status}: {body}") })).into_response()
+        }
+        Err(e) => Json(json!({ "error": e.to_string() })).into_response(),
+    }
+}
+
+#[allow(dead_code)]
+struct _CalColorsUnused;
+
+async fn save_cal_colors(
+    State(state): State<Arc<AppState>>,
+    axum::extract::RawForm(raw): axum::extract::RawForm,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    let map = crate::form_util::parse_form_lists(&raw);
+    let names = crate::form_util::form_values(&map, "name");
+    let colors = crate::form_util::form_values(&map, "color");
+    let labels = crate::form_util::form_values(&map, "label");
+    let icons = crate::form_util::form_values(&map, "icon");
+    {
+        let mut p = state.prefs.lock().await;
+        let n = names.len();
+        for i in 0..n {
+            let name = names.get(i).map(|s| s.trim()).unwrap_or("");
+            if name.is_empty() {
+                continue;
+            }
+            if let Some(c) = colors.get(i).map(|s| s.trim()) {
+                if c.starts_with('#') && (c.len() == 7 || c.len() == 4) {
+                    p.cal_account_colors
+                        .insert(name.to_string(), c.to_ascii_lowercase());
+                }
+            }
+            if let Some(label) = labels.get(i) {
+                let l = label.trim();
+                if l.is_empty() || l == name {
+                    p.cal_account_labels.remove(name);
+                } else {
+                    p.cal_account_labels.insert(name.to_string(), l.to_string());
+                }
+            }
+            if let Some(icon) = icons.get(i) {
+                let ic = icon.trim();
+                if ic.is_empty() || ic == "calendar" {
+                    p.cal_account_icons.remove(name);
+                } else if crate::form_util::is_safe_icon_name(ic) {
+                    p.cal_account_icons.insert(name.to_string(), ic.to_string());
+                }
+            }
+        }
+        let _ = p.save();
+    }
+    flash.calendar_message = Some("Apparence des agendas enregistrée.".into());
+    render_settings(state, flash).await
+}
+
 

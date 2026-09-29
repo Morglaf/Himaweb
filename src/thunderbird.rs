@@ -183,7 +183,10 @@ pub fn to_himalaya_toml(accounts: &[ThunderbirdAccount]) -> String {
                 toml_escape(&acc.display_name)
             ));
         }
-        out.push_str("mailbox.alias.inbox = \"Inbox\"\n\n");
+        out.push_str("mailbox.alias.inbox = \"Inbox\"\n");
+        out.push_str("mailbox.alias.trash = \"Trash\"\n");
+        out.push_str("mailbox.alias.sent = \"Sent\"\n");
+        out.push_str("mailbox.alias.drafts = \"Drafts\"\n\n");
 
         if acc.imap_port == 993 {
             out.push_str(&format!(

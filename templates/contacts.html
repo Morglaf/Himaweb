@@ -1,9 +1,14 @@
-<section class="contacts-page">
+<section class="contacts-page" x-data="contactsPage()">
   <div class="contacts-head">
     <h1 class="font-display text-2xl">Contacts</h1>
     <div class="flex gap-2">
+      {% if cardamum_available %}
+      <button type="button" class="btn" @click="openCreate = true">
+        <i data-lucide="user-plus"></i> Nouveau
+      </button>
+      {% endif %}
       <a class="btn secondary" href="/contacts?refresh=1{% if !query_enc.is_empty() %}&q={{ query_enc }}{% endif %}&book={{ current_book_enc }}">Rafraîchir</a>
-      <a class="btn secondary" href="/settings#contacts">Importer / configurer</a>
+      <a class="btn secondary" href="/settings#contacts">Configurer</a>
     </div>
   </div>
 
@@ -27,27 +32,102 @@
   {% if let Some(e) = error %}
   <div class="error-banner mb-3">{{ e }}</div>
   {% endif %}
+  {% if let Some(m) = flash %}
+  <div class="offline-strip mb-3">{{ m }}</div>
+  {% endif %}
 
   {% if contacts.is_empty() %}
   <div class="empty-list">
     <i data-lucide="contact"></i>
     <p>Aucun contact à afficher</p>
-    <p class="muted tiny">Paramètres → Contacts : importez / corrigez CardDAV (`carddav.home`).</p>
   </div>
   {% else %}
-  <ul class="contacts-list">
-    {% for c in contacts %}
-    <li class="contact-row">
-      <div class="env-avatar" aria-hidden="true">{{ c.initial }}</div>
-      <div class="contact-main">
-        <div class="contact-name">{% if !c.name.is_empty() %}{{ c.name }}{% else %}<span class="muted">Sans nom</span>{% endif %}</div>
-        <a class="contact-email" href="/compose?to={{ c.email }}">{{ c.email }}</a>
-        {% if !c.book.is_empty() %}<div class="muted tiny">{{ c.book }}</div>{% endif %}
-      </div>
-      <a class="icon-btn" href="/compose?to={{ c.email }}" title="Écrire"><i data-lucide="pen-square"></i></a>
-    </li>
-    {% endfor %}
-  </ul>
+  <div class="contacts-split">
+    <ul class="contacts-list contacts-list-pane">
+      {% for c in contacts %}
+      <li class="contact-row"
+          :class="{ 'is-selected': isSelected($el) }"
+          data-id="{{ c.id }}"
+          data-name="{{ c.name }}"
+          data-email="{{ c.email }}"
+          data-book="{{ c.book }}"
+          data-book-ref="{{ c.book_ref }}"
+          data-initial="{{ c.initial }}"
+          @click="selectFromEl($el)">
+        <div class="env-avatar" aria-hidden="true">{{ c.initial }}</div>
+        <div class="contact-main">
+          <div class="contact-name">{% if !c.name.is_empty() %}{{ c.name }}{% else %}<span class="muted">Sans nom</span>{% endif %}</div>
+          <div class="contact-email">{{ c.email }}</div>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+
+    <aside class="contact-detail-pane">
+      <template x-if="!selected">
+        <div class="empty-list muted">
+          <i data-lucide="contact"></i>
+          <p>Sélectionnez un contact</p>
+        </div>
+      </template>
+      <template x-if="selected">
+        <div class="contact-detail">
+          <div class="env-avatar contact-detail-avatar" x-text="selected.initial"></div>
+          <h2 class="font-display text-xl" x-text="selected.name || 'Sans nom'"></h2>
+          <p class="contact-email">
+            <a :href="'/compose?to=' + encodeURIComponent(selected.email)" x-text="selected.email"></a>
+          </p>
+          <p class="muted tiny" x-show="selected.book" x-text="selected.book"></p>
+          <div class="flex gap-2 mt-4">
+            <a class="btn" :href="'/compose?to=' + encodeURIComponent(selected.email)">Écrire</a>
+            <form method="post" action="/contacts/delete" x-show="selected.id && selected.book_ref"
+                  onsubmit="return confirm('Supprimer ce contact ?');">
+              <input type="hidden" name="id" :value="selected.id" />
+              <input type="hidden" name="book" :value="selected.book_ref" />
+              <button type="submit" class="btn secondary">Supprimer</button>
+            </form>
+          </div>
+        </div>
+      </template>
+    </aside>
+  </div>
   {% endif %}
+
+  <div class="modal-backdrop" x-show="openCreate" x-cloak @click.self="openCreate = false" @keydown.escape.window="openCreate = false">
+    <div class="modal-panel" @click.stop>
+      <div class="modal-head">
+        <h2 class="font-display text-xl">Nouveau contact</h2>
+        <button type="button" class="icon-btn" @click="openCreate = false"><i data-lucide="x"></i></button>
+      </div>
+      <form method="post" action="/contacts/create" class="space-y-3">
+        <label class="block">
+          <span class="label">Carnet</span>
+          <select name="book" class="select w-full" required>
+            {% for b in books %}
+            {% if b.id != "__all__" %}
+            <option value="{{ b.id }}" {% if b.selected %}selected{% endif %}>{{ b.name }}</option>
+            {% endif %}
+            {% endfor %}
+          </select>
+        </label>
+        <label class="block">
+          <span class="label">Nom</span>
+          <input class="input w-full" name="name" required />
+        </label>
+        <label class="block">
+          <span class="label">Email</span>
+          <input class="input w-full" type="email" name="email" />
+        </label>
+        <label class="block">
+          <span class="label">Téléphone</span>
+          <input class="input w-full" name="tel" />
+        </label>
+        <div class="flex gap-2">
+          <button type="submit" class="btn">Créer</button>
+          <button type="button" class="btn ghost" @click="openCreate = false">Annuler</button>
+        </div>
+      </form>
+    </div>
+  </div>
 </section>
 <script>lucide.createIcons()</script>
