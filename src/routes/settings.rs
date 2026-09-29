@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use askama::Template;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::{Form, Router};
@@ -29,6 +29,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/settings/notify", post(save_notify))
         .route("/settings/conversations", post(toggle_conversations))
         .route("/settings/thunderbird/import", post(import_thunderbird))
+        .route("/settings/thunderbird/accounts", get(thunderbird_accounts))
         .route("/settings/calendar/import", post(import_calendar))
         .route("/settings/calendar/add", post(add_caldav))
         .route("/settings/calendar/password", post(set_calendula_password))
@@ -89,7 +90,7 @@ struct SettingsTemplate {
     pub move_defaults: Vec<MoveDefaultRow>,
     pub selected_account: String,
     pub all_selected: bool,
-    pub folder_rows: Vec<FolderPrefRow>,
+    pub folder_groups: Vec<FolderPrefGroup>,
     pub thunderbird_profiles: Vec<String>,
     pub import_preview: Option<String>,
     pub import_message: Option<String>,
@@ -165,6 +166,11 @@ pub struct FolderPrefRow {
     pub pinned: bool,
     pub hidden: bool,
     pub watched: bool,
+}
+
+pub struct FolderPrefGroup {
+    pub account: String,
+    pub folders: Vec<FolderPrefRow>,
 }
 
 /// Compte éditable + dossiers IMAP pour les menus d’alias (poubelle, etc.).
@@ -338,31 +344,38 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         }
         rows
     };
-    let folder_rows = {
+    let folder_groups = {
         let _permit = state.cli_limit.acquire().await.ok();
-        let scope = prefs_snap.selected_account();
-        let boxes = if state.himalaya_available {
-            state
-                .himalaya
-                .list_mailboxes(scope)
-                .await
-                .unwrap_or_default()
-        } else {
-            vec![]
-        };
-        boxes
-            .into_iter()
-            .map(|m| {
-                let key = Prefs::folder_key(scope, &m.name);
-                FolderPrefRow {
-                    pinned: prefs_snap.is_pinned(&key),
-                    hidden: prefs_snap.is_hidden(&key),
-                    watched: prefs_snap.is_watched(&key, &m.name),
-                    label: m.name.clone(),
-                    key,
+        let mut groups = Vec::new();
+        if state.himalaya_available {
+            for acc in &account_order {
+                let boxes = state
+                    .himalaya
+                    .list_mailboxes(Some(acc))
+                    .await
+                    .unwrap_or_default();
+                let folders = boxes
+                    .into_iter()
+                    .map(|m| {
+                        let key = Prefs::folder_key(Some(acc), &m.name);
+                        FolderPrefRow {
+                            pinned: prefs_snap.is_pinned(&key),
+                            hidden: prefs_snap.is_hidden(&key),
+                            watched: prefs_snap.is_watched(&key, &m.name),
+                            label: m.name.clone(),
+                            key,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                if !folders.is_empty() {
+                    groups.push(FolderPrefGroup {
+                        account: acc.clone(),
+                        folders,
+                    });
                 }
-            })
-            .collect::<Vec<_>>()
+            }
+        }
+        groups
     };
 
     let mut move_defaults: Vec<MoveDefaultRow> = Vec::new();
@@ -440,7 +453,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         move_defaults,
         selected_account: selected,
         all_selected,
-        folder_rows,
+        folder_groups,
         thunderbird_profiles,
         import_preview: flash.import_preview,
         import_message: flash.import_message,
@@ -527,8 +540,10 @@ pub struct UiForm {
 
 async fn save_ui(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Form(form): Form<UiForm>,
 ) -> impl IntoResponse {
+    let quiet = headers.get("HX-Request").is_some();
     {
         let mut prefs = state.prefs.lock().await;
         prefs.theme = form.theme;
@@ -550,6 +565,9 @@ async fn save_ui(
         }
         *prefs = prefs.clone().normalize();
         let _ = prefs.save();
+    }
+    if quiet {
+        return axum::http::StatusCode::NO_CONTENT.into_response();
     }
     Redirect::to("/settings").into_response()
 }
@@ -580,8 +598,10 @@ async fn save_ui_sizes(
 
 async fn save_move_defaults(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     axum::extract::RawForm(raw): axum::extract::RawForm,
 ) -> impl IntoResponse {
+    let quiet = headers.get("HX-Request").is_some();
     let map = crate::form_util::parse_form_lists(&raw);
     let accounts = crate::form_util::form_values(&map, "account");
     let folders = crate::form_util::form_values(&map, "folder");
@@ -596,6 +616,9 @@ async fn save_move_defaults(
             }
         }
         let _ = prefs.save();
+    }
+    if quiet {
+        return axum::http::StatusCode::NO_CONTENT.into_response();
     }
     Redirect::to("/settings#folders").into_response()
 }
@@ -769,27 +792,61 @@ async fn edit_account(
     }
 }
 
-#[derive(Deserialize)]
-pub struct FoldersForm {
-    #[serde(default)]
-    pub pinned: Vec<String>,
-    #[serde(default)]
-    pub hidden: Vec<String>,
-    #[serde(default)]
-    pub watched: Vec<String>,
+fn merge_pref_keys(existing: &mut Vec<String>, account: &str, submitted: Vec<String>) {
+    let prefix = format!("{account}::");
+    existing.retain(|k| !k.starts_with(&prefix));
+    for k in submitted {
+        if k.starts_with(&prefix) && !existing.iter().any(|e| e == &k) {
+            existing.push(k);
+        }
+    }
 }
 
 async fn save_folders(
     State(state): State<Arc<AppState>>,
-    Form(form): Form<FoldersForm>,
+    headers: axum::http::HeaderMap,
+    axum::extract::RawForm(raw): axum::extract::RawForm,
 ) -> impl IntoResponse {
+    let quiet = headers.get("HX-Request").is_some();
+    let map = crate::form_util::parse_form_lists(&raw);
+    let Some(account) = crate::form_util::form_values(&map, "account")
+        .first()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+    else {
+        if quiet {
+            return axum::http::StatusCode::BAD_REQUEST.into_response();
+        }
+        return Redirect::to("/settings#folders").into_response();
+    };
+    let pinned = crate::form_util::form_values(&map, "pinned")
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+    let hidden = crate::form_util::form_values(&map, "hidden")
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+    let watched = crate::form_util::form_values(&map, "watched")
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
     {
         let mut prefs = state.prefs.lock().await;
-        prefs.pinned_folders = form.pinned;
-        prefs.hidden_folders = form.hidden;
-        prefs.watched_folders = form.watched;
+        merge_pref_keys(&mut prefs.pinned_folders, &account, pinned);
+        merge_pref_keys(&mut prefs.hidden_folders, &account, hidden);
+        merge_pref_keys(&mut prefs.watched_folders, &account, watched);
         *prefs = prefs.clone().normalize();
-        let _ = prefs.save();
+        if let Err(e) = prefs.save() {
+            tracing::warn!("prefs save folders: {e}");
+            if quiet {
+                return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+    }
+    if quiet {
+        return axum::http::StatusCode::NO_CONTENT.into_response();
     }
     Redirect::to("/settings#folders").into_response()
 }
@@ -805,8 +862,10 @@ pub struct NotifyForm {
 
 async fn save_notify(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Form(form): Form<NotifyForm>,
 ) -> impl IntoResponse {
+    let quiet = headers.get("HX-Request").is_some();
     {
         let mut prefs = state.prefs.lock().await;
         prefs.notifications =
@@ -821,6 +880,9 @@ async fn save_notify(
             prefs.side_widget_events = n.clamp(1, 30);
         }
         let _ = prefs.save();
+    }
+    if quiet {
+        return axum::http::StatusCode::NO_CONTENT.into_response();
     }
     Redirect::to("/settings#folders").into_response()
 }
@@ -847,6 +909,32 @@ async fn toggle_conversations(
 pub struct ImportForm {
     pub profile: String,
     pub write: Option<String>,
+    #[serde(default, deserialize_with = "crate::form_util::deserialize_string_or_seq")]
+    pub accounts: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct TbAccountsQuery {
+    pub profile: String,
+}
+
+async fn thunderbird_accounts(Query(q): Query<TbAccountsQuery>) -> impl IntoResponse {
+    let path = std::path::PathBuf::from(&q.profile);
+    match thunderbird::parse_prefs_js(&path) {
+        Ok(accounts) => axum::Json(serde_json::json!({
+            "accounts": accounts.into_iter().map(|a| serde_json::json!({
+                "name": a.name,
+                "email": a.email,
+                "display_name": a.display_name,
+            })).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": e })),
+        )
+            .into_response(),
+    }
 }
 
 async fn import_thunderbird(
@@ -862,30 +950,46 @@ async fn import_thunderbird(
             render_settings(state, flash).await
         }
         Ok(accounts) => {
-            let toml = thunderbird::to_himalaya_toml(&accounts);
+            let selected: Vec<String> = form
+                .accounts
+                .into_iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let accounts: Vec<_> = if selected.is_empty() {
+                accounts
+            } else {
+                accounts
+                    .into_iter()
+                    .filter(|a| {
+                        selected.iter().any(|s| {
+                            s.eq_ignore_ascii_case(&a.name) || s.eq_ignore_ascii_case(&a.email)
+                        })
+                    })
+                    .collect()
+            };
+            if accounts.is_empty() {
+                let mut flash = Flash::empty();
+                flash.import_message =
+                    Some("Aucun compte sélectionné parmi ceux détectés.".into());
+                return render_settings(state, flash).await;
+            }
+            let use_ortie = state.ortie_available;
+            let toml = thunderbird::to_himalaya_toml(&accounts, use_ortie);
             let write = form.write.as_deref() == Some("1") || form.write.as_deref() == Some("on");
             let message = if write {
-                let dest = prefs::himalaya_config_path();
-                if let Some(parent) = dest.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if dest.exists() {
-                    Some(format!(
-                        "Le fichier {} existe déjà — aperçu sans écrasement. Utilisez « Modifier un compte » pour les mots de passe.",
-                        dest.display()
-                    ))
-                } else {
-                    match std::fs::write(&dest, &toml) {
-                        Ok(()) => Some(format!(
-                            "{} compte(s) écrits. Ajoutez les mots de passe dans « Modifier un compte » (pas besoin d’éditer le TOML).",
-                            accounts.len()
-                        )),
-                        Err(e) => Some(format!("Écriture impossible: {e}")),
-                    }
+                match crate::accounts_config::merge_thunderbird_accounts(&accounts, use_ortie) {
+                    Ok(msg) => Some(msg),
+                    Err(e) => Some(format!("Écriture impossible: {e}")),
                 }
             } else {
+                let hint = if use_ortie {
+                    "Les comptes Gmail seront ajoutés en OAuth (Ortie)."
+                } else {
+                    "Ortie introuvable : Gmail sera en mot de passe (PLAIN)."
+                };
                 Some(format!(
-                    "{} compte(s) détecté(s). Vérifiez l'aperçu, puis cochez « Écrire config.toml ».",
+                    "{} compte(s) sélectionné(s). Vérifiez l'aperçu, puis cochez « Ajouter au config.toml ». {hint}",
                     accounts.len()
                 ))
             };

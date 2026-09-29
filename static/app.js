@@ -70,18 +70,31 @@ function composeForm() {
     bcc: '',
     subject: '',
     body: '',
+    bodyHtml: '',
+    bodyMode: 'plain',
+    account: '',
+    accounts: [],
+    fromOpen: false,
     aiPrompt: '',
     aiBusy: false,
     aiError: '',
     draftBusy: false,
     windowMode: 'normal',
+    quill: null,
     suggestions: { to: [], cc: [], bcc: [] },
+    get selectedAccount() {
+      return this.accounts.find((a) => a.name === this.account) || this.accounts[0] || null;
+    },
     boot() {
       try {
         const saved = sessionStorage.getItem('himaweb-compose-window');
         if (saved === 'docked' || saved === 'minimized' || saved === 'normal') {
           this.windowMode = saved;
         }
+      } catch (_) {}
+      try {
+        const mode = sessionStorage.getItem('himaweb-compose-body-mode');
+        if (mode === 'html' || mode === 'plain') this.bodyMode = mode;
       } catch (_) {}
       try {
         const el = document.getElementById('compose-boot');
@@ -94,6 +107,8 @@ function composeForm() {
           this.cc = opts.cc || '';
           this.bcc = opts.bcc || '';
           this.subject = opts.subject || '';
+          this.accounts = opts.accounts || [];
+          this.account = opts.account || (this.accounts[0] && this.accounts[0].name) || '';
           this.showCc = !!(this.cc || this.bcc);
         }
       } catch (_) {}
@@ -101,7 +116,124 @@ function composeForm() {
       if (seed) this.body = seed.value || '';
       this.$nextTick(() => {
         if (window.lucide) lucide.createIcons();
+        if (this.bodyMode === 'html') this.initQuill();
       });
+    },
+    pickAccount(a) {
+      if (!a) return;
+      this.account = a.name;
+      this.fromOpen = false;
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+      });
+    },
+    setBodyMode(mode) {
+      if (mode === this.bodyMode) return;
+      if (mode === 'html') {
+        this.syncHtmlFromPlain();
+        this.bodyMode = 'html';
+        this.$nextTick(() => {
+          this.destroyQuill();
+          this.initQuill();
+        });
+      } else {
+        this.syncPlainFromQuill();
+        this.bodyMode = 'plain';
+        this.destroyQuill();
+      }
+      try {
+        sessionStorage.setItem('himaweb-compose-body-mode', this.bodyMode);
+      } catch (_) {}
+    },
+    syncHtmlFromPlain() {
+      const plain = this.body || '';
+      if (!plain) {
+        this.bodyHtml = '';
+        return;
+      }
+      this.bodyHtml = plain
+        .split('\n')
+        .map((line) => {
+          const esc = line
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+          return '<p>' + (esc || '<br>') + '</p>';
+        })
+        .join('');
+    },
+    syncPlainFromQuill() {
+      if (this.quill) {
+        this.bodyHtml = this.quill.root.innerHTML || '';
+        this.body = this.quill.getText().replace(/\n$/, '');
+      } else if (this.bodyHtml) {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = this.bodyHtml;
+        this.body = (tmp.innerText || tmp.textContent || '').replace(/\n$/, '');
+      }
+    },
+    initQuill() {
+      if (this.quill || this._quillIniting) return;
+      this._quillIniting = true;
+      const tryInit = (attempt) => {
+        if (typeof Quill === 'undefined') {
+          if (attempt < 20) {
+            setTimeout(() => tryInit(attempt + 1), 50);
+          } else {
+            this._quillIniting = false;
+          }
+          return;
+        }
+        const wrap = document.querySelector('.compose-quill-wrap');
+        if (!wrap) {
+          this._quillIniting = false;
+          return;
+        }
+        // Remet une coque propre (évite toolbars empilées)
+        wrap.innerHTML = '<div id="compose-quill" class="compose-quill"></div>';
+        const host = document.getElementById('compose-quill');
+        if (!host) {
+          this._quillIniting = false;
+          return;
+        }
+        this.quill = new Quill(host, {
+          theme: 'snow',
+          modules: {
+            toolbar: [
+              ['bold', 'italic', 'underline'],
+              [{ list: 'ordered' }, { list: 'bullet' }],
+              ['link'],
+              ['clean'],
+            ],
+          },
+        });
+        if (!this.bodyHtml && this.body) this.syncHtmlFromPlain();
+        if (this.bodyHtml) {
+          this.quill.clipboard.dangerouslyPasteHTML(this.bodyHtml);
+        }
+        this.quill.on('text-change', () => {
+          this.bodyHtml = this.quill.root.innerHTML || '';
+          this.body = this.quill.getText().replace(/\n$/, '');
+        });
+        this._quillIniting = false;
+      };
+      tryInit(0);
+    },
+    destroyQuill() {
+      this._quillIniting = false;
+      this.quill = null;
+      const wrap = document.querySelector('.compose-quill-wrap');
+      if (wrap) {
+        wrap.innerHTML = '<div id="compose-quill" class="compose-quill"></div>';
+      }
+    },
+    onSubmit(ev) {
+      const submitter = ev.submitter;
+      this.draftBusy = !!(submitter && submitter.name === 'save_draft');
+      if (this.bodyMode === 'html' && this.quill) {
+        this.bodyHtml = this.quill.root.innerHTML || '';
+        this.body = this.quill.getText().replace(/\n$/, '');
+      }
     },
     setWindow(mode) {
       this.windowMode = mode;
@@ -110,12 +242,17 @@ function composeForm() {
       } catch (_) {}
       this.$nextTick(() => {
         if (window.lucide) lucide.createIcons();
+        if (this.bodyMode === 'html' && !this.quill) this.initQuill();
       });
     },
     toggleMinimize() {
       this.setWindow(this.windowMode === 'minimized' ? 'docked' : 'minimized');
     },
     onEscape() {
+      if (this.fromOpen) {
+        this.fromOpen = false;
+        return;
+      }
       if (this.windowMode === 'normal') this.goBack();
       else this.setWindow('normal');
     },
@@ -171,7 +308,13 @@ function composeForm() {
         if (data.error) throw new Error(data.error);
         if (data.to) this.to = data.to;
         if (data.subject) this.subject = data.subject;
-        if (data.body) this.body = data.body;
+        if (data.body) {
+          this.body = data.body;
+          if (this.bodyMode === 'html') {
+            this.syncHtmlFromPlain();
+            if (this.quill) this.quill.root.innerHTML = this.bodyHtml;
+          }
+        }
       } catch (e) {
         this.aiError = e.message || String(e);
       } finally {
@@ -407,11 +550,49 @@ function quickEventModal() {
   };
 }
 
+function tbImportForm() {
+  return {
+    profile: '',
+    accounts: [],
+    selected: [],
+    loading: false,
+    error: '',
+    init() {
+      const sel = this.$el.querySelector('select[name="profile"]');
+      if (sel) {
+        this.profile = sel.value || '';
+        if (this.profile) this.loadAccounts();
+      }
+    },
+    async loadAccounts() {
+      if (!this.profile) return;
+      this.loading = true;
+      this.error = '';
+      this.accounts = [];
+      this.selected = [];
+      try {
+        const res = await fetch(
+          '/settings/thunderbird/accounts?profile=' + encodeURIComponent(this.profile)
+        );
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        this.accounts = data.accounts || [];
+        this.selected = this.accounts.map((a) => a.name);
+      } catch (e) {
+        this.error = e.message || String(e);
+      } finally {
+        this.loading = false;
+      }
+    },
+  };
+}
+
 document.addEventListener('alpine:init', () => {
   if (window.Alpine) {
     Alpine.data('composeForm', composeForm);
     Alpine.data('accountAppearance', accountAppearance);
     Alpine.data('quickEventModal', quickEventModal);
+    Alpine.data('tbImportForm', tbImportForm);
   }
 });
 
@@ -421,6 +602,18 @@ window.HimaWeb = {
   _folderClicksBound: false,
   _folderTreeBound: false,
   _resizeBound: false,
+
+  settingsSaved(form, evt) {
+    if (!form) return;
+    if (evt && evt.detail && evt.detail.successful === false) return;
+    const el = form.querySelector('.settings-saved');
+    if (!el) return;
+    el.hidden = false;
+    clearTimeout(form._savedTimer);
+    form._savedTimer = setTimeout(() => {
+      el.hidden = true;
+    }, 1600);
+  },
 
   markEnvelopeRead(id, account) {
     const acc = account || '';

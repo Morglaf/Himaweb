@@ -186,6 +186,13 @@ async fn compose_get(
         "cc": draft.cc,
         "bcc": draft.bcc,
         "subject": draft.subject,
+        "account": selected_account,
+        "accounts": accounts.iter().map(|a| serde_json::json!({
+            "name": a.name,
+            "email": a.email,
+            "icon": a.icon,
+            "color": a.color,
+        })).collect::<Vec<_>>(),
     })
     .to_string();
 
@@ -296,6 +303,12 @@ pub struct SendForm {
     pub bcc: Option<String>,
     pub subject: String,
     pub body: String,
+    pub body_html: Option<String>,
+    pub html: Option<String>,
+}
+
+fn form_wants_html(form: &SendForm) -> bool {
+    matches!(form.html.as_deref(), Some("1") | Some("true"))
 }
 
 async fn compose_send(
@@ -367,6 +380,7 @@ async fn compose_send(
         })
         .filter(|s| s.contains('@'));
 
+    let as_html = form_wants_html(&form);
     let form_norm = SendForm {
         account: account.clone(),
         to: to.clone(),
@@ -374,9 +388,28 @@ async fn compose_send(
         bcc: bcc.clone(),
         subject: form.subject.clone(),
         body: form.body.clone(),
+        body_html: form.body_html.clone(),
+        html: form.html.clone(),
     };
 
     let _permit = state.cli_limit.acquire().await.ok();
+    // En HTML : toujours passer par EML multipart (himalaya compose = plain)
+    if as_html {
+        let eml = build_eml(&form_norm, from_header.as_deref());
+        return match state
+            .himalaya
+            .send_raw_eml(eml.as_bytes(), account.as_deref())
+            .await
+        {
+            Ok(()) => Redirect::to("/").into_response(),
+            Err(e) => Html(format!(
+                r#"<div class="error">Envoi échoué: {e}</div>
+               <p><a href="javascript:history.back()">Retour</a></p>"#
+            ))
+            .into_response(),
+        };
+    }
+
     match state
         .himalaya
         .send_message(
@@ -495,40 +528,54 @@ async fn compose_draft(
         bcc: bcc.clone(),
         subject: form.subject.clone(),
         body: form.body.clone(),
+        body_html: form.body_html.clone(),
+        html: form.html.clone(),
     };
 
     let _permit = state.cli_limit.acquire().await.ok();
-    let saved = state
-        .himalaya
-        .save_draft(
-            &to,
-            cc.as_deref(),
-            bcc.as_deref(),
-            &form.subject,
-            &form.body,
-            account.as_deref(),
-            from_header.as_deref(),
-            &drafts_mailbox,
-        )
-        .await;
+    let as_html = form_wants_html(&form);
+    let saved = if as_html {
+        let eml = build_eml(&form_norm, from_header.as_deref());
+        state
+            .himalaya
+            .save_raw_draft(eml.as_bytes(), &drafts_mailbox, account.as_deref())
+            .await
+    } else {
+        match state
+            .himalaya
+            .save_draft(
+                &to,
+                cc.as_deref(),
+                bcc.as_deref(),
+                &form.subject,
+                &form.body,
+                account.as_deref(),
+                from_header.as_deref(),
+                &drafts_mailbox,
+            )
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let eml = build_eml(&form_norm, from_header.as_deref());
+                state
+                    .himalaya
+                    .save_raw_draft(eml.as_bytes(), &drafts_mailbox, account.as_deref())
+                    .await
+                    .map_err(|e2| {
+                        crate::cli::runner::CliError::Message(format!("{e} / {e2}"))
+                    })
+            }
+        }
+    };
 
     match saved {
         Ok(()) => Redirect::to("/?msg=Brouillon%20enregistré").into_response(),
-        Err(e) => {
-            let eml = build_eml(&form_norm, from_header.as_deref());
-            match state
-                .himalaya
-                .save_raw_draft(eml.as_bytes(), &drafts_mailbox, account.as_deref())
-                .await
-            {
-                Ok(()) => Redirect::to("/?msg=Brouillon%20enregistré").into_response(),
-                Err(e2) => Html(format!(
-                    r#"<div class="error">Brouillon échoué: {e} / {e2}</div>
+        Err(e) => Html(format!(
+            r#"<div class="error">Brouillon échoué: {e}</div>
                <p><a href="javascript:history.back()">Retour</a></p>"#
-                ))
-                .into_response(),
-            }
-        }
+        ))
+        .into_response(),
     }
 }
 
@@ -550,6 +597,44 @@ fn build_eml(form: &SendForm, from: Option<&str>) -> String {
     }
     headers.push_str(&format!("Subject: {}\r\n", form.subject));
     headers.push_str("MIME-Version: 1.0\r\n");
+
+    let as_html = form_wants_html(form);
+    let html_body = form
+        .body_html
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if as_html {
+        if let Some(html) = html_body {
+            let boundary = format!("himaweb_{}", chrono::Local::now().timestamp_millis());
+            let plain = if form.body.trim().is_empty() {
+                html_to_approx_plain(html)
+            } else {
+                form.body.clone()
+            };
+            headers.push_str(&format!(
+                "Content-Type: multipart/alternative; boundary=\"{boundary}\"\r\n\r\n"
+            ));
+            headers.push_str(&format!("--{boundary}\r\n"));
+            headers.push_str("Content-Type: text/plain; charset=utf-8\r\n");
+            headers.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
+            headers.push_str(&plain.replace('\n', "\r\n"));
+            if !headers.ends_with("\r\n") {
+                headers.push_str("\r\n");
+            }
+            headers.push_str(&format!("--{boundary}\r\n"));
+            headers.push_str("Content-Type: text/html; charset=utf-8\r\n");
+            headers.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
+            headers.push_str(&html.replace('\n', "\r\n"));
+            if !headers.ends_with("\r\n") {
+                headers.push_str("\r\n");
+            }
+            headers.push_str(&format!("--{boundary}--\r\n"));
+            return headers;
+        }
+    }
+
     headers.push_str("Content-Type: text/plain; charset=utf-8\r\n");
     headers.push_str("Content-Transfer-Encoding: 8bit\r\n");
     headers.push_str("\r\n");
@@ -558,4 +643,26 @@ fn build_eml(form: &SendForm, from: Option<&str>) -> String {
         headers.push_str("\r\n");
     }
     headers
+}
+
+fn html_to_approx_plain(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    html_unescape_basic(&out)
+}
+
+fn html_unescape_basic(s: &str) -> String {
+    s.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
 }

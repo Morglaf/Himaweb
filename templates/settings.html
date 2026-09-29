@@ -17,15 +17,17 @@
       <p class="settings-group-label settings-span" id="apparence">Apparence</p>
       <section class="settings-card">
         <h2>Thème et disposition</h2>
-        <form method="post" action="/settings/ui" class="space-y-4">
-          <label class="block">
+        <form method="post" action="/settings/ui" class="settings-autosave"
+              hx-post="/settings/ui" hx-trigger="change delay:200ms" hx-swap="none"
+              hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
+          <label class="settings-row">
             <span class="label">Thème</span>
             <select name="theme" class="select w-full">
               <option value="light" {% if theme == "light" %}selected{% endif %}>Clair</option>
               <option value="dark" {% if theme == "dark" %}selected{% endif %}>Sombre</option>
             </select>
           </label>
-          <label class="block">
+          <label class="settings-row">
             <span class="label">Disposition mail</span>
             <select name="layout" class="select w-full">
               <option value="classic" {% if layout == "classic" %}selected{% endif %}>Classique (3 colonnes)</option>
@@ -33,30 +35,30 @@
               <option value="wide-read" {% if layout == "wide-read" %}selected{% endif %}>Lecture large</option>
             </select>
           </label>
-          <label class="block">
+          <label class="settings-row">
             <span class="label">Taille du texte ({{ ui_font_scale }})</span>
             <input class="input w-full" type="range" name="ui_font_scale" min="0.8" max="1.4" step="0.05" value="{{ ui_font_scale }}" />
           </label>
-          <label class="block">
+          <label class="settings-row">
             <span class="label">Coins arrondis ({{ ui_radius }} px)</span>
             <input class="input w-full" type="range" name="ui_radius" min="0" max="28" step="1" value="{{ ui_radius }}" />
           </label>
-          <label class="block">
+          <label class="settings-row">
             <span class="label">Densité / marges ({{ ui_space }})</span>
             <input class="input w-full" type="range" name="ui_space" min="0.75" max="1.4" step="0.05" value="{{ ui_space }}" />
           </label>
           <div class="settings-grid" style="grid-template-columns:1fr 1fr;gap:0.75rem">
-            <label class="block">
+            <label class="settings-row">
               <span class="label">Colonne dossiers (px)</span>
               <input class="input w-full" type="number" name="ui_rail" min="160" max="420" value="{{ ui_rail }}" />
             </label>
-            <label class="block">
+            <label class="settings-row">
               <span class="label">Colonne liste (px)</span>
               <input class="input w-full" type="number" name="ui_list" min="240" max="560" value="{{ ui_list }}" />
             </label>
           </div>
-          <p class="muted tiny">Vous pouvez aussi glisser les séparateurs entre colonnes dans Mail / Recherche.</p>
-          <button type="submit" class="btn">Enregistrer</button>
+          <p class="muted tiny">Enregistré automatiquement. Vous pouvez aussi glisser les séparateurs dans Mail.</p>
+          <p class="settings-saved muted tiny" hidden>Enregistré</p>
         </form>
       </section>
 
@@ -263,50 +265,65 @@
           Épinglés en tête · non-système dans « Plus » · Masquer retire des menus.
           Surveiller active le compteur / notifications (par défaut : toutes les Inbox si rien n’est coché).
         </p>
-        <form method="post" action="/settings/notify" class="mb-4 space-y-2">
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="notifications" value="1" {% if notifications %}checked{% endif %} />
-            Notifications navigateur pour nouveaux non-lus
+        <form method="post" action="/settings/notify" class="settings-autosave mb-4"
+              hx-post="/settings/notify" hx-trigger="change delay:200ms" hx-swap="none"
+              hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
+          <label class="toggle-row">
+            <span>Notifications navigateur pour nouveaux non-lus</span>
+            <input class="toggle" type="checkbox" name="notifications" value="1" {% if notifications %}checked{% endif %} />
           </label>
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="merged_inbox" value="1" {% if merged_inbox %}checked{% endif %} />
-            Afficher « Toutes les Inbox » en tête (mode tous les comptes)
+          <label class="toggle-row">
+            <span>Afficher « Toutes les Inbox » en tête (mode tous les comptes)</span>
+            <input class="toggle" type="checkbox" name="merged_inbox" value="1" {% if merged_inbox %}checked{% endif %} />
           </label>
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="conversations" value="1" {% if conversations %}checked{% endif %} />
-            Afficher les mails en conversations (groupés)
+          <label class="toggle-row">
+            <span>Afficher les mails en conversations (groupés)</span>
+            <input class="toggle" type="checkbox" name="conversations" value="1" {% if conversations %}checked{% endif %} />
           </label>
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="side_widget" value="1" {% if side_widget %}checked{% endif %} />
-            Panneau latéral (prochains RDV + contacts)
+          <label class="toggle-row">
+            <span>Panneau latéral (prochains RDV + contacts)</span>
+            <input class="toggle" type="checkbox" name="side_widget" value="1" {% if side_widget %}checked{% endif %} />
           </label>
-          <label class="block text-sm" style="max-width:12rem">
+          <label class="settings-row">
             <span class="label">Nombre de RDV affichés</span>
-            <input class="input w-full" type="number" name="side_widget_events" min="1" max="30" value="{{ side_widget_events }}" />
+            <input class="input" type="number" name="side_widget_events" min="1" max="30" value="{{ side_widget_events }}" style="max-width:6rem" />
           </label>
-          <button type="submit" class="btn secondary mt-2">Enregistrer</button>
+          <p class="settings-saved muted tiny" hidden>Enregistré</p>
         </form>
-        {% if folder_rows.is_empty() %}
+
+        {% if folder_groups.is_empty() %}
         <p class="muted">Aucun dossier listé (compte / config requis).</p>
         {% else %}
-        <form method="post" action="/settings/folders">
-          <table class="folder-pref-table">
-            <thead>
-              <tr><th>Dossier</th><th>Épingler</th><th>Masquer</th><th>Surveiller</th></tr>
-            </thead>
-            <tbody>
-              {% for f in folder_rows %}
-              <tr>
-                <td><code>{{ f.label }}</code></td>
-                <td class="center"><input type="checkbox" name="pinned" value="{{ f.key }}" {% if f.pinned %}checked{% endif %} /></td>
-                <td class="center"><input type="checkbox" name="hidden" value="{{ f.key }}" {% if f.hidden %}checked{% endif %} /></td>
-                <td class="center"><input type="checkbox" name="watched" value="{{ f.key }}" {% if f.watched %}checked{% endif %} /></td>
-              </tr>
+        <div class="folder-groups">
+          {% for g in folder_groups %}
+          <details class="folder-account">
+            <summary>{{ g.account }} <span class="muted tiny">({{ g.folders.len() }} dossiers)</span></summary>
+            <form method="post" action="/settings/folders" class="settings-autosave folder-pref-form"
+                  hx-post="/settings/folders" hx-trigger="change" hx-swap="none"
+                  hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
+              <input type="hidden" name="account" value="{{ g.account }}" />
+              {% for f in g.folders %}
+              <div class="folder-pref-row">
+                <code class="folder-pref-name">{{ f.label }}</code>
+                <label class="toggle-mini" title="Épingler">
+                  <span>Épingler</span>
+                  <input class="toggle" type="checkbox" name="pinned" value="{{ f.key }}" {% if f.pinned %}checked{% endif %} />
+                </label>
+                <label class="toggle-mini" title="Masquer">
+                  <span>Masquer</span>
+                  <input class="toggle" type="checkbox" name="hidden" value="{{ f.key }}" {% if f.hidden %}checked{% endif %} />
+                </label>
+                <label class="toggle-mini" title="Surveiller">
+                  <span>Surveiller</span>
+                  <input class="toggle" type="checkbox" name="watched" value="{{ f.key }}" {% if f.watched %}checked{% endif %} />
+                </label>
+              </div>
               {% endfor %}
-            </tbody>
-          </table>
-          <button type="submit" class="btn mt-3">Enregistrer les dossiers</button>
-        </form>
+              <p class="settings-saved muted tiny" hidden>Enregistré</p>
+            </form>
+          </details>
+          {% endfor %}
+        </div>
         {% endif %}
 
         <h3 class="settings-subhead">Destination par défaut (déplacer)</h3>
@@ -314,9 +331,11 @@
         {% if move_defaults.is_empty() %}
         <p class="muted tiny">Aucun compte.</p>
         {% else %}
-        <form method="post" action="/settings/move-defaults" class="space-y-3">
+        <form method="post" action="/settings/move-defaults" class="settings-autosave"
+              hx-post="/settings/move-defaults" hx-trigger="change delay:200ms" hx-swap="none"
+              hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
           {% for d in move_defaults %}
-          <label class="block">
+          <label class="settings-row">
             <span class="label">{{ d.account }}</span>
             <input type="hidden" name="account" value="{{ d.account }}" />
             <select name="folder" class="select w-full">
@@ -327,12 +346,12 @@
             </select>
           </label>
           {% endfor %}
-          <button type="submit" class="btn secondary">Enregistrer les destinations</button>
+          <p class="settings-saved muted tiny" hidden>Enregistré</p>
         </form>
         {% endif %}
       </section>
 
-      <section class="settings-card settings-span" id="thunderbird-mail">
+      <section class="settings-card settings-span" id="thunderbird-mail" x-data="tbImportForm()">
         <h2>Import Thunderbird (mail)</h2>
         <p class="muted text-sm mb-3">
           Lit <code>prefs.js</code> (IMAP/SMTP). Les mots de passe ne sont pas importés.
@@ -341,25 +360,50 @@
         {% if thunderbird_profiles.is_empty() %}
         <p class="muted">Aucun profil Thunderbird trouvé.</p>
         {% else %}
-        <form method="post" action="/settings/thunderbird/import" class="space-y-3">
-          <label class="block">
+        <form method="post" action="/settings/thunderbird/import" class="compose-form">
+          <label class="settings-row">
             <span class="label">Profil</span>
-            <select name="profile" class="select w-full">
+            <select name="profile" class="select w-full" x-model="profile" @change="loadAccounts()">
               {% for p in thunderbird_profiles %}
               <option value="{{ p }}">{{ p }}</option>
               {% endfor %}
             </select>
           </label>
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="write" value="1" />
-            Écrire <code>config.toml</code> s’il n’existe pas encore
+          <div class="settings-row">
+            <span class="label">Comptes à importer</span>
+            <p class="muted tiny" x-show="loading">Chargement…</p>
+            <p class="muted tiny" x-show="error" x-text="error"></p>
+            <ul class="tb-account-list" x-show="!loading && accounts.length">
+              <template x-for="a in accounts" :key="a.name">
+                <li>
+                  <label class="toggle-row">
+                    <span>
+                      <strong x-text="a.display_name || a.name"></strong>
+                      <span class="muted tiny" x-text="a.email"></span>
+                    </span>
+                    <input class="toggle" type="checkbox" name="accounts" :value="a.name" x-model="selected" />
+                  </label>
+                </li>
+              </template>
+            </ul>
+            <div class="btn-row" x-show="accounts.length">
+              <button type="button" class="linkish" @click="selected = accounts.map(a => a.name)">Tout</button>
+              <button type="button" class="linkish" @click="selected = []">Aucun</button>
+            </div>
+          </div>
+          <label class="toggle-row">
+            <span>Ajouter au <code>config.toml</code> existant (fusion, Gmail → Ortie OAuth si dispo)</span>
+            <input class="toggle" type="checkbox" name="write" value="1" />
           </label>
-          <button type="submit" class="btn">Importer / prévisualiser</button>
+          <button type="submit" class="btn" :disabled="!selected.length">Importer / prévisualiser</button>
         </form>
         {% endif %}
 
         {% if let Some(preview) = import_preview %}
         <pre class="toml-preview mt-3">{{ preview }}</pre>
+        {% endif %}
+        {% if let Some(msg) = import_message %}
+        <div class="offline-strip mt-3">{{ msg }}</div>
         {% endif %}
       </section>
 
@@ -613,16 +657,16 @@
       <section class="settings-card" id="gmail">
         <h2>Gmail / Ortie</h2>
         <p class="muted text-sm mb-2">
-          Gmail n’accepte plus les mots de passe classiques. Utilisez un mot de passe d’application,
-          ou <strong>Ortie</strong> pour OAuth (Gmail, Google Calendar/Contacts).
+          Après import Thunderbird d’un Gmail, HimaWeb prépare Himalaya (oauthbearer) + Ortie.
+          Lancez ensuite OAuth avec le <strong>nom de compte Himalaya</strong> (ex. <code>morglaf-gmail-com</code>).
         </p>
         <p class="muted tiny mb-3">
           Ortie : {% if ortie_available %}<span class="ok">disponible</span>{% else %}<span class="badge-warn">binaire introuvable</span>{% endif %}
         </p>
         <form method="post" action="/settings/ortie/auth" class="space-y-3">
           <label class="block">
-            <span class="label">Compte / profil Ortie</span>
-            <input class="input w-full" name="account" placeholder="gmail" {% if !ortie_available %}disabled{% endif %} />
+            <span class="label">Compte Ortie (= nom Himalaya)</span>
+            <input class="input w-full" name="account" placeholder="morglaf-gmail-com" {% if !ortie_available %}disabled{% endif %} />
           </label>
           <button type="submit" class="btn" {% if !ortie_available %}disabled{% endif %}>Lancer OAuth Ortie</button>
         </form>
@@ -658,9 +702,9 @@
           Mirador : {% if mirador_available %}<span class="ok">disponible</span>{% else %}<span class="badge-warn">binaire introuvable — poll actif</span>{% endif %}
         </p>
         <form method="post" action="/settings/mirador/watch" class="space-y-3">
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="enabled" value="1" {% if mirador_enabled %}checked{% endif %} {% if !mirador_available %}disabled{% endif %} />
-            Activer le watch Mirador (complète le poll)
+          <label class="toggle-row">
+            <span>Activer le watch Mirador (complète le poll)</span>
+            <input class="toggle" type="checkbox" name="enabled" value="1" {% if mirador_enabled %}checked{% endif %} {% if !mirador_available %}disabled{% endif %} />
           </label>
           <button type="submit" class="btn secondary" {% if !mirador_available %}disabled{% endif %}>Enregistrer</button>
         </form>
@@ -710,9 +754,9 @@
         <h3 class="settings-subhead">Plugin NTFY (intégré)</h3>
         <p class="muted text-sm mb-2">Push hors navigateur pour les dossiers surveillés.</p>
         <form method="post" action="/settings/ntfy" class="space-y-3">
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="enabled" value="1" {% if ntfy_enabled %}checked{% endif %} />
-            Activer NTFY
+          <label class="toggle-row">
+            <span>Activer NTFY</span>
+            <input class="toggle" type="checkbox" name="enabled" value="1" {% if ntfy_enabled %}checked{% endif %} />
           </label>
           <label class="block">
             <span class="label">Serveur</span>
@@ -740,9 +784,9 @@
                 scanning: false,
                 scanError: ''
               })">
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="enabled" value="1" {% if ai_enabled %}checked{% endif %} />
-            Activer l’IA
+          <label class="toggle-row">
+            <span>Activer l’IA</span>
+            <input class="toggle" type="checkbox" name="enabled" value="1" {% if ai_enabled %}checked{% endif %} />
           </label>
           <label class="block">
             <span class="label">Fournisseur</span>

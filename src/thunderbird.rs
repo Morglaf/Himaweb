@@ -163,15 +163,22 @@ fn toml_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+fn is_gmail_account(acc: &ThunderbirdAccount) -> bool {
+    let h = acc.imap_host.to_ascii_lowercase();
+    let e = acc.email.to_ascii_lowercase();
+    h.contains("gmail.com") || h.contains("googlemail.com") || e.ends_with("@gmail.com") || e.ends_with("@googlemail.com")
+}
+
 /// Himalaya v2 schema: `[accounts.NAME]` + imap.*/smtp.* keys.
-pub fn to_himalaya_toml(accounts: &[ThunderbirdAccount]) -> String {
+/// Si `use_ortie` et compte Gmail : aperçu oauthbearer + commande Ortie.
+pub fn to_himalaya_toml(accounts: &[ThunderbirdAccount], use_ortie: bool) -> String {
     let mut out = String::from(
         "# Généré par HimaWeb depuis Thunderbird (format Himalaya v2)\n\
-         # Renseignez les mots de passe via password.raw (pas auth.cmd).\n\
          # Doc: https://github.com/pimalaya/himalaya/blob/master/config.sample.toml\n\n",
     );
 
     for (i, acc) in accounts.iter().enumerate() {
+        let gmail_oauth = use_ortie && is_gmail_account(acc);
         out.push_str(&format!("[accounts.{}]\n", acc.name));
         if i == 0 {
             out.push_str("default = true\n");
@@ -200,11 +207,23 @@ pub fn to_himalaya_toml(accounts: &[ThunderbirdAccount]) -> String {
             ));
             out.push_str("imap.starttls = true\n");
         }
-        out.push_str(&format!(
-            "imap.sasl.plain.username = \"{}\"\n",
-            toml_escape(&acc.imap_user)
-        ));
-        out.push_str("# imap.sasl.plain.password.raw = \"VOTRE_MOT_DE_PASSE\"\n\n");
+
+        if gmail_oauth {
+            out.push_str(&format!(
+                "imap.sasl.oauthbearer.username = \"{}\"\n",
+                toml_escape(&acc.email)
+            ));
+            out.push_str(&format!(
+                "imap.sasl.oauthbearer.token.command = [\"ortie\", \"token\", \"show\", \"-a\", \"{}\"]\n\n",
+                toml_escape(&acc.name)
+            ));
+        } else {
+            out.push_str(&format!(
+                "imap.sasl.plain.username = \"{}\"\n",
+                toml_escape(&acc.imap_user)
+            ));
+            out.push_str("# imap.sasl.plain.password.raw = \"VOTRE_MOT_DE_PASSE\"\n\n");
+        }
 
         if !acc.smtp_host.is_empty() {
             if acc.smtp_port == 465 {
@@ -219,11 +238,22 @@ pub fn to_himalaya_toml(accounts: &[ThunderbirdAccount]) -> String {
                 ));
                 out.push_str("smtp.starttls = true\n");
             }
-            out.push_str(&format!(
-                "smtp.sasl.plain.username = \"{}\"\n",
-                toml_escape(&acc.smtp_user)
-            ));
-            out.push_str("# smtp.sasl.plain.password.raw = \"VOTRE_MOT_DE_PASSE\"\n");
+            if gmail_oauth {
+                out.push_str(&format!(
+                    "smtp.sasl.oauthbearer.username = \"{}\"\n",
+                    toml_escape(&acc.email)
+                ));
+                out.push_str(&format!(
+                    "smtp.sasl.oauthbearer.token.command = [\"ortie\", \"token\", \"show\", \"-a\", \"{}\"]\n",
+                    toml_escape(&acc.name)
+                ));
+            } else {
+                out.push_str(&format!(
+                    "smtp.sasl.plain.username = \"{}\"\n",
+                    toml_escape(&acc.smtp_user)
+                ));
+                out.push_str("# smtp.sasl.plain.password.raw = \"VOTRE_MOT_DE_PASSE\"\n");
+            }
         }
         out.push('\n');
     }
