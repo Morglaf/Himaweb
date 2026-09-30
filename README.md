@@ -8,13 +8,37 @@ Stack UI : Rust / Axum, Askama, HTMX, Alpine.js, Lucide. Écoute uniquement sur 
 
 Licence : [GPL-3.0](LICENSE).
 
-## Prérequis
+## Installation
 
-- Rust (édition 2021)
-- [Himalaya](https://github.com/pimalaya/himalaya) configuré (`~/.config/himalaya/config.toml` ou `%APPDATA%\himalaya\config.toml`)
-- Optionnel : Cardamum, Calendula, Neverest, Mirador, Ortie, Ollama (IA locale) / Gemini
+### Binaire précompilé (recommandé)
 
-## Lancer
+*Unix (Linux / macOS) — root :*
+
+```sh
+curl -sSL https://raw.githubusercontent.com/Morglaf/Himaweb/master/install.sh | sudo sh
+```
+
+*Unix — utilisateur (ex. `~/.local/bin`) :*
+
+```sh
+curl -sSL https://raw.githubusercontent.com/Morglaf/Himaweb/master/install.sh | PREFIX=~/.local sh
+```
+
+*Windows (PowerShell) :*
+
+```powershell
+irm https://raw.githubusercontent.com/Morglaf/Himaweb/master/install.ps1 | iex
+```
+
+Ces commandes téléchargent la dernière [release GitHub](https://github.com/Morglaf/Himaweb/releases).
+
+### Depuis les sources (Rust)
+
+```sh
+cargo install --locked --git https://github.com/Morglaf/Himaweb.git
+```
+
+Ou en développement :
 
 ```powershell
 .\scripts\dev.ps1
@@ -22,14 +46,119 @@ Licence : [GPL-3.0](LICENSE).
 cargo run
 ```
 
-Ouvrir [http://127.0.0.1:8787](http://127.0.0.1:8787).
+## Dépendances
 
-Sous Windows, le binaire GUI n’ouvre pas de console. Pour voir les logs :
+HimaWeb ne fait rien tout seul : il appelle les binaires Pimalaya (et optionnellement Ollama) s’ils sont dans le `PATH`.
+
+| Outil | Statut | Rôle | Installation rapide |
+|-------|--------|------|---------------------|
+| **[Himalaya](https://github.com/pimalaya/himalaya)** | **Obligatoire** | Mail (comptes, boîtes, lecture, envoi, recherche…) | Voir ci-dessous |
+| **[Cardamum](https://github.com/pimalaya/cardamum)** | Conseillé | Contacts / suggestions d’adresses | Voir ci-dessous |
+| **[Calendula](https://github.com/pimalaya/calendula)** | Conseillé | Calendrier / événements | Voir ci-dessous |
+| **[Ortie](https://github.com/pimalaya/ortie)** | Conseillé | OAuth (Gmail, Microsoft, …) depuis Paramètres | Voir ci-dessous |
+| **[Ollama](https://ollama.com/)** | Conseillé | IA locale (brouillons mail / événements) | Voir ci-dessous |
+| **[Neverest](https://github.com/pimalaya/neverest)** | Optionnel | Sync / sauvegarde mail (depuis Paramètres) | `install.sh` Pimalaya ou `cargo install --git` |
+| **[Mirador](https://github.com/pimalaya/mirador)** | Optionnel | Watch des boîtes (complète le poll non-lus) | `cargo install --git` (releases encore limitées) |
+| Gemini API | Optionnel | Alternative cloud à Ollama (clé dans les prefs) | Compte Google AI |
+
+Sans Himalaya, HimaWeb démarre mais affiche une page d’état. Sans Cardamum / Calendula / Ortie / Ollama / etc., les sections concernées sont simplement limitées.
+
+### Installer Himalaya (obligatoire)
+
+```sh
+# Unix
+curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh | sudo sh
+# ou sans root :
+curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh | PREFIX=~/.local sh
+```
 
 ```powershell
-$env:HIMAWEB_CONSOLE = "1"
-cargo run
+# Windows : binaire depuis https://github.com/pimalaya/himalaya/releases
+# ou Scoop : scoop install himalaya
 ```
+
+Puis configurer un compte (une fois) :
+
+```sh
+himalaya
+# ou
+himalaya configure
+```
+
+Fichier typique : `~/.config/himalaya/config.toml` (Linux/macOS) ou `%APPDATA%\himalaya\config.toml` (Windows).
+
+### Installer Cardamum, Calendula, Ortie (conseillés)
+
+Même schéma que Himalaya :
+
+```sh
+curl -sSL https://raw.githubusercontent.com/pimalaya/cardamum/master/install.sh | PREFIX=~/.local sh
+curl -sSL https://raw.githubusercontent.com/pimalaya/calendula/master/install.sh | PREFIX=~/.local sh
+curl -sSL https://raw.githubusercontent.com/pimalaya/ortie/master/install.sh | PREFIX=~/.local sh
+```
+
+Configuration interactive :
+
+```sh
+cardamum configure   # contacts
+calendula configure  # calendrier
+ortie configure      # OAuth, puis : ortie auth get
+```
+
+### Installer Ollama (conseillé pour l’IA)
+
+1. Télécharger / installer depuis [ollama.com](https://ollama.com/)
+2. Lancer le service, puis tirer un modèle, par ex. :
+
+```sh
+ollama pull llama3.2
+```
+
+Dans HimaWeb → Paramètres → IA : activer Ollama (hôte local par défaut `http://127.0.0.1:11434`).
+
+### Neverest / Mirador (optionnel)
+
+```sh
+curl -sSL https://raw.githubusercontent.com/pimalaya/neverest/master/install.sh | PREFIX=~/.local sh
+# Mirador : souvent via cargo tant que les releases ne sont pas stables
+cargo install --locked --git https://github.com/pimalaya/mirador.git
+```
+
+### Overrides de binaires
+
+Si un outil n’est pas dans le `PATH` :
+
+| Variable | Défaut |
+|----------|--------|
+| `HIMAWEB_HIMALAYA_BIN` | `himalaya` |
+| `HIMAWEB_CARDAMUM_BIN` | `cardamum` |
+| `HIMAWEB_CALENDULA_BIN` | `calendula` |
+| `HIMAWEB_NEVEREST_BIN` | `neverest` |
+| `HIMAWEB_MIRADOR_BIN` | `mirador` |
+| `HIMAWEB_ORTIE_BIN` | `ortie` |
+
+## Premier lancement
+
+1. Installer **Himalaya** et avoir une config valide (`himalaya envelope list` doit fonctionner).
+2. (Conseillé) Installer Cardamum, Calendula, Ortie, Ollama selon les besoins.
+3. Installer HimaWeb (script ou `cargo install`).
+4. Lancer :
+
+```sh
+himaweb
+```
+
+```powershell
+himaweb
+# Logs sous Windows :
+$env:HIMAWEB_CONSOLE = "1"; himaweb
+```
+
+5. Le navigateur s’ouvre sur [http://127.0.0.1:8787](http://127.0.0.1:8787).
+6. Sous Windows, une icône de barre système permet d’ouvrir / relancer / quitter / activer le démarrage auto.
+7. Si aucun compte n’est encore configuré : aller dans **Paramètres** (import Thunderbird, édition des configs Pimalaya, OAuth via Ortie, sync Neverest, IA, NTFY…).
+
+Arrêt : menu tray **Quitter**, ou `Ctrl+C` si lancé dans un terminal avec console.
 
 ## Ce qui est déjà branché
 
@@ -61,15 +190,16 @@ src/
   plugins.rs    # store local de plugins (git clone)
   tray.rs       # icône barre système Windows
   cache/        # SQLite local (messages / contacts / calendrier)
-  config_form.rs, *import*, thunderbird.rs, accounts_config.rs
+  config_fix.rs, *import*, thunderbird.rs, accounts_config.rs
 templates/      # Askama + HTMX fragments
-static/         # app.css / app.js (cache-bust `?v=` dans shell.html)
+static/         # app.css / app.js (embarqués dans le binaire à la compilation)
 scripts/dev.ps1 # check binaires + cargo build + run
+install.sh      # installateur Unix (GitHub Releases)
+install.ps1     # installateur Windows (GitHub Releases)
 ```
 
 - **Bind** : `127.0.0.1:8787` uniquement (pas d’écoute réseau).
 - **Appels CLI** : `CliRunner` (timeout ~60 s, sortie JSON, `CREATE_NO_WINDOW` sous Windows). Concurrence limitée par un **semaphore (6)** (`AppState.cli_limit`).
-- **Overrides binaires** : `HIMAWEB_HIMALAYA_BIN`, `HIMAWEB_CARDAMUM_BIN`, `HIMAWEB_CALENDULA_BIN`, `HIMAWEB_NEVEREST_BIN`, `HIMAWEB_MIRADOR_BIN`, `HIMAWEB_ORTIE_BIN`.
 - **Configs Pimalaya** (Windows typique) : `%APPDATA%\himalaya\config.toml`, idem `cardamum` / `calendula` / `ortie`.
 - **Données HimaWeb** : `%LOCALAPPDATA%\HimaWeb\` — `prefs.json`, SQLite cache, `plugins/`. Les prefs UI ne touchent pas aux configs CLI.
 - **Front** : pages Askama ; interactions HTMX ; Alpine pour compose / picker icônes ; Lucide CDN. Après swap HTMX → `lucide.createIcons()`.
@@ -77,9 +207,18 @@ scripts/dev.ps1 # check binaires + cargo build + run
 - **Compose** : `multipart/form-data` pour les pièces jointes ; EML multipart (texte / HTML / PJ) avec en-tête `Date` RFC 2822.
 - **Dégradé gracieux** : sans Himalaya → page d’état ; sans Cardamum/Calendula/Neverest/… → sections limitées, le reste tourne.
 
+## Publier une release
+
+Sur un commit prêt :
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Le workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) construit les binaires (Linux x64/arm64, macOS x64/arm64, Windows x64) et les attache à la release GitHub. `install.sh` / `install.ps1` pointent vers `…/releases/latest/download/…`.
+
 ## Roadmap
-
-
 
 ### Moyen terme — données (toujours via CLI)
 
@@ -118,7 +257,6 @@ Objectif : maximiser l’usage de l’écosystème plutôt que de recréer des f
 1. Une feature = d’abord « quelle CLI / lib Pimalaya la fait déjà ? »
 2. HimaWeb = UI + orchestration + prefs locales
 3. Pas de second moteur IMAP / sync / OAuth / vCard
-
 
 ## Licence
 
