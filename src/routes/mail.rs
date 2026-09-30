@@ -4,8 +4,8 @@ use askama::Template;
 use axum::extract::{Query, State};
 use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
-use axum::{Form, Router};
-use serde::Deserialize;
+use axum::{Form, Json, Router};
+use serde::{Deserialize, Serialize};
 
 use crate::cli::himalaya::Envelope;
 use crate::prefs::Prefs;
@@ -23,6 +23,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/partials/message/delete-batch", post(delete_batch))
         .route("/account/select", post(select_account))
         .route("/api/mail/unread", get(unread_counts))
+        .route("/api/mail/move", post(move_api))
+        .route("/api/mail/delete", post(delete_api))
         .route("/mailboxes", get(sidebar))
 }
 
@@ -709,13 +711,20 @@ fn collapse_conversations(list: &[Envelope], rows: Vec<EnvelopeRow>) -> Vec<Enve
 }
 
 fn short_date(date: &str) -> String {
-    if date.len() >= 16 {
-        let day = &date[0..10];
-        let time = date.get(11..16).unwrap_or("");
-        format!("{day} {time}")
-    } else {
-        date.to_string()
+    let date = date.trim();
+    if date.is_empty() || date.eq_ignore_ascii_case("null") {
+        return "—".into();
     }
+    // ISO-8601 : 2026-09-28T17:59:00+02:00 ou avec espace
+    if date.len() >= 16 && date.as_bytes().get(4) == Some(&b'-') {
+        let day = &date[0..10];
+        let time = date.get(11..16).unwrap_or("").trim_end_matches('Z');
+        if !time.is_empty() && time.as_bytes().get(2) == Some(&b':') {
+            return format!("{day} {time}");
+        }
+        return day.to_string();
+    }
+    date.to_string()
 }
 
 /// Tri des listes / recherches Himalaya (`order by …`).
@@ -1307,16 +1316,43 @@ async fn message(
             "<p class=\"muted\">(corps vide)</p>".into()
         };
 
-        let attachments = msg
-            .attachments
-            .into_iter()
-            .map(|a| AttRow {
-                id: a.id,
-                filename: a.filename,
-                mime: a.mime,
-                size: a.size,
-            })
-            .collect();
+        let attachments = if state.himalaya_available && !offline_any {
+            match state
+                .himalaya
+                .list_attachments(&name, &tid, account_ref)
+                .await
+            {
+                Ok(list) if !list.is_empty() => list
+                    .into_iter()
+                    .map(|a| AttRow {
+                        id: a.id,
+                        filename: a.filename,
+                        mime: a.mime,
+                        size: a.size,
+                    })
+                    .collect(),
+                _ => msg
+                    .attachments
+                    .into_iter()
+                    .map(|a| AttRow {
+                        id: a.id,
+                        filename: a.filename,
+                        mime: a.mime,
+                        size: a.size,
+                    })
+                    .collect(),
+            }
+        } else {
+            msg.attachments
+                .into_iter()
+                .map(|a| AttRow {
+                    id: a.id,
+                    filename: a.filename,
+                    mime: a.mime,
+                    size: a.size,
+                })
+                .collect()
+        };
 
         if thread_subject.is_empty() {
             thread_subject = msg.subject.clone();
@@ -1471,6 +1507,7 @@ pub struct MoveForm {
     pub id: String,
     pub to: String,
     pub account: Option<String>,
+    pub to_account: Option<String>,
 }
 
 async fn move_msg(
@@ -1482,13 +1519,18 @@ async fn move_msg(
         .account
         .filter(|s| !s.is_empty())
         .or(state.account().await);
+    let to_account = form
+        .to_account
+        .filter(|s| !s.is_empty())
+        .or_else(|| account.clone());
     match state
         .himalaya
-        .move_message(
+        .move_message_to_account(
             &form.mailbox,
             &form.to,
             &form.id,
             account.as_deref(),
+            to_account.as_deref(),
         )
         .await
     {
@@ -1523,6 +1565,139 @@ if (window.lucide) lucide.createIcons();
         }
         Err(e) => Html(format!(r#"<div class="error">{e}</div>"#)).into_response(),
     }
+}
+
+#[derive(Deserialize)]
+pub struct MoveApiItem {
+    pub id: String,
+    pub mailbox: String,
+    pub account: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct MoveApiBody {
+    pub items: Vec<MoveApiItem>,
+    pub to_mailbox: String,
+    pub to_account: Option<String>,
+}
+
+#[derive(Serialize)]
+struct MoveApiResult {
+    ok: bool,
+    moved: Vec<MoveApiMoved>,
+    errors: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct MoveApiMoved {
+    id: String,
+    mailbox: String,
+    account: String,
+}
+
+async fn move_api(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<MoveApiBody>,
+) -> impl IntoResponse {
+    let _permit = state.cli_limit.acquire().await.ok();
+    let to_mailbox = body.to_mailbox.trim().to_string();
+    if to_mailbox.is_empty() || body.items.is_empty() {
+        return Json(MoveApiResult {
+            ok: false,
+            moved: vec![],
+            errors: vec!["destination ou liste vide".into()],
+        })
+        .into_response();
+    }
+    let default_acc = state.account().await;
+    let to_account_opt = body.to_account.filter(|s| !s.is_empty());
+    let mut moved = Vec::new();
+    let mut errors = Vec::new();
+    for item in body.items {
+        let from_acc = item
+            .account
+            .filter(|s| !s.is_empty())
+            .or_else(|| default_acc.clone());
+        let to_acc = to_account_opt.clone().or_else(|| from_acc.clone());
+        match state
+            .himalaya
+            .move_message_to_account(
+                &item.mailbox,
+                &to_mailbox,
+                &item.id,
+                from_acc.as_deref(),
+                to_acc.as_deref(),
+            )
+            .await
+        {
+            Ok(()) => moved.push(MoveApiMoved {
+                id: item.id,
+                mailbox: item.mailbox,
+                account: from_acc.unwrap_or_default(),
+            }),
+            Err(e) => errors.push(format!("{}: {e}", item.id)),
+        }
+    }
+    Json(MoveApiResult {
+        ok: errors.is_empty(),
+        moved,
+        errors,
+    })
+    .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct DeleteApiBody {
+    pub items: Vec<MoveApiItem>,
+}
+
+#[derive(Serialize)]
+struct DeleteApiResult {
+    ok: bool,
+    deleted: Vec<MoveApiMoved>,
+    errors: Vec<String>,
+}
+
+async fn delete_api(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<DeleteApiBody>,
+) -> impl IntoResponse {
+    if body.items.is_empty() {
+        return Json(DeleteApiResult {
+            ok: false,
+            deleted: vec![],
+            errors: vec!["liste vide".into()],
+        })
+        .into_response();
+    }
+    let default_acc = state.account().await;
+    let mut deleted = Vec::new();
+    let mut errors = Vec::new();
+    for item in body.items {
+        let _permit = state.cli_limit.acquire().await.ok();
+        let account = item
+            .account
+            .filter(|s| !s.is_empty())
+            .or_else(|| default_acc.clone());
+        match state
+            .himalaya
+            .delete_message(&item.mailbox, &item.id, account.as_deref())
+            .await
+        {
+            Ok(()) => deleted.push(MoveApiMoved {
+                id: item.id,
+                mailbox: item.mailbox,
+                account: account.unwrap_or_default(),
+            }),
+            Err(e) => errors.push(format!("{}: {e}", item.id)),
+        }
+    }
+    Json(DeleteApiResult {
+        ok: errors.is_empty(),
+        deleted,
+        errors,
+    })
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -1661,14 +1836,25 @@ async fn delete_batch(
     )
     .unwrap_or_else(|_| "[]".into());
 
+    let items_attr = html_escape(&ids_js);
     Html(format!(
-        r##"{err_html}<div class="empty-read"><i data-lucide="mail-open"></i><p class="muted">{ok} message(s) supprimé(s)</p></div>
+        r##"{err_html}<div class="empty-read" data-mail-event="deleted-batch" data-items="{items_attr}" data-id="{id_h}" data-mailbox="{mb_h}" data-account="{acc_h}"><i data-lucide="mail-open"></i><p class="muted">{ok} message(s) supprimé(s)</p></div>
 <script>
 if (window.HimaWeb) {{
   window.HimaWeb.onMessagesDeleted({{ items: {ids_js}, last: {{ id: {id_js}, mailbox: {mb_js}, account: {acc_js} }} }});
 }}
 if (window.lucide) lucide.createIcons();
-</script>"##
+</script>"##,
+        err_html = err_html,
+        items_attr = items_attr,
+        id_h = html_escape(&id),
+        mb_h = html_escape(&mb),
+        acc_h = html_escape(&acc),
+        ok = ok,
+        ids_js = ids_js,
+        id_js = id_js,
+        mb_js = mb_js,
+        acc_js = acc_js,
     ))
     .into_response()
 }
@@ -1704,6 +1890,7 @@ struct UnreadFolder {
     account: String,
     mailbox: String,
     unread: u64,
+    in_total: bool,
 }
 
 async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -1751,6 +1938,7 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             if unread == 0 {
                 continue;
             }
+            let in_total = prefs_snap.contributes_to_unread_total(&key, &m.name);
             folders.push(UnreadFolder {
                 label: if let Some(a) = acc_ref {
                     format!("{a} / {}", mailbox_label(&m.name))
@@ -1761,11 +1949,16 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
                 mailbox: m.name.clone(),
                 unread,
                 key,
+                in_total,
             });
         }
     }
 
-    let total: u64 = folders.iter().map(|f| f.unread).sum();
+    let total: u64 = folders
+        .iter()
+        .filter(|f| f.in_total)
+        .map(|f| f.unread)
+        .sum();
 
     // Plugin NTFY : notifie seulement si le total augmente
     if prefs_snap.ntfy_enabled && !prefs_snap.ntfy_topic.is_empty() {
@@ -1813,4 +2006,5 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }

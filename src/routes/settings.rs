@@ -60,6 +60,7 @@ struct ShellTemplate {
     pub cardamum_available: bool,
     pub theme: String,
     pub layout: String,
+    pub topbar_mode: String,
     pub ui_style: String,
     pub error: Option<String>,
     pub content: String,
@@ -70,6 +71,7 @@ struct ShellTemplate {
 struct SettingsTemplate {
     pub theme: String,
     pub layout: String,
+    pub topbar_mode: String,
     pub ui_font_scale: f32,
     pub ui_radius: u16,
     pub ui_space: f32,
@@ -166,6 +168,7 @@ pub struct FolderPrefRow {
     pub pinned: bool,
     pub hidden: bool,
     pub watched: bool,
+    pub count_in_total: bool,
 }
 
 pub struct FolderPrefGroup {
@@ -362,6 +365,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
                             pinned: prefs_snap.is_pinned(&key),
                             hidden: prefs_snap.is_hidden(&key),
                             watched: prefs_snap.is_watched(&key, &m.name),
+                            count_in_total: prefs_snap.contributes_to_unread_total(&key, &m.name),
                             label: m.name.clone(),
                             key,
                         }
@@ -433,6 +437,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
     let inner = SettingsTemplate {
         theme: theme.clone(),
         layout: layout.clone(),
+        topbar_mode: prefs_snap.topbar_mode.clone(),
         ui_font_scale: prefs_snap.ui_font_scale,
         ui_radius: prefs_snap.ui_radius,
         ui_space: prefs_snap.ui_space,
@@ -517,6 +522,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         cardamum_available: state.cardamum_available,
         theme,
         layout,
+        topbar_mode: prefs_snap.topbar_mode.clone(),
         ui_style: prefs_snap.ui_style_attr(),
         error: None,
         content,
@@ -531,6 +537,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
 pub struct UiForm {
     pub theme: String,
     pub layout: String,
+    pub topbar_mode: Option<String>,
     pub ui_font_scale: Option<f32>,
     pub ui_radius: Option<u16>,
     pub ui_space: Option<f32>,
@@ -548,6 +555,9 @@ async fn save_ui(
         let mut prefs = state.prefs.lock().await;
         prefs.theme = form.theme;
         prefs.layout = form.layout;
+        if let Some(mode) = form.topbar_mode {
+            prefs.topbar_mode = mode;
+        }
         if let Some(v) = form.ui_font_scale {
             prefs.ui_font_scale = v;
         }
@@ -832,11 +842,25 @@ async fn save_folders(
         .iter()
         .map(|s| s.to_string())
         .collect::<Vec<_>>();
+    let count_total = crate::form_util::form_values(&map, "count_total")
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
     {
         let mut prefs = state.prefs.lock().await;
         merge_pref_keys(&mut prefs.pinned_folders, &account, pinned);
         merge_pref_keys(&mut prefs.hidden_folders, &account, hidden);
-        merge_pref_keys(&mut prefs.watched_folders, &account, watched);
+        merge_pref_keys(&mut prefs.watched_folders, &account, watched.clone());
+        // badge_only = watched but not count_total (pour ce compte)
+        let prefix = format!("{account}::");
+        prefs
+            .badge_only_folders
+            .retain(|k| !k.starts_with(&prefix));
+        for k in &watched {
+            if k.starts_with(&prefix) && !count_total.iter().any(|t| t == k) {
+                prefs.badge_only_folders.push(k.clone());
+            }
+        }
         *prefs = prefs.clone().normalize();
         if let Err(e) = prefs.save() {
             tracing::warn!("prefs save folders: {e}");

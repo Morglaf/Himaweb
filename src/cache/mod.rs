@@ -262,7 +262,10 @@ impl Cache {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM contacts", [])?;
         {
-            let mut stmt = tx.prepare("INSERT INTO contacts(email, name) VALUES (?1, ?2)")?;
+            let mut stmt = tx.prepare(
+                "INSERT INTO contacts(email, name) VALUES (?1, ?2)
+                 ON CONFLICT(email) DO UPDATE SET name = excluded.name",
+            )?;
             for (email, name) in contacts {
                 if email.is_empty() {
                     continue;
@@ -355,6 +358,53 @@ impl Cache {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO cal_events(calendar_id, id, summary, start_raw, end_raw, description)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(calendar_id, id) DO UPDATE SET
+                   summary = excluded.summary,
+                   start_raw = excluded.start_raw,
+                   end_raw = excluded.end_raw,
+                   description = excluded.description",
+            )?;
+            for (id, summary, start, end, desc) in events {
+                stmt.execute(params![calendar_id, id, summary, start, end, desc])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Remplace uniquement les événements du mois indiqué (préserve les autres mois en cache).
+    pub fn replace_calendar_events_in_month(
+        &self,
+        calendar_id: &str,
+        year: i32,
+        month: u32,
+        events: &[(String, String, String, String, String)],
+    ) -> Result<(), CacheError> {
+        let prefix_compact = format!("{year:04}{month:02}");
+        let prefix_dash = format!("{year:04}-{month:02}");
+        let like_c = format!("{prefix_compact}%");
+        let like_d = format!("{prefix_dash}%");
+        let tx = self.conn.unchecked_transaction()?;
+        // Événements réellement datés dans ce mois
+        tx.execute(
+            "DELETE FROM cal_events WHERE calendar_id = ?1
+             AND (start_raw LIKE ?2 OR start_raw LIKE ?3)",
+            params![calendar_id, like_c, like_d],
+        )?;
+        // Aussi retirer les ids qu'on va réinsérer (récurrents dont DTSTART
+        // reste hors mois — sinon UNIQUE (calendar_id,id) fait rollback toute la tx).
+        {
+            let mut del = tx.prepare(
+                "DELETE FROM cal_events WHERE calendar_id = ?1 AND id = ?2",
+            )?;
+            for (id, _, _, _, _) in events {
+                del.execute(params![calendar_id, id])?;
+            }
+        }
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO cal_events(calendar_id, id, summary, start_raw, end_raw, description)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
             for (id, summary, start, end, desc) in events {
@@ -403,14 +453,18 @@ impl Cache {
         Ok(out)
     }
 
-    /// Prochains événements (start_raw >= maintenant, limite N).
+    /// Prochains événements (start_raw >= aujourd'hui, limite N).
     pub fn load_upcoming_events(
         &self,
         limit: usize,
     ) -> Result<Vec<(String, String, String, String)>, CacheError> {
+        let now = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let now_compact = chrono::Local::now().format("%Y%m%d").to_string();
+        // Pas de LIMIT avant filtre : sinon les vieux événements (anniversaires…)
+        // saturent la fenêtre et masquent le mois suivant.
         let mut stmt = self.conn.prepare(
             "SELECT id, summary, start_raw, calendar_id FROM cal_events
-             ORDER BY start_raw ASC LIMIT 200",
+             ORDER BY start_raw ASC",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((
@@ -420,17 +474,15 @@ impl Cache {
                 r.get::<_, String>(3)?,
             ))
         })?;
-        let now = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let now_compact = chrono::Local::now().format("%Y%m%d").to_string();
         let mut out = Vec::new();
         for row in rows.flatten() {
             let start = &row.2;
             let ok = if start.len() >= 10 && start.as_bytes().get(4) == Some(&b'-') {
                 start[..10] >= *now.as_str()
-            } else if start.len() >= 8 {
+            } else if start.len() >= 8 && start.chars().take(8).all(|c| c.is_ascii_digit()) {
                 start[..8] >= *now_compact.as_str()
             } else {
-                true
+                false
             };
             if ok {
                 out.push(row);

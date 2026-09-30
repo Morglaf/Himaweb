@@ -8,6 +8,9 @@ pub const ACCOUNT_ALL: &str = "__all__";
 pub struct Prefs {
     pub theme: String,
     pub layout: String,
+    /// Affichage barre du haut : `icon-text` | `icon` | `text`
+    #[serde(default = "default_topbar_mode")]
+    pub topbar_mode: String,
     /// None / empty = Himalaya default account; `__all__` = tous les comptes
     pub account: Option<String>,
     #[serde(default)]
@@ -19,6 +22,9 @@ pub struct Prefs {
     /// Dossiers surveillés pour compteurs / notifications (`compte::Inbox` ou `Inbox`)
     #[serde(default)]
     pub watched_folders: Vec<String>,
+    /// Sous-ensemble des dossiers surveillés : badge dossier seulement, hors total global
+    #[serde(default)]
+    pub badge_only_folders: Vec<String>,
     /// Notifications navigateur pour nouveaux non-lus
     #[serde(default = "default_true")]
     pub notifications: bool,
@@ -102,6 +108,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_topbar_mode() -> String {
+    "icon-text".into()
+}
+
 fn default_font_scale() -> f32 {
     1.0
 }
@@ -143,11 +153,13 @@ impl Default for Prefs {
         Self {
             theme: "light".into(),
             layout: "classic".into(),
+            topbar_mode: default_topbar_mode(),
             account: None,
             account_order: vec![],
             pinned_folders: vec![],
             hidden_folders: vec![],
             watched_folders: vec![],
+            badge_only_folders: vec![],
             notifications: true,
             account_colors: Default::default(),
             account_labels: Default::default(),
@@ -215,6 +227,12 @@ impl Prefs {
         if self.layout != "classic" && self.layout != "compact" && self.layout != "wide-read" {
             self.layout = "classic".into();
         }
+        if self.topbar_mode != "icon-text"
+            && self.topbar_mode != "icon"
+            && self.topbar_mode != "text"
+        {
+            self.topbar_mode = default_topbar_mode();
+        }
         self.ui_font_scale = self.ui_font_scale.clamp(0.8, 1.4);
         self.ui_space = self.ui_space.clamp(0.75, 1.4);
         self.ui_radius = self.ui_radius.clamp(0, 28);
@@ -226,6 +244,10 @@ impl Prefs {
         self.hidden_folders.dedup();
         self.watched_folders.sort();
         self.watched_folders.dedup();
+        self.badge_only_folders.sort();
+        self.badge_only_folders.dedup();
+        self.badge_only_folders
+            .retain(|b| self.watched_folders.iter().any(|w| w == b));
         self.hidden_folders
             .retain(|h| !self.pinned_folders.iter().any(|p| p == h));
         self
@@ -280,6 +302,16 @@ impl Prefs {
         }
         self.watched_folders.iter().any(|w| w == key)
             || self.watched_folders.iter().any(|w| w == mailbox)
+    }
+
+    /// Badge dossier sans contribution au total global (ex. Spam).
+    pub fn is_badge_only(&self, key: &str, mailbox: &str) -> bool {
+        self.badge_only_folders.iter().any(|b| b == key)
+            || self.badge_only_folders.iter().any(|b| b == mailbox)
+    }
+
+    pub fn contributes_to_unread_total(&self, key: &str, mailbox: &str) -> bool {
+        self.is_watched(key, mailbox) && !self.is_badge_only(key, mailbox)
     }
 
     pub fn account_color(&self, name: &str) -> String {

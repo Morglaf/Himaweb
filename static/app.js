@@ -79,6 +79,7 @@ function composeForm() {
     aiBusy: false,
     aiError: '',
     draftBusy: false,
+    attachNames: [],
     windowMode: 'normal',
     quill: null,
     suggestions: { to: [], cc: [], bcc: [] },
@@ -234,6 +235,13 @@ function composeForm() {
         this.bodyHtml = this.quill.root.innerHTML || '';
         this.body = this.quill.getText().replace(/\n$/, '');
       }
+    },
+    onFilesChange(ev) {
+      const files = (ev.target && ev.target.files) || [];
+      this.attachNames = [...files].map((f) => f.name);
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+      });
     },
     setWindow(mode) {
       this.windowMode = mode;
@@ -630,7 +638,7 @@ window.HimaWeb = {
       });
     });
     if (changed) this.bumpUnread(-1);
-    this.scheduleMailRefresh({ envelopes: false, sidebar: true, unread: true, unreadDelay: 900 });
+    this.scheduleMailRefresh({ envelopes: false, sidebar: false, unread: true, unreadDelay: 900 });
   },
 
   applyEnvelopeSeen(id, account, seen) {
@@ -662,7 +670,7 @@ window.HimaWeb = {
       }
     });
     if (changed) this.bumpUnread(seen ? -1 : 1);
-    this.scheduleMailRefresh({ envelopes: false, sidebar: true, unread: true, unreadDelay: 900 });
+    this.scheduleMailRefresh({ envelopes: false, sidebar: false, unread: true, unreadDelay: 900 });
   },
 
   bumpUnread(delta) {
@@ -823,7 +831,13 @@ window.HimaWeb = {
       }
       const color = el.getAttribute('data-account-color');
       const listTitle = document.getElementById('list-title');
-      if (listTitle && color) listTitle.style.setProperty('--list-title-color', color);
+      if (listTitle) {
+        if (el.classList.contains('folder-merged') || !color) {
+          listTitle.style.setProperty('--list-title-color', 'var(--accent)');
+        } else {
+          listTitle.style.setProperty('--list-title-color', color);
+        }
+      }
       const mb = document.getElementById('current-mailbox');
       const ac = document.getElementById('current-account');
       try {
@@ -866,7 +880,7 @@ window.HimaWeb = {
       });
     }
 
-    // Replier tout (sauf profondeur 0), puis ouvrir le chemin courant
+    // Replier tout (sauf profondeur 0), puis restaurer l’état mémorisé + chemin actif
     nav.querySelectorAll('.folder-row[data-depth]').forEach((row) => {
       const depth = parseInt(row.dataset.depth || '0', 10);
       row.classList.toggle('is-folded', depth > 0);
@@ -877,19 +891,24 @@ window.HimaWeb = {
       btn.classList.remove('open');
     });
 
+    const remembered = this.getExpandedFolders();
+    remembered.forEach((path) => {
+      if (nav.querySelector(`.folder-row[data-tree-id="${cssEsc(path)}"]`)) {
+        this.setFolderExpanded(nav, path, true, true);
+      }
+    });
+
     const current = nav.getAttribute('data-current') || '';
     const active = nav.querySelector('.folder-item.active');
     const activeRow = active && active.closest('.folder-row');
     if (activeRow) {
-      // Remonter les parents
       let parentId = activeRow.dataset.parent || '';
       while (parentId) {
-        this.setFolderExpanded(nav, parentId, true);
+        this.setFolderExpanded(nav, parentId, true, true);
         const parentRow = nav.querySelector(`.folder-row[data-tree-id="${cssEsc(parentId)}"]`);
         parentId = parentRow ? parentRow.dataset.parent || '' : '';
       }
     } else if (current) {
-      // Fallback : déplier Archive si current = Archive/…
       const parts = current.split('/');
       let acc = '';
       for (let i = 0; i < parts.length - 1; i++) {
@@ -898,15 +917,39 @@ window.HimaWeb = {
           const id = r.dataset.treeId || '';
           return id === acc || id.endsWith('::' + acc);
         });
-        if (row) this.setFolderExpanded(nav, row.dataset.treeId, true);
+        if (row) this.setFolderExpanded(nav, row.dataset.treeId, true, true);
       }
     }
+
+    // Sync mémoire avec l’état réel (chemins encore présents)
+    const openIds = [];
+    nav.querySelectorAll('.folder-twist[aria-expanded="true"]').forEach((btn) => {
+      const path = btn.getAttribute('data-twist');
+      if (path) openIds.push(path);
+    });
+    this.saveExpandedFolders(openIds);
 
     if (window.lucide) lucide.createIcons();
     void force;
   },
 
-  setFolderExpanded(nav, path, expanded) {
+  getExpandedFolders() {
+    try {
+      const raw = sessionStorage.getItem('himaweb-folder-expand');
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch (_) {
+      return [];
+    }
+  },
+
+  saveExpandedFolders(ids) {
+    try {
+      sessionStorage.setItem('himaweb-folder-expand', JSON.stringify([...new Set(ids)]));
+    } catch (_) {}
+  },
+
+  setFolderExpanded(nav, path, expanded, skipPersist) {
     if (!nav || !path) return;
     const twist = [...nav.querySelectorAll('.folder-twist')].find(
       (b) => b.getAttribute('data-twist') === path
@@ -920,10 +963,49 @@ window.HimaWeb = {
       if (row.dataset.parent === path) {
         row.classList.toggle('is-folded', !expanded);
         if (!expanded) {
-          window.HimaWeb.setFolderExpanded(nav, row.dataset.treeId, false);
+          window.HimaWeb.setFolderExpanded(nav, row.dataset.treeId, false, true);
         }
       }
     });
+    if (!skipPersist) {
+      const openIds = [];
+      nav.querySelectorAll('.folder-twist[aria-expanded="true"]').forEach((btn) => {
+        const p = btn.getAttribute('data-twist');
+        if (p) openIds.push(p);
+      });
+      this.saveExpandedFolders(openIds);
+    }
+  },
+
+  toggleRailCompact() {
+    const shell = document.getElementById('mail-root') || document.querySelector('.gmail-shell');
+    if (!shell) return;
+    const on = !shell.classList.contains('rail-compact');
+    shell.classList.toggle('rail-compact', on);
+    try {
+      localStorage.setItem('himaweb-rail-compact', on ? '1' : '0');
+    } catch (_) {}
+    const btn = document.querySelector('.rail-compact-btn');
+    if (btn) {
+      btn.title = on ? 'Étendre la colonne' : 'Compacter la colonne';
+      btn.setAttribute('aria-label', btn.title);
+    }
+    if (window.lucide) lucide.createIcons();
+  },
+
+  applyRailCompactFromStorage() {
+    const shell = document.getElementById('mail-root') || document.querySelector('.gmail-shell');
+    if (!shell) return;
+    let on = false;
+    try {
+      on = localStorage.getItem('himaweb-rail-compact') === '1';
+    } catch (_) {}
+    shell.classList.toggle('rail-compact', on);
+    const btn = document.querySelector('.rail-compact-btn');
+    if (btn) {
+      btn.title = on ? 'Étendre la colonne' : 'Compacter la colonne';
+      btn.setAttribute('aria-label', btn.title);
+    }
   },
 
   async pollUnread() {
@@ -1102,6 +1184,135 @@ window.HimaWeb = {
     });
   },
 
+  bindMailDragDrop() {
+    if (this._dndBound) return;
+    this._dndBound = true;
+    this._dndPayload = null;
+
+    const clearDropTargets = () => {
+      document.querySelectorAll('.drop-target').forEach((el) => el.classList.remove('drop-target'));
+    };
+
+    const folderTargetFromEvent = (ev) => {
+      const link = ev.target.closest(
+        'a.folder-link-text[data-folder-key], a.folder-link[data-folder-key]'
+      );
+      if (!link) return null;
+      if (link.classList.contains('folder-merged')) return null;
+      const mailbox = (link.getAttribute('data-folder-key') || '').includes('::')
+        ? (link.getAttribute('data-folder-key') || '').split('::').slice(1).join('::')
+        : link.getAttribute('data-folder-key') || link.getAttribute('data-label') || '';
+      const account = link.getAttribute('data-account') || '';
+      if (!mailbox) return null;
+      return { el: link.closest('.folder-item') || link, link, mailbox, account };
+    };
+
+    document.addEventListener('dragstart', (ev) => {
+      const env = ev.target.closest && ev.target.closest('.envelope');
+      if (!env || !ev.dataTransfer) return;
+      const mbDefault =
+        (document.getElementById('current-mailbox') &&
+          document.getElementById('current-mailbox').value) ||
+        'Inbox';
+      const item = {
+        id: env.dataset.id,
+        account: env.dataset.account || '',
+        mailbox: env.dataset.mailbox || mbDefault,
+      };
+      let items = [item];
+      const selected = this.selectedMailItems();
+      if (selected.length > 1) {
+        const key = `${item.account}\0${item.id}`;
+        if (selected.some((s) => `${s.account || ''}\0${s.id}` === key)) {
+          items = selected;
+        }
+      }
+      this._dndPayload = items;
+      env.classList.add('dragging');
+      ev.dataTransfer.effectAllowed = 'move';
+      ev.dataTransfer.setData('application/x-himaweb-mail', JSON.stringify(items));
+      ev.dataTransfer.setData('text/plain', items.map((i) => i.id).join(','));
+    });
+
+    document.addEventListener('dragend', () => {
+      document.querySelectorAll('.envelope.dragging').forEach((el) => el.classList.remove('dragging'));
+      clearDropTargets();
+      this._dndPayload = null;
+    });
+
+    document.addEventListener('dragover', (ev) => {
+      if (!this._dndPayload) return;
+      const target = folderTargetFromEvent(ev);
+      if (!target) return;
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = 'move';
+      clearDropTargets();
+      target.el.classList.add('drop-target');
+      if (target.link !== target.el) target.link.classList.add('drop-target');
+    });
+
+    document.addEventListener('dragleave', (ev) => {
+      const el = ev.target.closest && ev.target.closest('.drop-target');
+      if (el && !el.contains(ev.relatedTarget)) el.classList.remove('drop-target');
+    });
+
+    document.addEventListener('drop', (ev) => {
+      const target = folderTargetFromEvent(ev);
+      if (!target || !this._dndPayload) return;
+      ev.preventDefault();
+      clearDropTargets();
+      const items = this._dndPayload;
+      this._dndPayload = null;
+      document.querySelectorAll('.envelope.dragging').forEach((el) => el.classList.remove('dragging'));
+      // Refuse if all items already in that folder+account
+      const same = items.every(
+        (it) =>
+          (it.mailbox || '') === target.mailbox &&
+          (it.account || '') === (target.account || '')
+      );
+      if (same) return;
+      this.moveMailsToFolder(items, target.mailbox, target.account);
+    });
+  },
+
+  async moveMailsToFolder(items, toMailbox, toAccount) {
+    if (!items || !items.length || !toMailbox) return;
+    try {
+      const res = await fetch('/api/mail/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          items: items.map((it) => ({
+            id: it.id,
+            mailbox: it.mailbox,
+            account: it.account || null,
+          })),
+          to_mailbox: toMailbox,
+          to_account: toAccount || null,
+        }),
+      });
+      const data = await res.json();
+      const moved = (data && data.moved) || [];
+      if (moved.length) {
+        this.onMessagesDeleted({
+          items: moved.map((m) => ({
+            id: m.id,
+            mailbox: m.mailbox,
+            account: m.account || '',
+          })),
+          last: moved[moved.length - 1],
+        });
+      }
+      if (data && data.errors && data.errors.length) {
+        console.warn('move errors', data.errors);
+        alert(data.errors.join('\n'));
+      }
+    } catch (e) {
+      console.error(e);
+      alert('Échec du déplacement');
+    }
+  },
+
   onMessageDeleted({ id, mailbox, account }) {
     this.onMessagesDeleted({
       items: [{ id, mailbox, account: account || '' }],
@@ -1144,7 +1355,7 @@ window.HimaWeb = {
         const key = `${el.dataset.account || ''}\0${el.dataset.id}`;
         if (removed.has(key)) el.remove();
       });
-      this.clearMailSelection(false);
+      this.clearMailSelection(true);
 
       if (nextGet && window.htmx) {
         window.htmx.ajax('GET', nextGet, { target: '#message-pane', swap: 'innerHTML' });
@@ -1275,12 +1486,45 @@ window.HimaWeb = {
         ? 'Supprimer ce message ?'
         : `Supprimer ${items.length} messages ?`;
     if (!window.confirm(label)) return;
-    if (!window.htmx) return;
-    window.htmx.ajax('POST', '/partials/message/delete-batch', {
-      target: '#message-pane',
-      swap: 'innerHTML',
-      values: { items: JSON.stringify(items) },
-    });
+    this.deleteMailsApi(items);
+  },
+
+  async deleteMailsApi(items) {
+    if (!items || !items.length) return;
+    try {
+      const res = await fetch('/api/mail/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          items: items.map((it) => ({
+            id: it.id,
+            mailbox: it.mailbox,
+            account: it.account || null,
+          })),
+        }),
+      });
+      const data = await res.json();
+      const deleted = (data && data.deleted) || [];
+      if (deleted.length) {
+        this.onMessagesDeleted({
+          items: deleted.map((m) => ({
+            id: m.id,
+            mailbox: m.mailbox,
+            account: m.account || '',
+          })),
+          last: deleted[deleted.length - 1],
+        });
+      } else {
+        this.clearMailSelection(true);
+      }
+      if (data && data.errors && data.errors.length) {
+        console.warn('delete errors', data.errors);
+        alert(data.errors.join('\n'));
+      }
+    } catch (e) {
+      console.error(e);
+      alert('Échec de la suppression');
+    }
   },
 
   bindMailKeys() {
@@ -1595,7 +1839,15 @@ window.HimaWeb = {
             document.getElementById('current-mailbox').value) ||
           'Inbox';
         const unread = env.classList.contains('unread');
-        const payload = JSON.stringify({ id, account, mailbox });
+        const threadIds = (env.dataset.threadIds || id)
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const payload = JSON.stringify({ id, account, mailbox, threadIds });
+        const delLabel =
+          threadIds.length > 1
+            ? `Supprimer la conversation (${threadIds.length})`
+            : 'Supprimer';
         show(
           ev.clientX,
           ev.clientY,
@@ -1611,7 +1863,7 @@ window.HimaWeb = {
            <button type="button" data-ctx-action="reply" data-ctx-payload='${payload}'><i data-lucide="reply"></i> Répondre</button>
            <button type="button" data-ctx-action="forward" data-ctx-payload='${payload}'><i data-lucide="forward"></i> Transférer</button>
            <hr/>
-           <button type="button" class="danger" data-ctx-action="delete" data-ctx-payload='${payload}'><i data-lucide="trash-2"></i> Supprimer</button>`
+           <button type="button" class="danger" data-ctx-action="delete" data-ctx-payload='${payload}'><i data-lucide="trash-2"></i> ${delLabel}</button>`
         );
         return;
       }
@@ -1708,14 +1960,24 @@ window.HimaWeb = {
       return;
     }
     if (action === 'delete') {
-      if (!window.confirm('Supprimer ce message ?')) return;
-      if (window.htmx) {
-        window.htmx.ajax('POST', '/partials/message/delete', {
-          target: '#message-pane',
-          swap: 'innerHTML',
-          values: { mailbox: mb, id, account: acc },
-        });
-      }
+      const threadIds = Array.isArray(p.threadIds)
+        ? p.threadIds.map(String).filter(Boolean)
+        : id
+          ? [id]
+          : [];
+      const ids = threadIds.length ? threadIds : id ? [id] : [];
+      if (!ids.length) return;
+      const label =
+        ids.length > 1
+          ? `Supprimer cette conversation (${ids.length} messages) ?`
+          : 'Supprimer ce message ?';
+      if (!window.confirm(label)) return;
+      const items = ids.map((tid) => ({
+        id: tid,
+        mailbox: mb,
+        account: acc,
+      }));
+      this.deleteMailsApi(items);
       return;
     }
     if (action === 'cal-edit') {
@@ -1789,20 +2051,36 @@ document.addEventListener('htmx:afterSwap', (ev) => {
   if (t && (t.id === 'sidebar' || (t.querySelector && t.querySelector('#folder-nav')))) {
     window.HimaWeb.bindFolderClicks();
     window.HimaWeb.bindFolderTree(true);
+    window.HimaWeb.applyRailCompactFromStorage();
   }
   // Fallback si les <script> du fragment ne s'exécutent pas
   if (t && t.id === 'message-pane' && window.HimaWeb) {
     const evEl = t.querySelector('[data-mail-event]');
     if (evEl && !window.HimaWeb._handlingMailEvent) {
       const kind = evEl.getAttribute('data-mail-event');
-      const payload = {
-        id: evEl.getAttribute('data-id') || '',
-        mailbox: evEl.getAttribute('data-mailbox') || '',
-        account: evEl.getAttribute('data-account') || '',
-        to: evEl.getAttribute('data-to') || '',
-      };
-      if (kind === 'deleted') window.HimaWeb.onMessageDeleted(payload);
-      else if (kind === 'moved') window.HimaWeb.onMessageMoved(payload);
+      if (kind === 'deleted-batch') {
+        let items = [];
+        try {
+          items = JSON.parse(evEl.getAttribute('data-items') || '[]');
+        } catch (_) {}
+        window.HimaWeb.onMessagesDeleted({
+          items,
+          last: {
+            id: evEl.getAttribute('data-id') || '',
+            mailbox: evEl.getAttribute('data-mailbox') || '',
+            account: evEl.getAttribute('data-account') || '',
+          },
+        });
+      } else {
+        const payload = {
+          id: evEl.getAttribute('data-id') || '',
+          mailbox: evEl.getAttribute('data-mailbox') || '',
+          account: evEl.getAttribute('data-account') || '',
+          to: evEl.getAttribute('data-to') || '',
+        };
+        if (kind === 'deleted') window.HimaWeb.onMessageDeleted(payload);
+        else if (kind === 'moved') window.HimaWeb.onMessageMoved(payload);
+      }
     }
     const thread = t.querySelector('.thread-view[data-marked-read]');
     if (thread) {
@@ -1832,7 +2110,9 @@ document.addEventListener('DOMContentLoaded', () => {
   window.HimaWeb.bindColumnResize();
   window.HimaWeb.bindMailKeys();
   window.HimaWeb.bindContextMenus();
+  window.HimaWeb.bindMailDragDrop();
   window.HimaWeb.startUnreadPolling();
+  window.HimaWeb.applyRailCompactFromStorage();
   try {
     const side = document.getElementById('side-widget');
     if (side && localStorage.getItem('himaweb-side-open') === '0') {

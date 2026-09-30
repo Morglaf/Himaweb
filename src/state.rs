@@ -152,6 +152,10 @@ impl AppState {
         (p.theme.clone(), p.layout.clone())
     }
 
+    pub async fn topbar_mode(&self) -> String {
+        self.prefs.lock().await.topbar_mode.clone()
+    }
+
     pub async fn ui_style(&self) -> String {
         self.prefs.lock().await.ui_style_attr()
     }

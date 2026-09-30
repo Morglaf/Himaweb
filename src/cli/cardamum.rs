@@ -438,7 +438,7 @@ fn split_ref(r: &str) -> (Option<String>, String) {
     }
 }
 
-/// Id GAL SOGo typiques : `morglaf.com`, `codecolliders.com`
+/// Id GAL SOGo typiques : `myaccount.com`, `myotheraccount.com`
 fn looks_like_gal_id(id: &str) -> bool {
     let id = id.trim();
     if id.is_empty() || id.eq_ignore_ascii_case("personal") {

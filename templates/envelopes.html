@@ -10,7 +10,9 @@
 
 {% for e in envelopes %}
 <button type="button" class="envelope {% if e.unread %}unread{% endif %} {% if e.thread_count > 1 %}is-thread{% endif %}"
+        draggable="true"
         data-id="{{ e.id }}" data-account="{{ e.account }}" data-mailbox="{{ mailbox }}"
+        data-thread-ids="{{ e.thread_ids }}"
         style="{% if !e.color.is_empty() %}border-left: 3px solid {{ e.color }};{% endif %}"
         hx-get="/partials/message?mailbox={{ mailbox_enc }}&id={{ e.id }}{% if !e.account.is_empty() %}&account={{ e.account_enc }}{% endif %}{% if e.thread_count > 1 %}&thread={{ e.thread_ids_enc }}{% endif %}"
         hx-target="#message-pane"
@@ -34,7 +36,7 @@
     <div class="subject">
       {% if e.has_attachment %}<i data-lucide="paperclip" class="att-ico"></i>{% endif %}
       {% if e.thread_count > 1 %}<i data-lucide="messages-square" class="att-ico"></i>{% endif %}
-      {{ e.subject }}
+      <span class="subject-text">{{ e.subject }}</span>
     </div>
   </div>
 </button>

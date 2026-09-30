@@ -2,3 +2,25 @@
 **/*.rs.bk
 .DS_Store
 *.pdb
+Thumbs.db
+
+# Logs & env locaux
+*.log
+.env
+.env.*
+
+# Données / secrets utilisateur (ne jamais committer)
+prefs.json
+**/config.toml
+!**/Cargo.toml
+*.sqlite
+*.db
+*.db-journal
+
+# Tokens OAuth / certificats
+*.pem
+*.key
+*.p12
+*.pfx
+tokens/
+**/token-*

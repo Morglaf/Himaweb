@@ -6,7 +6,6 @@
       <div class="account-select-wrap" title="Changer de compte">
         <i data-lucide="circle-user" class="acct-select-ico"></i>
         <select id="account-select" name="account" class="account-select" onchange="this.form.submit()">
-          <option value="__all__" {% if all_selected %}selected{% endif %}>Tous les comptes</option>
           {% for a in accounts %}
           <option value="{{ a.name }}" {% if a.selected %}selected{% endif %}>
             {{ a.label }}{% if a.is_default %} · défaut{% endif %}
@@ -14,6 +13,7 @@
           {% else %}
           <option value="">(aucun compte)</option>
           {% endfor %}
+          <option value="__all__" {% if all_selected %}selected{% endif %}>Tous les comptes</option>
         </select>
         <i data-lucide="chevrons-up-down" class="chev"></i>
       </div>
@@ -21,6 +21,11 @@
     <a class="icon-btn compose-icon-btn" href="/compose" title="Nouveau message">
       <i data-lucide="pen-square"></i>
     </a>
+    <button type="button" class="icon-btn rail-compact-btn" title="Compacter la colonne"
+            aria-label="Compacter la colonne" onclick="window.HimaWeb && HimaWeb.toggleRailCompact()">
+      <i data-lucide="panel-left-close" class="rail-compact-ico-collapse"></i>
+      <i data-lucide="panel-left" class="rail-compact-ico-expand"></i>
+    </button>
   </div>
 
   {% if offline %}
@@ -99,6 +104,7 @@
            hx-include="#mail-sort"
            hx-push-url="/?mailbox={{ m.name_enc }}{% if all_selected && !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
            data-label="{{ m.label }}"
+           title="{{ m.label }}"
            data-folder-icon="{{ m.icon }}"
            data-folder-key="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}"
            data-account="{{ m.account }}"

@@ -19,7 +19,7 @@
         <h2>Thème et disposition</h2>
         <form method="post" action="/settings/ui" class="settings-autosave"
               hx-post="/settings/ui" hx-trigger="change delay:200ms" hx-swap="none"
-              hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
+              hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event); const m=this.querySelector('[name=topbar_mode]'); if(m) document.documentElement.dataset.topbar=m.value; const th=this.querySelector('[name=theme]'); if(th) document.documentElement.dataset.theme=th.value;">
           <label class="settings-row">
             <span class="label">Thème</span>
             <select name="theme" class="select w-full">
@@ -33,6 +33,14 @@
               <option value="classic" {% if layout == "classic" %}selected{% endif %}>Classique (3 colonnes)</option>
               <option value="compact" {% if layout == "compact" %}selected{% endif %}>Compacte</option>
               <option value="wide-read" {% if layout == "wide-read" %}selected{% endif %}>Lecture large</option>
+            </select>
+          </label>
+          <label class="settings-row">
+            <span class="label">Barre du haut</span>
+            <select name="topbar_mode" class="select w-full">
+              <option value="icon-text" {% if topbar_mode == "icon-text" %}selected{% endif %}>Icône et texte</option>
+              <option value="icon" {% if topbar_mode == "icon" %}selected{% endif %}>Icône seule</option>
+              <option value="text" {% if topbar_mode == "text" %}selected{% endif %}>Texte seul</option>
             </select>
           </label>
           <label class="settings-row">
@@ -313,9 +321,13 @@
                   <span>Masquer</span>
                   <input class="toggle" type="checkbox" name="hidden" value="{{ f.key }}" {% if f.hidden %}checked{% endif %} />
                 </label>
-                <label class="toggle-mini" title="Surveiller">
+                <label class="toggle-mini" title="Surveiller (badge sur le dossier)">
                   <span>Surveiller</span>
                   <input class="toggle" type="checkbox" name="watched" value="{{ f.key }}" {% if f.watched %}checked{% endif %} />
+                </label>
+                <label class="toggle-mini" title="Inclure dans le badge non-lus de la barre du haut">
+                  <span>Total</span>
+                  <input class="toggle" type="checkbox" name="count_total" value="{{ f.key }}" {% if f.count_in_total %}checked{% endif %} />
                 </label>
               </div>
               {% endfor %}
@@ -658,7 +670,7 @@
         <h2>Gmail / Ortie</h2>
         <p class="muted text-sm mb-2">
           Après import Thunderbird d’un Gmail, HimaWeb prépare Himalaya (oauthbearer) + Ortie.
-          Lancez ensuite OAuth avec le <strong>nom de compte Himalaya</strong> (ex. <code>morglaf-gmail-com</code>).
+          Lancez ensuite OAuth avec le <strong>nom de compte Himalaya</strong> (ex. <code>myaccount-gmail-com</code>).
         </p>
         <p class="muted tiny mb-3">
           Ortie : {% if ortie_available %}<span class="ok">disponible</span>{% else %}<span class="badge-warn">binaire introuvable</span>{% endif %}
@@ -666,7 +678,7 @@
         <form method="post" action="/settings/ortie/auth" class="space-y-3">
           <label class="block">
             <span class="label">Compte Ortie (= nom Himalaya)</span>
-            <input class="input w-full" name="account" placeholder="morglaf-gmail-com" {% if !ortie_available %}disabled{% endif %} />
+            <input class="input w-full" name="account" placeholder="myaccount-gmail-com" {% if !ortie_available %}disabled{% endif %} />
           </label>
           <button type="submit" class="btn" {% if !ortie_available %}disabled{% endif %}>Lancer OAuth Ortie</button>
         </form>

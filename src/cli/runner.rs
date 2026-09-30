@@ -28,9 +28,26 @@ pub struct CliRunner {
     timeout: Duration,
 }
 
+/// Évite le flash de console Windows quand le parent est `windows_subsystem`.
+#[cfg(windows)]
+fn hide_console(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_console(_cmd: &mut Command) {}
+
 impl CliRunner {
     pub fn new(timeout: Duration) -> Self {
         Self { timeout }
+    }
+
+    fn command(bin: &str) -> Command {
+        let mut cmd = Command::new(bin);
+        hide_console(&mut cmd);
+        cmd
     }
 
     pub async fn run_json(&self, bin: &str, args: &[&str]) -> CliResult<Value> {
@@ -42,7 +59,7 @@ impl CliRunner {
         full_args.extend_from_slice(args);
 
         let output = timeout(self.timeout, async {
-            Command::new(bin)
+            Self::command(bin)
                 .args(&full_args)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -97,7 +114,7 @@ impl CliRunner {
 
     pub async fn run_raw(&self, bin: &str, args: &[&str]) -> CliResult<Vec<u8>> {
         let output = timeout(self.timeout, async {
-            Command::new(bin)
+            Self::command(bin)
                 .args(args)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -132,7 +149,7 @@ impl CliRunner {
         full_args.extend_from_slice(args);
 
         let result = timeout(self.timeout, async {
-            let mut child = Command::new(bin)
+            let mut child = Self::command(bin)
                 .args(&full_args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())

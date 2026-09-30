@@ -3,6 +3,7 @@ name = "himaweb"
 version = "0.1.0"
 edition = "2021"
 description = "Local web GUI for Himalaya (and Cardamum/Calendula)"
+license = "GPL-3.0-only"
 
 [dependencies]
 axum = { version = "0.8", features = ["multipart", "form"] }
@@ -33,6 +34,7 @@ winreg = "0.55"
 tray-icon = "0.19"
 muda = "0.15"
 open = "5"
+base64 = "0.22"
 
 [profile.release]
 lto = true
@@ -40,4 +42,4 @@ codegen-units = 1
 strip = true
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
+windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_Console"] }

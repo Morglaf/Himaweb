@@ -67,7 +67,7 @@
       {% for a in m.attachments %}
       <li>
         <i data-lucide="paperclip"></i>
-        <a href="/attachments?mailbox={{ mailbox_enc }}&message_id={{ m.id }}&attachment_id={{ a.id }}">{{ a.filename }}</a>
+        <a href="/attachments?mailbox={{ mailbox_enc }}&message_id={{ m.id }}&attachment_id={{ a.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}" target="_blank" rel="noopener">{{ a.filename }}</a>
         <span class="muted tiny">{{ a.mime }} · {{ a.size }} o</span>
       </li>
       {% endfor %}

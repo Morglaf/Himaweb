@@ -57,7 +57,7 @@
         </div>
       </template>
 
-      <form method="post" action="/compose/send" class="compose-form"
+      <form method="post" action="/compose/send" class="compose-form" enctype="multipart/form-data"
             @submit="onSubmit($event)">
         <input type="hidden" name="account" :value="account" />
         <input type="hidden" name="html" :value="bodyMode === 'html' ? '1' : '0'" />
@@ -152,6 +152,17 @@
             <div id="compose-quill" class="compose-quill"></div>
           </div>
         </div>
+
+        <label class="compose-field">
+          <span class="label">Pièces jointes</span>
+          <input class="input w-full" type="file" name="attachments" multiple
+                 @change="onFilesChange($event)" />
+          <ul class="compose-attach-list muted tiny" x-show="attachNames.length" x-cloak>
+            <template x-for="n in attachNames" :key="n">
+              <li><i data-lucide="paperclip"></i> <span x-text="n"></span></li>
+            </template>
+          </ul>
+        </label>
 
         <div class="btn-row compose-actions">
           <button type="submit" class="btn" name="action" value="send">Envoyer</button>

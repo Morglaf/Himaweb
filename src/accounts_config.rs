@@ -594,6 +594,8 @@ pub fn ensure_ortie_gmail_accounts(accounts: &[(String, String)]) -> Result<Stri
                 &[
                     "powershell",
                     "-NoProfile",
+                    "-WindowStyle",
+                    "Hidden",
                     "-ExecutionPolicy",
                     "Bypass",
                     "-File",
@@ -607,6 +609,8 @@ pub fn ensure_ortie_gmail_accounts(accounts: &[(String, String)]) -> Result<Stri
                 &[
                     "powershell",
                     "-NoProfile",
+                    "-WindowStyle",
+                    "Hidden",
                     "-ExecutionPolicy",
                     "Bypass",
                     "-File",

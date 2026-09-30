@@ -18,6 +18,7 @@ pub struct DownloadQuery {
     pub mailbox: String,
     pub message_id: String,
     pub attachment_id: String,
+    pub account: Option<String>,
 }
 
 async fn download(
@@ -32,20 +33,52 @@ async fn download(
         }
     };
 
-    let account = state.account().await;
+    let account = q
+        .account
+        .filter(|s| !s.is_empty())
+        .or(state.account().await);
+
+    // Les IDs Himalaya sont les positions MIME 1-based (`attachment list`).
+    // Anciennes URLs pouvaient envoyer l'index 0-based du tableau `parts`.
+    let (resolved_id, nice_name) = match state
+        .himalaya
+        .list_attachments(&q.mailbox, &q.message_id, account.as_deref())
+        .await
+    {
+        Ok(list) if !list.is_empty() => {
+            let exact = list.iter().find(|a| a.id == q.attachment_id);
+            if let Some(a) = exact {
+                (a.id.clone(), a.filename.clone())
+            } else if let Ok(n) = q.attachment_id.parse::<u64>() {
+                let as_one = (n + 1).to_string();
+                if let Some(a) = list.iter().find(|a| a.id == as_one) {
+                    (a.id.clone(), a.filename.clone())
+                } else if let Some(a) = list.get(n as usize) {
+                    (a.id.clone(), a.filename.clone())
+                } else {
+                    (q.attachment_id.clone(), q.attachment_id.clone())
+                }
+            } else {
+                (q.attachment_id.clone(), q.attachment_id.clone())
+            }
+        }
+        Ok(_) => (q.attachment_id.clone(), q.attachment_id.clone()),
+        Err(_) => (q.attachment_id.clone(), q.attachment_id.clone()),
+    };
+
     match state
         .himalaya
         .download_attachment(
             &q.mailbox,
             &q.message_id,
-            &q.attachment_id,
+            &resolved_id,
             tmp.path().to_str().unwrap_or("."),
             account.as_deref(),
         )
         .await
     {
         Ok(bytes) => {
-            let filename = q.attachment_id.replace(['/', '\\'], "_");
+            let filename = nice_name.replace(['/', '\\'], "_");
             let mime = mime_guess::from_path(&filename)
                 .first_or_octet_stream()
                 .essence_str()
@@ -56,7 +89,10 @@ async fn download(
                     (header::CONTENT_TYPE, mime),
                     (
                         header::CONTENT_DISPOSITION,
-                        format!("attachment; filename=\"{filename}\""),
+                        format!(
+                            "attachment; filename=\"{}\"",
+                            filename.replace('"', "")
+                        ),
                     ),
                 ],
                 bytes,

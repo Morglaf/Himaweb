@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use askama::Template;
-use axum::extract::{Query, State};
+use axum::extract::{Multipart, Query, State};
 use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
-use axum::{Form, Router};
+use axum::Router;
+use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Deserialize;
 
 use crate::cli::himalaya::ComposeKind;
@@ -67,6 +68,7 @@ struct ShellTemplate {
     pub cardamum_available: bool,
     pub theme: String,
     pub layout: String,
+    pub topbar_mode: String,
     pub ui_style: String,
     pub error: Option<String>,
     pub content: String,
@@ -231,6 +233,7 @@ async fn compose_get(
         cardamum_available: state.cardamum_available,
         theme,
         layout,
+        topbar_mode: state.topbar_mode().await,
         ui_style: state.ui_style().await,
         error: None,
         content,
@@ -295,26 +298,98 @@ async fn load_account_opts(state: &AppState, preferred: &str) -> Vec<AccountOpt>
         .collect()
 }
 
-#[derive(Deserialize)]
-pub struct SendForm {
-    pub account: Option<String>,
-    pub to: String,
-    pub cc: Option<String>,
-    pub bcc: Option<String>,
-    pub subject: String,
-    pub body: String,
-    pub body_html: Option<String>,
-    pub html: Option<String>,
+
+
+#[derive(Default)]
+struct ParsedCompose {
+    account: Option<String>,
+    to: String,
+    cc: Option<String>,
+    bcc: Option<String>,
+    subject: String,
+    body: String,
+    body_html: Option<String>,
+    html: Option<String>,
+    files: Vec<(String, Vec<u8>)>,
 }
 
-fn form_wants_html(form: &SendForm) -> bool {
+fn form_wants_html(form: &ParsedCompose) -> bool {
     matches!(form.html.as_deref(), Some("1") | Some("true"))
+}
+
+async fn parse_compose_multipart(mut multipart: Multipart) -> Result<ParsedCompose, String> {
+    let mut out = ParsedCompose::default();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| format!("multipart: {e}"))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        let filename = field.file_name().map(|s| s.to_string());
+        let data = field.bytes().await.map_err(|e| format!("champ {name}: {e}"))?;
+        match name.as_str() {
+            "account" => {
+                let s = String::from_utf8_lossy(&data).trim().to_string();
+                if !s.is_empty() {
+                    out.account = Some(s);
+                }
+            }
+            "to" => out.to = String::from_utf8_lossy(&data).to_string(),
+            "cc" => {
+                let s = String::from_utf8_lossy(&data).to_string();
+                if !s.trim().is_empty() {
+                    out.cc = Some(s);
+                }
+            }
+            "bcc" => {
+                let s = String::from_utf8_lossy(&data).to_string();
+                if !s.trim().is_empty() {
+                    out.bcc = Some(s);
+                }
+            }
+            "subject" => out.subject = String::from_utf8_lossy(&data).to_string(),
+            "body" => out.body = String::from_utf8_lossy(&data).to_string(),
+            "body_html" => {
+                let s = String::from_utf8_lossy(&data).to_string();
+                if !s.trim().is_empty() {
+                    out.body_html = Some(s);
+                }
+            }
+            "html" => {
+                let s = String::from_utf8_lossy(&data).trim().to_string();
+                if !s.is_empty() {
+                    out.html = Some(s);
+                }
+            }
+            "attachments" => {
+                if let Some(name) = filename.filter(|s| !s.is_empty()) {
+                    if !data.is_empty() {
+                        out.files.push((name, data.to_vec()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
 }
 
 async fn compose_send(
     State(state): State<Arc<AppState>>,
-    Form(form): Form<SendForm>,
+    multipart: Multipart,
 ) -> impl IntoResponse {
+    let form = match parse_compose_multipart(multipart).await {
+        Ok(f) => f,
+        Err(e) => {
+            return Html(format!(r#"<div class="error">{e}</div>
+               <p><a href="javascript:history.back()">Retour</a></p>"#))
+                .into_response();
+        }
+    };
+    finish_send(state, form).await
+}
+
+async fn finish_send(state: Arc<AppState>, form: ParsedCompose) -> axum::response::Response {
     let to = match crate::cli::himalaya::smtp_address_list(&form.to) {
         Ok(t) => t,
         Err(e) => {
@@ -323,35 +398,27 @@ async fn compose_send(
                 .into_response();
         }
     };
-    let cc = form
-        .cc
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| crate::cli::himalaya::smtp_address_list(s))
-        .transpose();
-    let cc = match cc {
-        Ok(v) => v,
-        Err(e) => {
-            return Html(format!(r#"<div class="error">Cc : {e}</div>
+    let cc = match form.cc.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(raw) => match crate::cli::himalaya::smtp_address_list(raw) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                return Html(format!(r#"<div class="error">Cc : {e}</div>
                <p><a href="javascript:history.back()">Retour</a></p>"#))
-                .into_response();
-        }
+                    .into_response();
+            }
+        },
+        None => None,
     };
-    let bcc = form
-        .bcc
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| crate::cli::himalaya::smtp_address_list(s))
-        .transpose();
-    let bcc = match bcc {
-        Ok(v) => v,
-        Err(e) => {
-            return Html(format!(r#"<div class="error">Cci : {e}</div>
+    let bcc = match form.bcc.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(raw) => match crate::cli::himalaya::smtp_address_list(raw) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                return Html(format!(r#"<div class="error">Cci : {e}</div>
                <p><a href="javascript:history.back()">Retour</a></p>"#))
-                .into_response();
-        }
+                    .into_response();
+            }
+        },
+        None => None,
     };
 
     let account = form
@@ -362,40 +429,15 @@ async fn compose_send(
         .map(str::to_string)
         .or(state.account().await);
 
-    let from_header = account
-        .as_deref()
-        .and_then(|name| {
-            crate::accounts_config::list_editable_accounts()
-                .ok()
-                .and_then(|list| list.into_iter().find(|a| a.name == name))
-        })
-        .map(|a| {
-            if a.display_name.is_empty() {
-                a.email.clone()
-            } else if a.email.is_empty() {
-                a.display_name.clone()
-            } else {
-                format!("{} <{}>", a.display_name, a.email)
-            }
-        })
-        .filter(|s| s.contains('@'));
-
+    let from = resolve_from_header(account.as_deref());
     let as_html = form_wants_html(&form);
-    let form_norm = SendForm {
-        account: account.clone(),
-        to: to.clone(),
-        cc: cc.clone(),
-        bcc: bcc.clone(),
-        subject: form.subject.clone(),
-        body: form.body.clone(),
-        body_html: form.body_html.clone(),
-        html: form.html.clone(),
-    };
+    let has_files = !form.files.is_empty();
 
     let _permit = state.cli_limit.acquire().await.ok();
-    // En HTML : toujours passer par EML multipart (himalaya compose = plain)
-    if as_html {
-        let eml = build_eml(&form_norm, from_header.as_deref());
+
+    // PJ ou HTML : EML multipart (himalaya compose = plain sans fichiers)
+    if as_html || has_files {
+        let eml = build_eml(&form, from.as_deref().unwrap_or(""), &to, cc.as_deref(), bcc.as_deref(), &form.files);
         return match state
             .himalaya
             .send_raw_eml(eml.as_bytes(), account.as_deref())
@@ -403,7 +445,7 @@ async fn compose_send(
         {
             Ok(()) => Redirect::to("/").into_response(),
             Err(e) => Html(format!(
-                r#"<div class="error">Envoi échoué: {e}</div>
+                r#"<div class="error">Envoi échoué : {e}</div>
                <p><a href="javascript:history.back()">Retour</a></p>"#
             ))
             .into_response(),
@@ -419,13 +461,20 @@ async fn compose_send(
             &form.subject,
             &form.body,
             account.as_deref(),
-            from_header.as_deref(),
+            from.as_deref(),
         )
         .await
     {
         Ok(()) => Redirect::to("/").into_response(),
         Err(e) => {
-            let eml = build_eml(&form_norm, from_header.as_deref());
+            let eml = build_eml(
+                &form,
+                from.as_deref().unwrap_or(""),
+                &to,
+                cc.as_deref(),
+                bcc.as_deref(),
+                &form.files,
+            );
             match state
                 .himalaya
                 .send_raw_eml(eml.as_bytes(), account.as_deref())
@@ -433,7 +482,7 @@ async fn compose_send(
             {
                 Ok(()) => Redirect::to("/").into_response(),
                 Err(e2) => Html(format!(
-                    r#"<div class="error">Envoi échoué: {e} / {e2}</div>
+                    r#"<div class="error">Envoi échoué : {e} / {e2}</div>
                <p><a href="javascript:history.back()">Retour</a></p>"#
                 ))
                 .into_response(),
@@ -444,51 +493,49 @@ async fn compose_send(
 
 async fn compose_draft(
     State(state): State<Arc<AppState>>,
-    Form(form): Form<SendForm>,
+    multipart: Multipart,
 ) -> impl IntoResponse {
+    let form = match parse_compose_multipart(multipart).await {
+        Ok(f) => f,
+        Err(e) => {
+            return Html(format!(r#"<div class="error">{e}</div>
+               <p><a href="javascript:history.back()">Retour</a></p>"#))
+                .into_response();
+        }
+    };
+    finish_draft(state, form).await
+}
+
+async fn finish_draft(state: Arc<AppState>, form: ParsedCompose) -> axum::response::Response {
     let to = match crate::cli::himalaya::smtp_address_list(&form.to) {
         Ok(t) => t,
         Err(e) => {
-            return Html(format!(
-                r#"<div class="error">Destinataire : {e}</div>
-               <p><a href="javascript:history.back()">Retour</a></p>"#
-            ))
-            .into_response();
+            return Html(format!(r#"<div class="error">Destinataire : {e}</div>
+               <p><a href="javascript:history.back()">Retour</a></p>"#))
+                .into_response();
         }
     };
-    let cc = form
-        .cc
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| crate::cli::himalaya::smtp_address_list(s))
-        .transpose();
-    let cc = match cc {
-        Ok(v) => v,
-        Err(e) => {
-            return Html(format!(
-                r#"<div class="error">Cc : {e}</div>
-               <p><a href="javascript:history.back()">Retour</a></p>"#
-            ))
-            .into_response();
-        }
+    let cc = match form.cc.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(raw) => match crate::cli::himalaya::smtp_address_list(raw) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                return Html(format!(r#"<div class="error">Cc : {e}</div>
+               <p><a href="javascript:history.back()">Retour</a></p>"#))
+                    .into_response();
+            }
+        },
+        None => None,
     };
-    let bcc = form
-        .bcc
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| crate::cli::himalaya::smtp_address_list(s))
-        .transpose();
-    let bcc = match bcc {
-        Ok(v) => v,
-        Err(e) => {
-            return Html(format!(
-                r#"<div class="error">Cci : {e}</div>
-               <p><a href="javascript:history.back()">Retour</a></p>"#
-            ))
-            .into_response();
-        }
+    let bcc = match form.bcc.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(raw) => match crate::cli::himalaya::smtp_address_list(raw) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                return Html(format!(r#"<div class="error">Cci : {e}</div>
+               <p><a href="javascript:history.back()">Retour</a></p>"#))
+                    .into_response();
+            }
+        },
+        None => None,
     };
 
     let account = form
@@ -507,35 +554,20 @@ async fn compose_draft(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "drafts".into());
 
-    let from_header = account
-        .as_deref()
-        .and_then(|name| editable.into_iter().find(|a| a.name == name))
-        .map(|a| {
-            if a.display_name.is_empty() {
-                a.email.clone()
-            } else if a.email.is_empty() {
-                a.display_name.clone()
-            } else {
-                format!("{} <{}>", a.display_name, a.email)
-            }
-        })
-        .filter(|s| s.contains('@'));
-
-    let form_norm = SendForm {
-        account: account.clone(),
-        to: to.clone(),
-        cc: cc.clone(),
-        bcc: bcc.clone(),
-        subject: form.subject.clone(),
-        body: form.body.clone(),
-        body_html: form.body_html.clone(),
-        html: form.html.clone(),
-    };
+    let from = resolve_from_header(account.as_deref());
+    let as_html = form_wants_html(&form);
+    let has_files = !form.files.is_empty();
 
     let _permit = state.cli_limit.acquire().await.ok();
-    let as_html = form_wants_html(&form);
-    let saved = if as_html {
-        let eml = build_eml(&form_norm, from_header.as_deref());
+    let saved = if as_html || has_files {
+        let eml = build_eml(
+            &form,
+            from.as_deref().unwrap_or(""),
+            &to,
+            cc.as_deref(),
+            bcc.as_deref(),
+            &form.files,
+        );
         state
             .himalaya
             .save_raw_draft(eml.as_bytes(), &drafts_mailbox, account.as_deref())
@@ -550,119 +582,225 @@ async fn compose_draft(
                 &form.subject,
                 &form.body,
                 account.as_deref(),
-                from_header.as_deref(),
+                from.as_deref(),
                 &drafts_mailbox,
             )
             .await
         {
             Ok(()) => Ok(()),
             Err(e) => {
-                let eml = build_eml(&form_norm, from_header.as_deref());
-                state
+                let eml = build_eml(
+                    &form,
+                    from.as_deref().unwrap_or(""),
+                    &to,
+                    cc.as_deref(),
+                    bcc.as_deref(),
+                    &form.files,
+                );
+                match state
                     .himalaya
                     .save_raw_draft(eml.as_bytes(), &drafts_mailbox, account.as_deref())
                     .await
-                    .map_err(|e2| {
-                        crate::cli::runner::CliError::Message(format!("{e} / {e2}"))
-                    })
+                {
+                    Ok(()) => Ok(()),
+                    Err(e2) => Err(crate::cli::runner::CliError::Message(format!("{e} / {e2}"))),
+                }
             }
         }
     };
 
     match saved {
-        Ok(()) => Redirect::to("/?msg=Brouillon%20enregistré").into_response(),
+        Ok(()) => Redirect::to("/").into_response(),
         Err(e) => Html(format!(
-            r#"<div class="error">Brouillon échoué: {e}</div>
+            r#"<div class="error">Brouillon échoué : {e}</div>
                <p><a href="javascript:history.back()">Retour</a></p>"#
         ))
         .into_response(),
     }
 }
 
-fn build_eml(form: &SendForm, from: Option<&str>) -> String {
-    let mut headers = String::new();
-    if let Some(from) = from.filter(|s| !s.trim().is_empty()) {
-        headers.push_str(&format!("From: {}\r\n", from.trim()));
-    }
-    headers.push_str(&format!("To: {}\r\n", form.to.trim()));
-    if let Some(cc) = &form.cc {
-        if !cc.trim().is_empty() {
-            headers.push_str(&format!("Cc: {}\r\n", cc.trim()));
-        }
-    }
-    if let Some(bcc) = &form.bcc {
-        if !bcc.trim().is_empty() {
-            headers.push_str(&format!("Bcc: {}\r\n", bcc.trim()));
-        }
-    }
-    headers.push_str(&format!("Subject: {}\r\n", form.subject));
-    headers.push_str("MIME-Version: 1.0\r\n");
+fn resolve_from_header(account: Option<&str>) -> Option<String> {
+    let editable = crate::accounts_config::list_editable_accounts().unwrap_or_default();
+    account
+        .and_then(|name| editable.into_iter().find(|a| a.name == name))
+        .map(|a| {
+            if a.display_name.is_empty() {
+                a.email.clone()
+            } else if a.email.is_empty() {
+                a.display_name.clone()
+            } else {
+                format!("{} <{}>", a.display_name, a.email)
+            }
+        })
+        .filter(|s| s.contains('@'))
+}
 
-    let as_html = form_wants_html(form);
+fn build_eml(
+    form: &ParsedCompose,
+    from: &str,
+    to: &str,
+    cc: Option<&str>,
+    bcc: Option<&str>,
+    files: &[(String, Vec<u8>)],
+) -> String {
+    let subject = form.subject.trim();
+    let subject_hdr = if subject.is_ascii() && !subject.contains(['\r', '\n']) {
+        subject.to_string()
+    } else {
+        encode_rfc2047(subject)
+    };
+
+    let wants_html = form_wants_html(form);
     let html_body = form
         .body_html
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty());
-
-    if as_html {
-        if let Some(html) = html_body {
-            let boundary = format!("himaweb_{}", chrono::Local::now().timestamp_millis());
-            let plain = if form.body.trim().is_empty() {
-                html_to_approx_plain(html)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            if wants_html {
+                Some(format!(
+                    "<pre style=\"font-family:inherit;white-space:pre-wrap\">{}</pre>",
+                    html_escape(&form.body)
+                ))
             } else {
-                form.body.clone()
-            };
-            headers.push_str(&format!(
-                "Content-Type: multipart/alternative; boundary=\"{boundary}\"\r\n\r\n"
-            ));
-            headers.push_str(&format!("--{boundary}\r\n"));
-            headers.push_str("Content-Type: text/plain; charset=utf-8\r\n");
-            headers.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
-            headers.push_str(&plain.replace('\n', "\r\n"));
-            if !headers.ends_with("\r\n") {
-                headers.push_str("\r\n");
+                None
             }
-            headers.push_str(&format!("--{boundary}\r\n"));
-            headers.push_str("Content-Type: text/html; charset=utf-8\r\n");
-            headers.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
-            headers.push_str(&html.replace('\n', "\r\n"));
-            if !headers.ends_with("\r\n") {
-                headers.push_str("\r\n");
+        });
+
+    let mut headers = String::new();
+    if !from.trim().is_empty() {
+        headers.push_str(&format!("From: {}\r\n", from.trim()));
+    }
+    headers.push_str(&format!("To: {to}\r\n"));
+    if let Some(cc) = cc.filter(|s| !s.is_empty()) {
+        headers.push_str(&format!("Cc: {cc}\r\n"));
+    }
+    if let Some(bcc) = bcc.filter(|s| !s.is_empty()) {
+        headers.push_str(&format!("Bcc: {bcc}\r\n"));
+    }
+    // Obligatoire (RFC 5322) — sans Date, IMAP/Himalaya renvoient date=null.
+    headers.push_str(&format!(
+        "Date: {}\r\n",
+        chrono::Local::now().to_rfc2822()
+    ));
+    headers.push_str(&format!("Subject: {subject_hdr}\r\n"));
+    headers.push_str("MIME-Version: 1.0\r\n");
+
+    let text_part = {
+        let mut p = String::new();
+        p.push_str("Content-Type: text/plain; charset=utf-8\r\n");
+        p.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
+        p.push_str(&form.body.replace('\n', "\r\n"));
+        if !form.body.ends_with('\n') {
+            p.push_str("\r\n");
+        }
+        p
+    };
+
+    let html_part = html_body.as_ref().map(|html| {
+        let mut p = String::new();
+        p.push_str("Content-Type: text/html; charset=utf-8\r\n");
+        p.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
+        p.push_str(&html.replace('\n', "\r\n"));
+        if !html.ends_with('\n') {
+            p.push_str("\r\n");
+        }
+        p
+    });
+
+    let body_part = if let Some(hp) = html_part {
+        let alt = "----=_hima_alt_001";
+        let mut p = String::new();
+        p.push_str(&format!(
+            "Content-Type: multipart/alternative; boundary=\"{alt}\"\r\n\r\n"
+        ));
+        p.push_str(&format!("--{alt}\r\n{text_part}"));
+        p.push_str(&format!("--{alt}\r\n{hp}"));
+        p.push_str(&format!("--{alt}--\r\n"));
+        p
+    } else {
+        text_part
+    };
+
+    if files.is_empty() {
+        if html_body.is_some() {
+            let mixed_already = body_part.starts_with("Content-Type: multipart/");
+            if mixed_already {
+                // body_part already has Content-Type header — splice into message
+                return format!("{headers}{body_part}");
             }
-            headers.push_str(&format!("--{boundary}--\r\n"));
-            return headers;
+        }
+        if html_body.is_some() {
+            return format!("{headers}{body_part}");
+        }
+        headers.push_str("Content-Type: text/plain; charset=utf-8\r\n");
+        headers.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
+        headers.push_str(&form.body.replace('\n', "\r\n"));
+        if !form.body.ends_with('\n') {
+            headers.push_str("\r\n");
+        }
+        return headers;
+    }
+
+    let bound = "----=_hima_mix_001";
+    headers.push_str(&format!(
+        "Content-Type: multipart/mixed; boundary=\"{bound}\"\r\n\r\n"
+    ));
+    let mut out = headers;
+    out.push_str(&format!("--{bound}\r\n{body_part}"));
+    for (name, data) in files {
+        let safe_name = name.replace(['"', '\r', '\n'], "_");
+        let mime = guess_mime(&safe_name);
+        out.push_str(&format!("--{bound}\r\n"));
+        out.push_str(&format!(
+            "Content-Type: {mime}; name=\"{safe_name}\"\r\n"
+        ));
+        out.push_str("Content-Transfer-Encoding: base64\r\n");
+        out.push_str(&format!(
+            "Content-Disposition: attachment; filename=\"{safe_name}\"\r\n\r\n"
+        ));
+        let b64 = B64.encode(data);
+        for chunk in b64.as_bytes().chunks(76) {
+            out.push_str(std::str::from_utf8(chunk).unwrap_or(""));
+            out.push_str("\r\n");
         }
     }
-
-    headers.push_str("Content-Type: text/plain; charset=utf-8\r\n");
-    headers.push_str("Content-Transfer-Encoding: 8bit\r\n");
-    headers.push_str("\r\n");
-    headers.push_str(&form.body.replace('\n', "\r\n"));
-    if !headers.ends_with("\r\n") {
-        headers.push_str("\r\n");
-    }
-    headers
+    out.push_str(&format!("--{bound}--\r\n"));
+    out
 }
 
-fn html_to_approx_plain(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for c in html.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(c),
-            _ => {}
-        }
+fn guess_mime(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".pdf") {
+        "application/pdf"
+    } else if lower.ends_with(".txt") {
+        "text/plain"
+    } else if lower.ends_with(".html") || lower.ends_with(".htm") {
+        "text/html"
+    } else if lower.ends_with(".zip") {
+        "application/zip"
+    } else {
+        "application/octet-stream"
     }
-    html_unescape_basic(&out)
 }
 
-fn html_unescape_basic(s: &str) -> String {
-    s.replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
+fn encode_rfc2047(s: &str) -> String {
+    let b64 = B64.encode(s.as_bytes());
+    format!("=?UTF-8?B?{b64}?=")
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }

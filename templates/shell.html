@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fr" data-theme="{{ theme }}" data-layout="{{ layout }}" style="{{ ui_style }}">
+<html lang="fr" data-theme="{{ theme }}" data-layout="{{ layout }}" data-topbar="{{ topbar_mode }}" style="{{ ui_style }}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -12,12 +12,12 @@
     // App locale de confiance : autoriser les scripts dans les fragments HTMX
     htmx.config.allowScriptTags = true;
   </script>
-  <script defer src="/static/app.js?v=20260929g"></script>
+  <script defer src="/static/app.js?v=20260929j"></script>
   <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
   <script src="https://unpkg.com/lucide@0.469.0"></script>
   <script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css" />
-  <link rel="stylesheet" href="/static/app.css?v=20260929g" />
+  <link rel="stylesheet" href="/static/app.css?v=20260929j" />
 </head>
 <body>
   <header class="topbar">
@@ -25,16 +25,17 @@
       <i data-lucide="mountain"></i>
     </a>
     <nav class="top-nav">
-      <a href="/" class="tab {% if active_tab == "mail" %}tab-active{% endif %}"><i data-lucide="mail"></i> Mail <span id="unread-badge" class="nav-badge" hidden>0</span></a>
-      <a href="/search" class="tab {% if active_tab == "search" %}tab-active{% endif %}"><i data-lucide="search"></i> Recherche</a>
-      <a href="/contacts" class="tab {% if active_tab == "contacts" %}tab-active{% endif %}"><i data-lucide="contact"></i> Contacts</a>
-      <a href="/calendar" class="tab {% if active_tab == "calendar" %}tab-active{% endif %}"><i data-lucide="calendar"></i> Calendrier</a>
-      <a href="/ai" class="tab {% if active_tab == "ai" %}tab-active{% endif %}"><i data-lucide="sparkles"></i> IA</a>
-      <a href="/settings" class="tab {% if active_tab == "settings" %}tab-active{% endif %}"><i data-lucide="settings"></i> Paramètres</a>
+      <a href="/" class="tab {% if active_tab == "mail" %}tab-active{% endif %}" title="Mail"><i data-lucide="mail"></i><span class="tab-label">Mail</span> <span id="unread-badge" class="nav-badge" hidden>0</span></a>
+      <a href="/search" class="tab {% if active_tab == "search" %}tab-active{% endif %}" title="Recherche"><i data-lucide="search"></i><span class="tab-label">Recherche</span></a>
+      <a href="/contacts" class="tab {% if active_tab == "contacts" %}tab-active{% endif %}" title="Contacts"><i data-lucide="contact"></i><span class="tab-label">Contacts</span></a>
+      <a href="/calendar" class="tab {% if active_tab == "calendar" %}tab-active{% endif %}" title="Calendrier"><i data-lucide="calendar"></i><span class="tab-label">Calendrier</span></a>
     </nav>
-    <div class="top-status">
-      {% if offline %}<span class="badge-offline">Hors-ligne</span>{% endif %}
-      {% if !himalaya_available %}<span class="badge-warn">Himalaya absent</span>{% endif %}
+    <div class="top-right">
+      <div class="top-status">
+        {% if offline %}<span class="badge-offline">Hors-ligne</span>{% endif %}
+        {% if !himalaya_available %}<span class="badge-warn">Himalaya absent</span>{% endif %}
+      </div>
+      <a href="/settings" class="tab tab-settings {% if active_tab == "settings" %}tab-active{% endif %}" title="Paramètres"><i data-lucide="settings"></i><span class="tab-label">Paramètres</span></a>
     </div>
   </header>
 

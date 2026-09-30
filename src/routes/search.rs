@@ -79,13 +79,19 @@ fn mailbox_label(name: &str) -> String {
 }
 
 fn short_date(date: &str) -> String {
-    if date.len() >= 16 {
-        let day = &date[0..10];
-        let time = date.get(11..16).unwrap_or("");
-        format!("{day} {time}")
-    } else {
-        date.to_string()
+    let date = date.trim();
+    if date.is_empty() || date.eq_ignore_ascii_case("null") {
+        return "—".into();
     }
+    if date.len() >= 16 && date.as_bytes().get(4) == Some(&b'-') {
+        let day = &date[0..10];
+        let time = date.get(11..16).unwrap_or("").trim_end_matches('Z');
+        if !time.is_empty() && time.as_bytes().get(2) == Some(&b':') {
+            return format!("{day} {time}");
+        }
+        return day.to_string();
+    }
+    date.to_string()
 }
 
 fn query_values(raw: &str, key: &str) -> Vec<String> {
@@ -247,6 +253,7 @@ async fn search_page(
             cardamum_available: state.cardamum_available,
             theme,
             layout,
+            topbar_mode: state.topbar_mode().await,
             ui_style: state.ui_style().await,
             error: None,
             content,

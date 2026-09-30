@@ -28,6 +28,7 @@ pub struct ShellTemplate {
     pub cardamum_available: bool,
     pub theme: String,
     pub layout: String,
+    pub topbar_mode: String,
     pub ui_style: String,
     pub error: Option<String>,
     pub content: String,
@@ -106,6 +107,11 @@ fn format_event_when(start: &str) -> String {
 
 async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let limit = state.prefs.lock().await.side_widget_events.max(1) as usize;
+    // Toujours rafraîchir mois courant + suivant pour le panneau (sinon les RDV
+    // du mois prochain manquent si le cache n'a vu que le mois affiché).
+    if state.calendula_available {
+        let _ = crate::routes::calendar::refresh_calendar_into_cache(&state).await;
+    }
     let (events, calendars) = {
         let cache = state.cache.lock().await;
         let events = cache
@@ -116,7 +122,7 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 summary,
                 when: format_event_when(&start),
             })
-            .collect();
+            .collect::<Vec<_>>();
         let calendars = cache
             .load_calendars()
             .unwrap_or_default()
@@ -198,6 +204,7 @@ async fn home(
                     cardamum_available: state.cardamum_available,
                     theme,
                     layout,
+                    topbar_mode: state.topbar_mode().await,
                     ui_style: ui_style.clone(),
                     error: Some(
                         "Himalaya est introuvable. Installez-le ou définissez HIMAWEB_HIMALAYA_BIN."
@@ -222,6 +229,7 @@ async fn home(
                 cardamum_available: state.cardamum_available,
                 theme: theme.clone(),
                 layout: layout.clone(),
+                topbar_mode: state.topbar_mode().await,
                 ui_style: ui_style.clone(),
                 error: Some(format!(
                     "Aucun compte Himalaya configuré ({}). Allez dans Paramètres.",
@@ -334,6 +342,7 @@ async fn home(
             cardamum_available: state.cardamum_available,
             theme,
             layout,
+            topbar_mode: state.topbar_mode().await,
             ui_style,
             error: None,
             content,

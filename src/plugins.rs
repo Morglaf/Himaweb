@@ -79,7 +79,13 @@ pub fn install_from_git(repo: &str) -> Result<PluginInfo, String> {
     let id = repo_id(repo);
     let dest = dir.join(&id);
     if dest.exists() {
-        let status = Command::new("git")
+        let mut cmd = Command::new("git");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
+        let status = cmd
             .args(["-C", dest.to_str().unwrap_or("."), "pull", "--ff-only"])
             .status()
             .map_err(|e| format!("git pull: {e}"))?;
@@ -87,7 +93,13 @@ pub fn install_from_git(repo: &str) -> Result<PluginInfo, String> {
             return Err("git pull a échoué".into());
         }
     } else {
-        let status = Command::new("git")
+        let mut cmd = Command::new("git");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
+        let status = cmd
             .args(["clone", "--depth", "1", repo, dest.to_str().unwrap_or(".")])
             .status()
             .map_err(|e| format!("git clone: {e}"))?;

@@ -18,7 +18,8 @@
 <div class="search-strip muted tiny">{{ envelopes.len() }} résultat(s) pour « {{ query }} »</div>
 {% for e in envelopes %}
 <button type="button" class="envelope {% if e.unread %}unread{% endif %}"
-        data-id="{{ e.id }}" data-account="{{ e.account }}"
+        draggable="true"
+        data-id="{{ e.id }}" data-account="{{ e.account }}" data-mailbox="{{ e.mailbox }}"
         style="{% if !e.color.is_empty() %}border-left: 3px solid {{ e.color }};{% endif %}"
         hx-get="/partials/message?mailbox={{ e.mailbox_enc }}&id={{ e.id }}{% if !e.account.is_empty() %}&account={{ e.account_enc }}{% endif %}"
         hx-target="#message-pane"
@@ -36,7 +37,7 @@
     </div>
     <div class="subject">
       {% if e.has_attachment %}<i data-lucide="paperclip" class="att-ico"></i>{% endif %}
-      {{ e.subject }}
+      <span class="subject-text">{{ e.subject }}</span>
     </div>
   </div>
 </button>

@@ -72,7 +72,7 @@ button, select, input, textarea { font: inherit; color: inherit; }
   color: var(--accent);
 }
 .brand i { width: 22px; height: 22px; }
-.top-nav { display: flex; gap: 0.25rem; flex: 1; }
+.top-nav { display: flex; gap: 0.25rem; flex: 1; min-width: 0; }
 .tab {
   display: inline-flex;
   align-items: center;
@@ -81,11 +81,22 @@ button, select, input, textarea { font: inherit; color: inherit; }
   border-radius: 999px;
   color: var(--muted);
   font-weight: 500;
+  white-space: nowrap;
 }
-.tab i { width: 16px; height: 16px; }
+.tab i { width: 16px; height: 16px; flex-shrink: 0; }
 .tab:hover { background: var(--surface-2); color: var(--ink); }
 .tab-active { background: var(--accent-soft); color: var(--accent); }
-.top-status { margin-left: auto; display: flex; gap: 0.5rem; }
+.top-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+.top-status { display: flex; gap: 0.5rem; align-items: center; }
+html[data-topbar="icon"] .tab .tab-label { display: none; }
+html[data-topbar="icon"] .tab { padding: 0.45rem 0.55rem; }
+html[data-topbar="text"] .tab > i { display: none; }
 
 .page-main { padding: 0; }
 .page-main-mail { height: calc(100vh - 56px); overflow: hidden; }
@@ -263,6 +274,101 @@ button, select, input, textarea { font: inherit; color: inherit; }
 }
 [data-theme="dark"] .compose-icon-btn:hover { color: #0f1115; }
 
+.rail-compact-btn { flex-shrink: 0; position: relative; }
+.rail-compact-btn .rail-compact-ico-expand { display: none; }
+.gmail-shell.rail-compact {
+  --rail-compact-w: 56px;
+  grid-template-columns: var(--rail-compact-w) 6px var(--list) 6px 1fr;
+}
+.gmail-shell.rail-compact:has(.side-widget) {
+  grid-template-columns: var(--rail-compact-w) 6px var(--list) 6px 1fr 6px var(--side, 280px);
+}
+.gmail-shell.rail-compact:has(.side-widget[data-open="0"]) {
+  grid-template-columns: var(--rail-compact-w) 6px var(--list) 6px 1fr 0 0;
+}
+.gmail-shell.rail-compact .col-resizer[data-resize="rail"] {
+  pointer-events: none;
+  opacity: 0.35;
+}
+.gmail-shell.rail-compact .rail {
+  padding: 0.45rem 0.3rem;
+  overflow-x: hidden;
+}
+.gmail-shell.rail-compact .rail-actions {
+  flex-direction: column;
+  align-items: center;
+}
+.gmail-shell.rail-compact .account-form { flex: none; width: 100%; }
+.gmail-shell.rail-compact .account-select-wrap {
+  width: 40px;
+  margin: 0 auto;
+}
+.gmail-shell.rail-compact .account-select-wrap:hover,
+.gmail-shell.rail-compact .account-select-wrap:focus-within {
+  width: 40px;
+  padding: 0.35rem;
+}
+.gmail-shell.rail-compact .account-select-wrap:hover .account-select,
+.gmail-shell.rail-compact .account-select-wrap:focus-within .account-select,
+.gmail-shell.rail-compact .account-select-wrap .chev {
+  width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.gmail-shell.rail-compact .folder-label,
+.gmail-shell.rail-compact .folder-section-label,
+.gmail-shell.rail-compact .rail-badge {
+  display: none !important;
+}
+.gmail-shell.rail-compact .unread {
+  display: flex !important;
+  position: absolute;
+  top: 2px;
+  right: 0;
+  z-index: 3;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.25rem;
+  font-size: 0.6rem;
+  line-height: 1rem;
+  border-radius: 999px;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px var(--bg);
+}
+.gmail-shell.rail-compact .folder-item,
+.gmail-shell.rail-compact .folder-link {
+  position: relative;
+}
+.gmail-shell.rail-compact .folder-item {
+  justify-content: center;
+  padding-left: 0.25rem !important;
+  padding-right: 0.25rem;
+  gap: 0.15rem;
+}
+.gmail-shell.rail-compact .folder-link {
+  justify-content: center;
+  padding-left: 0.35rem;
+  padding-right: 0.35rem;
+}
+.gmail-shell.rail-compact .folder-link-text {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 0;
+}
+.gmail-shell.rail-compact .folder-acct-label {
+  display: none;
+}
+.gmail-shell.rail-compact .folder-twist {
+  position: relative;
+  z-index: 2;
+}
+.gmail-shell.rail-compact .rail-compact-btn .rail-compact-ico-collapse { display: none; }
+.gmail-shell.rail-compact .rail-compact-btn .rail-compact-ico-expand { display: block; }
+
 .folder-nav { display: flex; flex-direction: column; gap: 0.15rem; }
 .folder-section-label {
   font-size: 0.7rem;
@@ -310,6 +416,12 @@ button, select, input, textarea { font: inherit; color: inherit; }
   font-weight: 650;
 }
 .folder-link.active i { color: var(--accent); }
+.folder-link.drop-target,
+.folder-item.drop-target {
+  background: color-mix(in srgb, var(--accent-soft) 80%, var(--surface));
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
 .folder-row { display: block; }
 .folder-row.is-folded { display: none !important; }
 .folder-item {
@@ -645,6 +757,9 @@ button, select, input, textarea { font: inherit; color: inherit; }
   padding: 0.85rem 1rem;
   cursor: pointer;
 }
+.envelope.dragging {
+  opacity: 0.45;
+}
 .envelope:hover { background: var(--surface-2); }
 .envelope.is-selected,
 .envelope:focus-visible {
@@ -692,12 +807,6 @@ button, select, input, textarea { font: inherit; color: inherit; }
   background: color-mix(in srgb, #fff 8%, var(--surface));
 }
 .envelope.unread .subject { font-weight: 700; }
-.env-meta-right {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  flex-shrink: 0;
-}
 .thread-badge {
   display: inline-flex;
   align-items: center;
@@ -734,20 +843,45 @@ button, select, input, textarea { font: inherit; color: inherit; }
   font-weight: 700;
   flex-shrink: 0;
 }
+.env-main {
+  min-width: 0;
+  overflow: hidden;
+}
 .env-top {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
   gap: 0.5rem;
+  min-width: 0;
   margin-bottom: 0.15rem;
 }
-.from { font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.date { font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
+.from {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.env-meta-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+  margin-left: 0.25rem;
+}
+.date { font-size: 0.75rem; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
 .subject {
   font-size: 0.88rem;
   color: var(--ink);
   display: flex;
   align-items: center;
   gap: 0.35rem;
+  min-width: 0;
+  overflow: hidden;
+}
+.subject-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1579,6 +1713,13 @@ input.toggle:checked::after {
 .folder-merged {
   font-weight: 650;
   margin-bottom: 0.25rem;
+  color: var(--ink);
+}
+.folder-merged i {
+  color: var(--accent);
+}
+.folder-merged.active {
+  color: var(--accent);
 }
 .label {
   display: block;

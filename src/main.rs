@@ -1,3 +1,7 @@
+// Pas de fenêtre console au double-clic / démarrage Windows.
+// Logs visibles : lancer avec HIMAWEB_CONSOLE=1.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod accounts_config;
 mod account_colors;
 mod cache;
@@ -66,6 +70,15 @@ fn normalize_path(p: &Path) -> PathBuf {
 
 #[tokio::main]
 async fn main() {
+    #[cfg(windows)]
+    {
+        if std::env::var_os("HIMAWEB_CONSOLE").is_some() {
+            unsafe {
+                let _ = windows_sys::Win32::System::Console::AllocConsole();
+            }
+        }
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

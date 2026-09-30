@@ -309,10 +309,9 @@ impl HimalayaClient {
                 let date = item
                     .get("date")
                     .or_else(|| item.get("internal_date"))
-                    .map(|x| match x {
-                        Value::String(s) => s.clone(),
-                        other => other.to_string().trim_matches('"').to_string(),
-                    })
+                    .or_else(|| item.get("internal-date"))
+                    .map(envelope_date_string)
+                    .filter(|s| !s.is_empty())
                     .unwrap_or_default();
 
                 let has_attachment = item
@@ -432,10 +431,7 @@ impl HimalayaClient {
         if date.is_empty() {
             date = obj
                 .get("date")
-                .map(|x| match x {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                })
+                .map(envelope_date_string)
                 .unwrap_or_default();
         }
 
@@ -487,17 +483,20 @@ impl HimalayaClient {
                     .map(|(i, att)| {
                         // attachments may be indices into parts
                         if let Some(idx) = att.as_u64() {
+                            // Indices JSON parts sont 0-based ; Himalaya download attend un id 1-based.
+                            let part_id = idx + 1;
                             let filename = parts
                                 .and_then(|p| p.get(idx as usize))
                                 .map(|p| part_filename(p))
-                                .unwrap_or_else(|| format!("attachment-{idx}"));
+                                .unwrap_or_else(|| format!("attachment-{part_id}"));
                             AttachmentMeta {
-                                id: idx.to_string(),
+                                id: part_id.to_string(),
                                 filename,
                                 mime: "application/octet-stream".into(),
                                 size: 0,
                             }
                         } else {
+                            // Objet : `id` est déjà l'id MIME 1-based ; sinon repli 1-based.
                             AttachmentMeta {
                                 id: att
                                     .get("id")
@@ -505,9 +504,9 @@ impl HimalayaClient {
                                     .map(|x| match x {
                                         Value::String(s) => s.clone(),
                                         Value::Number(n) => n.to_string(),
-                                        _ => i.to_string(),
+                                        _ => (i + 1).to_string(),
                                     })
-                                    .unwrap_or_else(|| i.to_string()),
+                                    .unwrap_or_else(|| (i + 1).to_string()),
                                 filename: att
                                     .get("filename")
                                     .or_else(|| att.get("name"))
@@ -813,6 +812,70 @@ impl HimalayaClient {
         ))
     }
 
+    /// Liste les PJ avec les IDs MIME 1-based attendus par `attachment download`.
+    pub async fn list_attachments(
+        &self,
+        mailbox: &str,
+        message_id: &str,
+        account: Option<&str>,
+    ) -> CliResult<Vec<AttachmentMeta>> {
+        let args = Self::with_account(
+            account,
+            &["attachment", "list", "--mailbox", mailbox, message_id],
+        );
+        let v = self.json(&args).await?;
+        Ok(Self::parse_attachment_list(v))
+    }
+
+    fn parse_attachment_list(v: Value) -> Vec<AttachmentMeta> {
+        let arr = match v {
+            Value::Array(a) => a,
+            Value::Object(o) => o
+                .get("attachments")
+                .or_else(|| o.get("items"))
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default(),
+            _ => vec![],
+        };
+        arr.into_iter()
+            .enumerate()
+            .filter_map(|(i, att)| {
+                let id = att
+                    .get("id")
+                    .or_else(|| att.get("index"))
+                    .or_else(|| att.get("part"))
+                    .map(|x| match x {
+                        Value::String(s) => s.clone(),
+                        Value::Number(n) => n.to_string(),
+                        _ => String::new(),
+                    })
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| (i + 1).to_string());
+                let filename = att
+                    .get("filename")
+                    .or_else(|| att.get("name"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("attachment")
+                    .to_string();
+                let mime = att
+                    .get("mime")
+                    .or_else(|| att.get("type"))
+                    .or_else(|| att.get("content_type"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("application/octet-stream")
+                    .to_string();
+                let size = att.get("size").and_then(|x| x.as_u64()).unwrap_or(0);
+                Some(AttachmentMeta {
+                    id,
+                    filename,
+                    mime,
+                    size,
+                })
+            })
+            .collect()
+    }
+
     pub async fn send_message(
         &self,
         to: &str,
@@ -947,6 +1010,72 @@ impl HimalayaClient {
             .run_with_stdin(&self.bin, &args, eml)
             .await
             .map(|_| ())
+    }
+
+    /// Export raw RFC 5322 bytes (`message read --raw`).
+    pub async fn export_message_raw(
+        &self,
+        mailbox: &str,
+        id: &str,
+        account: Option<&str>,
+    ) -> CliResult<Vec<u8>> {
+        let args = Self::with_account(
+            account,
+            &["message", "read", "--mailbox", mailbox, "--raw", id],
+        );
+        self.runner.run_raw(&self.bin, &args).await
+    }
+
+    /// Append a raw message to a mailbox (`message add`).
+    pub async fn add_raw_message(
+        &self,
+        eml: &[u8],
+        mailbox: &str,
+        account: Option<&str>,
+    ) -> CliResult<()> {
+        let mb = mailbox.trim();
+        if mb.is_empty() {
+            return Err(CliError::Message("mailbox destination vide".into()));
+        }
+        let args = Self::with_account(account, &["message", "add", "--mailbox", mb]);
+        self.runner
+            .run_with_stdin(&self.bin, &args, eml)
+            .await
+            .map(|_| ())
+    }
+
+    /// Move within the same account, or cross-account via export → add → delete.
+    pub async fn move_message_to_account(
+        &self,
+        from: &str,
+        to: &str,
+        id: &str,
+        from_account: Option<&str>,
+        to_account: Option<&str>,
+    ) -> CliResult<()> {
+        let from_norm = from_account.map(str::trim).filter(|s| !s.is_empty());
+        let to_norm = to_account.map(str::trim).filter(|s| !s.is_empty());
+        let same = match (from_norm, to_norm) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a == b,
+            // Un compte explicite vs défaut : traiter comme potentiellement différent
+            // → si un seul côté est None, utiliser le move même compte avec le compte connu.
+            (Some(a), None) => {
+                return self.move_message(from, to, id, Some(a)).await;
+            }
+            (None, Some(b)) => {
+                return self.move_message(from, to, id, Some(b)).await;
+            }
+        };
+        if same {
+            return self.move_message(from, to, id, from_norm).await;
+        }
+        let raw = self
+            .export_message_raw(from, id, from_norm)
+            .await?;
+        self.add_raw_message(&raw, to, to_norm).await?;
+        self.delete_message(from, id, from_norm).await?;
+        Ok(())
     }
 
     pub async fn send_raw_eml(&self, eml: &[u8], account: Option<&str>) -> CliResult<()> {
@@ -1567,6 +1696,31 @@ fn header_address(value: Option<&Value>) -> String {
             .join(", ");
     }
     header_text(Some(value))
+}
+
+fn envelope_date_string(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() || t.eq_ignore_ascii_case("null") {
+                String::new()
+            } else {
+                t.to_string()
+            }
+        }
+        Value::Object(_) => {
+            // Même forme que les headers MIME DateTime, le cas échéant
+            let formatted = header_date(Some(value));
+            if formatted.eq_ignore_ascii_case("null") {
+                String::new()
+            } else {
+                formatted
+            }
+        }
+        Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    }
 }
 
 fn header_date(value: Option<&Value>) -> String {

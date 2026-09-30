@@ -41,6 +41,7 @@ struct ShellTemplate {
     pub cardamum_available: bool,
     pub theme: String,
     pub layout: String,
+    pub topbar_mode: String,
     pub ui_style: String,
     pub error: Option<String>,
     pub content: String,
@@ -264,6 +265,7 @@ async fn calendar_page(
         cardamum_available: state.cardamum_available,
         theme,
         layout,
+        topbar_mode: state.topbar_mode().await,
         ui_style: state.ui_style().await,
         error: None,
         content,
@@ -605,7 +607,7 @@ async fn fetch_and_cache_month(
                     .collect();
                 {
                     let cache = state.cache.lock().await;
-                    let _ = cache.replace_calendar_events(&c.id, &rows);
+                    let _ = cache.replace_calendar_events_in_month(&c.id, year, month, &rows);
                 }
                 all_events.extend(list.into_iter().map(|e| {
                     with_ev_json(to_event_row(
@@ -627,10 +629,17 @@ async fn fetch_and_cache_month(
     Ok((calendars, current_id, all_events))
 }
 
-/// Warm / refresh mois courant (+ voisin) pour le cache.
+/// Warm / refresh mois courant + mois suivant pour le cache (widget agenda).
 pub async fn refresh_calendar_into_cache(state: &AppState) -> Result<usize, String> {
     let now = Local::now().date_naive();
-    refresh_calendar_month(state, now.year(), now.month()).await
+    let mut n = refresh_calendar_month(state, now.year(), now.month()).await?;
+    if let Some(next) = now.checked_add_months(chrono::Months::new(1)) {
+        match refresh_calendar_month(state, next.year(), next.month()).await {
+            Ok(m) => n = n.saturating_add(m),
+            Err(e) => tracing::warn!("warm calendar next month: {e}"),
+        }
+    }
+    Ok(n)
 }
 
 pub async fn refresh_calendar_month(
