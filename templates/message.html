@@ -12,7 +12,8 @@
 
   {% for m in thread %}
   <article class="message-view thread-item {% if m.is_focus %}is-focus{% endif %} {% if m.unread %}is-unread{% endif %}"
-           id="thread-msg-{{ m.id }}" data-msg-id="{{ m.id }}">
+           id="thread-msg-{{ m.id }}" data-msg-id="{{ m.id }}"
+           x-data="window.HimaWeb.messageView({ hasRemote: {% if m.has_remote_content %}true{% else %}false{% endif %}, hasAccessory: {% if !m.accessory_attachments.is_empty() %}true{% else %}false{% endif %}, hasAttachments: {% if !m.attachments.is_empty() %}true{% else %}false{% endif %} })">
     <header class="msg-header">
       {% if thread_count > 1 %}
       <h2 class="thread-item-subject">{{ m.subject }}</h2>
@@ -26,6 +27,63 @@
         </div>
       </div>
       <div class="msg-actions">
+        <button type="button" class="icon-btn" title="Fond du message (clair / sombre / auto)"
+                @click="cycleBodyTone()">
+          <i data-lucide="sun-moon"></i>
+        </button>
+        <button type="button" class="icon-btn" title="Pièces jointes"
+                x-show="hasAttachments" x-cloak
+                @click="attsOpen = !attsOpen; $nextTick(() => lucide.createIcons())">
+          <i data-lucide="paperclip"></i>
+        </button>
+        <div class="acc-attach-wrap" x-show="hasRemote || hasAccessory" x-cloak @click.outside="closeAccPanel()">
+          <button type="button" class="icon-btn" x-ref="accBtn"
+                  :title="hasRemote ? (remoteUnlocked ? 'Masquer le contenu distant (clic) · Liste accessoires (clic droit)' : 'Afficher le contenu distant (clic) · Liste accessoires (clic droit)') : 'Liste accessoires (clic droit)'"
+                  @click.prevent="toggleRemote()"
+                  @contextmenu.prevent="toggleAccPanel($event)">
+            <i data-lucide="image-off" x-show="!remoteUnlocked"></i>
+            <i data-lucide="image" x-show="remoteUnlocked" x-cloak></i>
+          </button>
+          <div class="acc-attach-panel" x-ref="accPanel" x-show="accOpen" x-cloak>
+            {% if m.has_remote_content %}
+            <p class="muted tiny" x-text="remoteUnlocked ? 'Contenu distant affiché.' : 'Contenu distant masqué — clic gauche pour charger.'"></p>
+            {% endif %}
+            <div id="msg-acc-list-{{ m.id }}">
+              {% if !m.accessory_attachments.is_empty() %}
+              <ul class="attachments acc-attach-list">
+                {% for a in m.accessory_attachments %}
+                <li>
+                  <i data-lucide="paperclip"></i>
+                  <span class="acc-name" title="{{ a.filename }}">{{ a.filename }}</span>
+                  <span class="muted tiny">{{ a.mime }} · {{ a.size_label }}</span>
+                  <a class="icon-btn att-dl" title="Télécharger"
+                     href="/attachments?mailbox={{ mailbox_enc }}&message_id={{ m.id }}&attachment_id={{ a.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}"
+                     download="{{ a.filename }}" target="_blank" rel="noopener"><i data-lucide="download"></i></a>
+                </li>
+                {% endfor %}
+              </ul>
+              {% else %}
+              <p class="muted tiny acc-empty">{% if m.attachments_lazy %}Chargement…{% else %}{% endif %}</p>
+              {% endif %}
+            </div>
+            {% if !m.remote_resources.is_empty() %}
+            <ul class="attachments acc-attach-list">
+              {% for r in m.remote_resources %}
+              <li>
+                <i data-lucide="globe"></i>
+                <span class="acc-name" title="{{ r.url }}">{{ r.label }}</span>
+                <span class="muted tiny">image distante</span>
+                <a class="icon-btn att-dl" title="Ouvrir / télécharger"
+                   href="{{ r.url }}" target="_blank" rel="noopener noreferrer"><i data-lucide="download"></i></a>
+              </li>
+              {% endfor %}
+            </ul>
+            {% endif %}
+            {% if m.accessory_attachments.is_empty() && m.remote_resources.is_empty() && !m.attachments_lazy %}
+            <p class="muted tiny">Aucun accessoire.</p>
+            {% endif %}
+          </div>
+        </div>
         <a class="icon-btn" title="Répondre" href="/compose?kind=reply&mailbox={{ mailbox_enc }}&id={{ m.id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="reply"></i></a>
         <a class="icon-btn" title="Répondre à tous" href="/compose?kind=reply-all&mailbox={{ mailbox_enc }}&id={{ m.id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="reply-all"></i></a>
         <a class="icon-btn" title="Transférer" href="/compose?kind=forward&mailbox={{ mailbox_enc }}&id={{ m.id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="forward"></i></a>
@@ -62,24 +120,66 @@
       </div>
     </header>
 
-    {% if !m.attachments.is_empty() %}
-    <ul class="attachments">
-      {% for a in m.attachments %}
-      <li>
-        <i data-lucide="paperclip"></i>
-        <a href="/attachments?mailbox={{ mailbox_enc }}&message_id={{ m.id }}&attachment_id={{ a.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}" target="_blank" rel="noopener">{{ a.filename }}</a>
-        <span class="muted tiny">{{ a.mime }} · {{ a.size }} o</span>
-      </li>
-      {% endfor %}
-    </ul>
+    <div id="msg-atts-{{ m.id }}" x-show="attsOpen || !hasAttachments" x-cloak>
+      {% if !m.attachments.is_empty() %}
+      <ul class="attachments">
+        {% for a in m.attachments %}
+        <li>
+          <i data-lucide="paperclip"></i>
+          {% if a.previewable %}
+          <button type="button" class="att-preview-btn"
+                  data-preview-url="/attachments?mailbox={{ mailbox_enc }}&message_id={{ m.id }}&attachment_id={{ a.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}&disposition=inline"
+                  data-download-url="/attachments?mailbox={{ mailbox_enc }}&message_id={{ m.id }}&attachment_id={{ a.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}"
+                  data-filename="{{ a.filename }}"
+                  data-mime="{{ a.mime }}"
+                  @click="HimaWeb.openAttPreview($el)">{{ a.filename }}</button>
+          {% else %}
+          <a href="/attachments?mailbox={{ mailbox_enc }}&message_id={{ m.id }}&attachment_id={{ a.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}" target="_blank" rel="noopener">{{ a.filename }}</a>
+          {% endif %}
+          <span class="muted tiny">{{ a.mime }} · {{ a.size_label }}</span>
+          <a class="icon-btn att-dl" title="Télécharger"
+             href="/attachments?mailbox={{ mailbox_enc }}&message_id={{ m.id }}&attachment_id={{ a.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}"
+             download="{{ a.filename }}" target="_blank" rel="noopener"><i data-lucide="download"></i></a>
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+
+    {% if m.attachments_lazy %}
+    <div class="att-lazy-probe"
+         hx-get="/partials/message/attachments?mailbox={{ mailbox_enc }}&message_id={{ m.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}"
+         hx-trigger="load"
+         hx-swap="none"
+         hidden></div>
     {% endif %}
 
-    <div class="msg-body">
+    <div class="msg-body" :class="bodyToneClass" x-ref="body">
       {{ m.body|safe }}
     </div>
   </article>
   {% endfor %}
 </div>
+
+<div id="att-preview-modal" class="att-preview-backdrop" hidden
+     onclick="if (event.target === this) HimaWeb.closeAttPreview()"
+     onkeydown="if (event.key === 'Escape') HimaWeb.closeAttPreview()">
+  <div class="att-preview-dialog" role="dialog" aria-modal="true">
+    <header class="att-preview-bar">
+      <span id="att-preview-title" class="att-preview-title"></span>
+      <div class="att-preview-actions">
+        <a id="att-preview-download" class="icon-btn" title="Télécharger" target="_blank" rel="noopener" download>
+          <i data-lucide="download"></i>
+        </a>
+        <button type="button" class="icon-btn" title="Fermer" onclick="HimaWeb.closeAttPreview()">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+    </header>
+    <div id="att-preview-body" class="att-preview-body"></div>
+  </div>
+</div>
+
 <script>
 lucide.createIcons();
 {% if marked_read %}

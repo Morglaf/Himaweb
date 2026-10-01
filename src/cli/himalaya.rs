@@ -46,6 +46,9 @@ pub struct MessageView {
     pub body_text: String,
     pub attachments: Vec<AttachmentMeta>,
     pub raw_preview: String,
+    /// content-id (sans <>) → id MIME 1-based pour `attachment download`
+    #[serde(default)]
+    pub cid_map: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,6 +256,7 @@ impl HimalayaClient {
             page_s,
             "--page-size".into(),
             size_s,
+            "--has-attachment".into(),
             "--".into(),
         ];
         for t in query_tokens {
@@ -524,6 +528,10 @@ impl HimalayaClient {
             })
             .unwrap_or_default();
 
+        let cid_map = parts
+            .map(|p| collect_cid_map(p))
+            .unwrap_or_default();
+
         let raw_preview = if body_html.is_empty() && body_text.is_empty() {
             "(corps vide ou non textuel)".into()
         } else {
@@ -542,6 +550,7 @@ impl HimalayaClient {
             body_text,
             attachments,
             raw_preview,
+            cid_map,
         }
     }
 
@@ -1655,6 +1664,77 @@ fn part_filename(part: &Value) -> String {
         }
     }
     "attachment".into()
+}
+
+fn normalize_cid(raw: &str) -> String {
+    raw.trim()
+        .trim_matches(|c| c == '<' || c == '>')
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn part_content_id(part: &Value) -> Option<String> {
+    let headers = part.get("headers").and_then(|h| h.as_array())?;
+    for h in headers {
+        let name = h.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        if !(name.eq_ignore_ascii_case("content-id") || name.eq_ignore_ascii_case("content_id")) {
+            continue;
+        }
+        let value = h.get("value")?;
+        // Formats fréquents : string, { Text: "..." }, { MessageId: "..." }, etc.
+        let candidates = [
+            header_text(Some(value)),
+            value.as_str().unwrap_or("").to_string(),
+            value
+                .pointer("/MessageId")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            value
+                .pointer("/ContentId")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            value
+                .get("Text")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+        ];
+        for text in candidates {
+            let n = normalize_cid(&text);
+            if !n.is_empty() {
+                return Some(n);
+            }
+        }
+    }
+    if let Some(s) = part
+        .get("content_id")
+        .or_else(|| part.get("content-id"))
+        .or_else(|| part.get("cid"))
+        .and_then(|x| x.as_str())
+    {
+        let n = normalize_cid(s);
+        if !n.is_empty() {
+            return Some(n);
+        }
+    }
+    None
+}
+
+fn collect_cid_map(parts: &[Value]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (i, part) in parts.iter().enumerate() {
+        if let Some(cid) = part_content_id(part) {
+            out.push((cid, (i + 1).to_string()));
+        }
+        if let Some(children) = part.get("parts").and_then(|p| p.as_array()) {
+            // Parts imbriquées : ids 1-based sur l'index global si la liste est plate côté Himalaya.
+            // Sinon on ignore (les installs courantes exposent un tableau plat).
+            let _ = children;
+        }
+    }
+    out
 }
 
 fn header_text(value: Option<&Value>) -> String {

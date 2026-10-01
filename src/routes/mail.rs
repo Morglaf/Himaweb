@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::himalaya::Envelope;
 use crate::prefs::Prefs;
-use crate::sanitize::{plain_to_html, sanitize_html};
+use crate::attachments_class::is_accessory_attachment;
+use crate::sanitize::{plain_to_html, remote_url_label, rewrite_cid_images, sanitize_html};
 use crate::state::AppState;
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -17,6 +18,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/partials/sidebar", get(sidebar))
         .route("/partials/envelopes", get(envelopes))
         .route("/partials/message", get(message))
+        .route("/partials/message/attachments", get(message_attachments))
         .route("/partials/message/flag", post(flag))
         .route("/partials/message/move", post(move_msg))
         .route("/partials/message/delete", post(delete_msg))
@@ -1207,7 +1209,16 @@ pub struct ThreadPart {
     pub unread: bool,
     pub body: String,
     pub attachments: Vec<AttRow>,
+    pub accessory_attachments: Vec<AttRow>,
+    pub remote_resources: Vec<RemoteRes>,
+    pub has_remote_content: bool,
+    pub attachments_lazy: bool,
     pub is_focus: bool,
+}
+
+pub struct RemoteRes {
+    pub url: String,
+    pub label: String,
 }
 
 pub struct MoveOpt {
@@ -1220,7 +1231,90 @@ pub struct AttRow {
     pub id: String,
     pub filename: String,
     pub mime: String,
-    pub size: u64,
+    pub size_label: String,
+    pub previewable: bool,
+}
+
+/// Affichage lisible : `o` / `Ko` / `Mo` (séparateur décimal français).
+fn format_size_fr(bytes: u64) -> String {
+    if bytes < 1000 {
+        return format!("{bytes} o");
+    }
+    if bytes < 100_000 {
+        let ko = bytes as f64 / 1000.0;
+        if (ko - ko.round()).abs() < 0.05 {
+            return format!("{} Ko", ko.round() as u64);
+        }
+        return format!("{ko:.1} Ko").replace('.', ",");
+    }
+    let mo = bytes as f64 / 1_000_000.0;
+    if mo < 10.0 {
+        format!("{mo:.2} Mo").replace('.', ",")
+    } else if mo < 100.0 {
+        format!("{mo:.1} Mo").replace('.', ",")
+    } else {
+        format!("{} Mo", mo.round() as u64)
+    }
+}
+
+#[cfg(test)]
+mod size_label_tests {
+    use super::format_size_fr;
+
+    #[test]
+    fn formats_bytes_ko_mo() {
+        assert_eq!(format_size_fr(0), "0 o");
+        assert_eq!(format_size_fr(677), "677 o");
+        assert_eq!(format_size_fr(12_500), "12,5 Ko");
+        assert_eq!(format_size_fr(216_248), "0,22 Mo");
+        assert_eq!(format_size_fr(5_500_000), "5,50 Mo");
+    }
+}
+
+fn is_previewable_attachment(filename: &str, mime: &str) -> bool {
+    let mime_l = mime.trim().to_ascii_lowercase();
+    if mime_l.starts_with("image/png")
+        || mime_l.starts_with("image/jpeg")
+        || mime_l.starts_with("image/jpg")
+        || mime_l.starts_with("image/gif")
+        || mime_l.starts_with("image/webp")
+        || mime_l.starts_with("image/svg")
+        || mime_l == "application/pdf"
+        || mime_l.starts_with("text/plain")
+    {
+        return true;
+    }
+    let name = filename.trim().to_ascii_lowercase();
+    name.ends_with(".png")
+        || name.ends_with(".jpg")
+        || name.ends_with(".jpeg")
+        || name.ends_with(".gif")
+        || name.ends_with(".webp")
+        || name.ends_with(".svg")
+        || name.ends_with(".pdf")
+        || name.ends_with(".txt")
+}
+
+fn att_rows_from_meta(list: Vec<crate::cli::himalaya::AttachmentMeta>) -> (Vec<AttRow>, Vec<AttRow>) {
+    let mut real = Vec::new();
+    let mut accessory = Vec::new();
+    for a in list {
+        let is_acc = is_accessory_attachment(&a.filename, &a.mime, a.size);
+        let previewable = !is_acc && is_previewable_attachment(&a.filename, &a.mime);
+        let row = AttRow {
+            id: a.id,
+            filename: a.filename,
+            mime: a.mime,
+            size_label: format_size_fr(a.size),
+            previewable,
+        };
+        if is_acc {
+            accessory.push(row);
+        } else {
+            real.push(row);
+        }
+    }
+    (real, accessory)
 }
 
 async fn message(
@@ -1249,7 +1343,6 @@ async fn message(
     }
     // Cap to keep UI responsive
     if thread_ids.len() > 25 {
-        // keep focus and neighbours around it
         if let Some(pos) = thread_ids.iter().position(|id| id == &focus_id) {
             let start = pos.saturating_sub(12);
             let end = (start + 25).min(thread_ids.len());
@@ -1259,16 +1352,85 @@ async fn message(
         }
     }
 
-    let _permit = state.cli_limit.acquire().await.ok();
+    let thread_count_hint = thread_ids.len() as u32;
 
+    // Mailboxes depuis le cache (instantané) — évite un `mailbox list` à chaque ouverture.
+    let default_move = account
+        .as_deref()
+        .and_then(|a| prefs_snap.default_move_for(a).map(str::to_string));
+    let mailboxes: Vec<MoveOpt> = {
+        let cache = state.cache.lock().await;
+        let cached = cache.load_mailboxes().unwrap_or_default();
+        let acct_label = account
+            .as_deref()
+            .map(|a| prefs_snap.account_label(a))
+            .unwrap_or_default();
+        if !cached.is_empty() {
+            cached
+                .into_iter()
+                .map(|m| {
+                    let selected = default_move
+                        .as_deref()
+                        .map(|d| d.eq_ignore_ascii_case(&m.name))
+                        .unwrap_or(false);
+                    let label = if acct_label.is_empty() {
+                        m.name.clone()
+                    } else {
+                        format!("{acct_label} · {}", m.name)
+                    };
+                    MoveOpt {
+                        value: m.name,
+                        label,
+                        selected,
+                    }
+                })
+                .collect()
+        } else {
+            drop(cache);
+            if state.himalaya_available {
+                let _permit = state.cli_limit.acquire().await.ok();
+                match state.himalaya.list_mailboxes(account_ref).await {
+                    Ok(boxes) => boxes
+                        .into_iter()
+                        .map(|m| {
+                            let selected = default_move
+                                .as_deref()
+                                .map(|d| d.eq_ignore_ascii_case(&m.name))
+                                .unwrap_or(false);
+                            let label = if acct_label.is_empty() {
+                                m.name.clone()
+                            } else {
+                                format!("{acct_label} · {}", m.name)
+                            };
+                            MoveOpt {
+                                value: m.name,
+                                label,
+                                selected,
+                            }
+                        })
+                        .collect(),
+                    Err(_) => vec![],
+                }
+            } else {
+                vec![]
+            }
+        }
+    };
+
+    // Focus en réseau ; autres messages du fil uniquement depuis le cache (pas d'attente IMAP).
     let mut loaded: Vec<(String, Option<crate::cli::himalaya::MessageView>, bool, Option<String>)> =
         Vec::with_capacity(thread_ids.len());
     let mut offline_any = false;
-    let mut first_err: Option<String> = None;
+    let first_err: Option<String>;
 
-    for tid in &thread_ids {
+    {
+        let _permit = state.cli_limit.acquire().await.ok();
         let (msg, offline, error) = if state.himalaya_available {
-            match state.himalaya.read_message(&name, tid, account_ref).await {
+            match state
+                .himalaya
+                .read_message(&name, &focus_id, account_ref)
+                .await
+            {
                 Ok(msg) => {
                     let cache = state.cache.lock().await;
                     let _ = cache.save_message(&name, &msg);
@@ -1277,7 +1439,7 @@ async fn message(
                 Err(e) => {
                     let cache = state.cache.lock().await;
                     (
-                        cache.load_message(&name, tid).ok().flatten(),
+                        cache.load_message(&name, &focus_id).ok().flatten(),
                         true,
                         Some(e.to_string()),
                     )
@@ -1285,78 +1447,38 @@ async fn message(
             }
         } else {
             let cache = state.cache.lock().await;
-            (cache.load_message(&name, tid).ok().flatten(), true, None)
+            (
+                cache.load_message(&name, &focus_id).ok().flatten(),
+                true,
+                None,
+            )
         };
         if offline {
             offline_any = true;
         }
-        if first_err.is_none() {
-            first_err = error.clone();
-        }
-        loaded.push((tid.clone(), msg, offline, error));
+        first_err = error;
+        loaded.push((focus_id.clone(), msg, offline, first_err.clone()));
     }
 
-    let default_move = account
-        .as_deref()
-        .and_then(|a| prefs_snap.default_move_for(a).map(str::to_string));
-
-    let mailboxes: Vec<MoveOpt> = if state.himalaya_available {
-        match state.himalaya.list_mailboxes(account_ref).await {
-            Ok(boxes) => {
-                let acct_label = account
-                    .as_deref()
-                    .map(|a| prefs_snap.account_label(a))
-                    .unwrap_or_default();
-                boxes
-                    .into_iter()
-                    .map(|m| {
-                        let selected = default_move
-                            .as_deref()
-                            .map(|d| d.eq_ignore_ascii_case(&m.name))
-                            .unwrap_or(false);
-                        let label = if acct_label.is_empty() {
-                            m.name.clone()
-                        } else {
-                            format!("{acct_label} · {}", m.name)
-                        };
-                        MoveOpt {
-                            value: m.name,
-                            label,
-                            selected,
-                        }
-                    })
-                    .collect()
+    if prefs_snap.conversations && thread_ids.len() > 1 {
+        let cache = state.cache.lock().await;
+        for tid in &thread_ids {
+            if tid == &focus_id {
+                continue;
             }
-            Err(_) => {
-                let cache = state.cache.lock().await;
-                cache
-                    .load_mailboxes()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|m| MoveOpt {
-                        selected: default_move
-                            .as_deref()
-                            .map(|d| d.eq_ignore_ascii_case(&m.name))
-                            .unwrap_or(false),
-                        label: m.name.clone(),
-                        value: m.name,
-                    })
-                    .collect()
+            if let Ok(Some(msg)) = cache.load_message(&name, tid) {
+                loaded.push((tid.clone(), Some(msg), true, None));
             }
         }
-    } else {
-        let cache = state.cache.lock().await;
-        cache
-            .load_mailboxes()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|m| MoveOpt {
-                selected: false,
-                label: m.name.clone(),
-                value: m.name,
-            })
-            .collect()
-    };
+    }
+
+    // Ordre chrono du fil : respecter thread_ids
+    loaded.sort_by_key(|(tid, _, _, _)| {
+        thread_ids
+            .iter()
+            .position(|id| id == tid)
+            .unwrap_or(usize::MAX)
+    });
 
     if loaded.iter().all(|(_, m, _, _)| m.is_none()) {
         return Html(format!(
@@ -1381,7 +1503,7 @@ async fn message(
             let x = f.to_ascii_lowercase();
             x == "seen" || x == "\\seen"
         });
-        if was_unread && state.himalaya_available && !offline_any {
+        if was_unread && state.himalaya_available && !offline_any && tid == focus_id {
             let himalaya = state.himalaya.clone();
             let mb = name.clone();
             let mid = tid.clone();
@@ -1391,64 +1513,42 @@ async fn message(
                     .set_flag(&mb, &mid, "seen", true, acc.as_deref())
                     .await;
             });
-            if tid == focus_id {
-                marked_read = true;
-            }
+            marked_read = true;
         }
         let unread = was_unread && !(tid == focus_id && marked_read);
 
-        let body = if !msg.body_html.is_empty() {
-            sanitize_html(&msg.body_html)
+        let (body, has_remote_content, remote_resources) = if !msg.body_html.is_empty() {
+            let s = sanitize_html(&msg.body_html);
+            let (html, had_cid) = rewrite_cid_images(
+                &s.html,
+                &msg.cid_map,
+                &name,
+                &tid,
+                account_ref,
+            );
+            let remotes: Vec<RemoteRes> = s
+                .remote_urls
+                .into_iter()
+                .map(|url| RemoteRes {
+                    label: remote_url_label(&url),
+                    url,
+                })
+                .collect();
+            (html, s.has_remote_content || had_cid || !remotes.is_empty(), remotes)
         } else if !msg.body_text.is_empty() {
-            plain_to_html(&msg.body_text)
+            (plain_to_html(&msg.body_text), false, vec![])
         } else if !msg.raw_preview.is_empty() {
-            plain_to_html(&msg.raw_preview)
+            (plain_to_html(&msg.raw_preview), false, vec![])
         } else {
-            "<p class=\"muted\">(corps vide)</p>".into()
+            ("<p class=\"muted\">(corps vide)</p>".into(), false, vec![])
         };
 
-        let attachments = if state.himalaya_available && !offline_any {
-            match state
-                .himalaya
-                .list_attachments(&name, &tid, account_ref)
-                .await
-            {
-                Ok(list) if !list.is_empty() => list
-                    .into_iter()
-                    .map(|a| AttRow {
-                        id: a.id,
-                        filename: a.filename,
-                        mime: a.mime,
-                        size: a.size,
-                    })
-                    .collect(),
-                _ => msg
-                    .attachments
-                    .into_iter()
-                    .map(|a| AttRow {
-                        id: a.id,
-                        filename: a.filename,
-                        mime: a.mime,
-                        size: a.size,
-                    })
-                    .collect(),
-            }
-        } else {
-            msg.attachments
-                .into_iter()
-                .map(|a| AttRow {
-                    id: a.id,
-                    filename: a.filename,
-                    mime: a.mime,
-                    size: a.size,
-                })
-                .collect()
-        };
+        let (attachments, accessory_attachments) = att_rows_from_meta(msg.attachments);
+        let attachments_lazy = state.himalaya_available && !offline_any && tid == focus_id;
 
         if thread_subject.is_empty() {
             thread_subject = msg.subject.clone();
         }
-        // Prefer cleaned subject from focus
         if tid == focus_id {
             thread_subject = msg.subject.clone();
         }
@@ -1471,6 +1571,10 @@ async fn message(
             unread,
             body,
             attachments,
+            accessory_attachments,
+            remote_resources,
+            has_remote_content,
+            attachments_lazy,
         });
     }
 
@@ -1500,7 +1604,7 @@ async fn message(
         display_subject = thread_subject;
     }
 
-    let thread_count = thread_parts.len() as u32;
+    let thread_count = thread_count_hint.max(thread_parts.len() as u32);
     render(MessageTemplate {
         mailbox_enc: urlencoding::encode(&name).into_owned(),
         mailbox: name,
@@ -1515,6 +1619,55 @@ async fn message(
         account_enc: urlencoding::encode(account.as_deref().unwrap_or("")).into_owned(),
         account: account.unwrap_or_default(),
     })
+}
+
+#[derive(Deserialize)]
+struct MessageAttachmentsQuery {
+    pub mailbox: String,
+    pub message_id: String,
+    pub account: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "message_attachments.html")]
+struct MessageAttachmentsTemplate {
+    pub mailbox_enc: String,
+    pub account_enc: String,
+    pub message_id: String,
+    pub attachments: Vec<AttRow>,
+    pub accessory_attachments: Vec<AttRow>,
+}
+
+async fn message_attachments(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<MessageAttachmentsQuery>,
+) -> impl IntoResponse {
+    let account = q.account.filter(|s| !s.is_empty());
+    let account_ref = account.as_deref();
+    if !state.himalaya_available {
+        return Html("<!-- no himalaya -->").into_response();
+    }
+    let _permit = state.cli_limit.acquire().await.ok();
+    let list = match state
+        .himalaya
+        .list_attachments(&q.mailbox, &q.message_id, account_ref)
+        .await
+    {
+        Ok(list) => list,
+        Err(_) => return Html("<!-- att list failed -->").into_response(),
+    };
+    let (attachments, accessory_attachments) = att_rows_from_meta(list);
+
+    let html = MessageAttachmentsTemplate {
+        mailbox_enc: urlencoding::encode(&q.mailbox).into_owned(),
+        account_enc: urlencoding::encode(account.as_deref().unwrap_or("")).into_owned(),
+        message_id: q.message_id,
+        attachments,
+        accessory_attachments,
+    }
+    .render()
+    .unwrap_or_else(|e| format!("<!-- att error: {e} -->"));
+    Html(html).into_response()
 }
 
 #[derive(Deserialize)]

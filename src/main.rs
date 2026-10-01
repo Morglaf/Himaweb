@@ -4,6 +4,7 @@
 
 mod accounts_config;
 mod account_colors;
+mod attachments_class;
 mod cache;
 mod calendar_import;
 mod cli;

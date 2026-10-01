@@ -1,0 +1,67 @@
+{# Fragment HTMX : remplace la zone PJ (oob) + liste accessoires (oob) #}
+<div id="msg-atts-{{ message_id }}" hx-swap-oob="true">
+  {% if !attachments.is_empty() %}
+  <ul class="attachments">
+    {% for a in attachments %}
+    <li>
+      <i data-lucide="paperclip"></i>
+      {% if a.previewable %}
+      <button type="button" class="att-preview-btn"
+              data-preview-url="/attachments?mailbox={{ mailbox_enc }}&message_id={{ message_id }}&attachment_id={{ a.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}&disposition=inline"
+              data-download-url="/attachments?mailbox={{ mailbox_enc }}&message_id={{ message_id }}&attachment_id={{ a.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}"
+              data-filename="{{ a.filename }}"
+              data-mime="{{ a.mime }}"
+              onclick="HimaWeb.openAttPreview(this)">{{ a.filename }}</button>
+      {% else %}
+      <a href="/attachments?mailbox={{ mailbox_enc }}&message_id={{ message_id }}&attachment_id={{ a.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}" target="_blank" rel="noopener">{{ a.filename }}</a>
+      {% endif %}
+      <span class="muted tiny">{{ a.mime }} · {{ a.size_label }}</span>
+      <a class="icon-btn att-dl" title="Télécharger"
+         href="/attachments?mailbox={{ mailbox_enc }}&message_id={{ message_id }}&attachment_id={{ a.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}"
+         download="{{ a.filename }}" target="_blank" rel="noopener"><i data-lucide="download"></i></a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+<div id="msg-acc-list-{{ message_id }}" hx-swap-oob="true">
+  {% if !accessory_attachments.is_empty() %}
+  <ul class="attachments acc-attach-list">
+    {% for a in accessory_attachments %}
+    <li>
+      <i data-lucide="paperclip"></i>
+      <span class="acc-name" title="{{ a.filename }}">{{ a.filename }}</span>
+      <span class="muted tiny">{{ a.mime }} · {{ a.size_label }}</span>
+      <a class="icon-btn att-dl" title="Télécharger"
+         href="/attachments?mailbox={{ mailbox_enc }}&message_id={{ message_id }}&attachment_id={{ a.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}"
+         download="{{ a.filename }}" target="_blank" rel="noopener"><i data-lucide="download"></i></a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted tiny">Aucune pièce jointe accessoire.</p>
+  {% endif %}
+</div>
+<span id="msg-acc-flag-{{ message_id }}"
+      hx-swap-oob="true"
+      data-has-accessory="{% if !accessory_attachments.is_empty() %}1{% else %}0{% endif %}"
+      data-has-attachments="{% if !attachments.is_empty() %}1{% else %}0{% endif %}"
+      hidden></span>
+<script>
+(function () {
+  var flag = document.getElementById('msg-acc-flag-{{ message_id }}');
+  var art = document.getElementById('thread-msg-{{ message_id }}');
+  if (flag && art && window.Alpine) {
+    var data = Alpine.$data(art);
+    if (data) {
+      data.hasAccessory = flag.getAttribute('data-has-accessory') === '1';
+      data.hasAttachments = flag.getAttribute('data-has-attachments') === '1';
+      if (data.hasAttachments && data.attsOpen === false && !data._attsAutoOpened) {
+        data.attsOpen = true;
+        data._attsAutoOpened = true;
+      }
+    }
+  }
+  if (window.lucide) lucide.createIcons();
+})();
+</script>

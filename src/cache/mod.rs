@@ -235,6 +235,7 @@ impl Cache {
                         body_text: r.get(7)?,
                         attachments,
                         raw_preview: String::new(),
+                        cid_map: vec![],
                     })
                 },
             )

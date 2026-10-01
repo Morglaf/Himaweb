@@ -735,6 +735,106 @@ function tbImportForm() {
   };
 }
 
+function messageView(opts) {
+  const initialTone = (() => {
+    try {
+      return localStorage.getItem('himaweb-msg-body-tone') || 'auto';
+    } catch (_) {
+      return 'auto';
+    }
+  })();
+  const hasAttachments = !!(opts && opts.hasAttachments);
+  return {
+    accOpen: false,
+    attsOpen: hasAttachments,
+    _attsAutoOpened: hasAttachments,
+    remoteUnlocked: false,
+    hasRemote: !!(opts && opts.hasRemote),
+    hasAccessory: !!(opts && opts.hasAccessory),
+    hasAttachments,
+    bodyTone: initialTone,
+    get bodyToneClass() {
+      if (this.bodyTone === 'light') return 'tone-light';
+      if (this.bodyTone === 'dark') return 'tone-dark';
+      return '';
+    },
+    cycleBodyTone() {
+      const order = ['auto', 'light', 'dark'];
+      const i = order.indexOf(this.bodyTone);
+      this.bodyTone = order[(i + 1) % order.length];
+      try {
+        localStorage.setItem('himaweb-msg-body-tone', this.bodyTone);
+      } catch (_) {}
+    },
+    closeAccPanel() {
+      this.accOpen = false;
+    },
+    positionAccPanel() {
+      const panel = this.$refs.accPanel;
+      const btn = this.$refs.accBtn;
+      if (!panel || !btn) return;
+      const r = btn.getBoundingClientRect();
+      const width = Math.min(288, window.innerWidth - 16);
+      let left = r.left;
+      if (left + width > window.innerWidth - 8) {
+        left = Math.max(8, window.innerWidth - width - 8);
+      }
+      panel.style.top = `${Math.round(r.bottom + 6)}px`;
+      panel.style.left = `${Math.round(left)}px`;
+      panel.style.right = 'auto';
+      panel.style.width = `${width}px`;
+    },
+    toggleAccPanel() {
+      this.accOpen = !this.accOpen;
+      if (this.accOpen) {
+        this.$nextTick(() => this.positionAccPanel());
+      }
+    },
+    toggleRemote() {
+      if (!this.hasRemote) {
+        this.toggleAccPanel();
+        return;
+      }
+      const body = this.$refs.body || this.$el.querySelector('.msg-body');
+      if (!body) return;
+      if (this.remoteUnlocked) {
+        body.querySelectorAll('img[data-remote-src]').forEach((img) => {
+          img.setAttribute(
+            'src',
+            'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+          );
+          img.classList.add('remote-img');
+          img.classList.remove('remote-loaded', 'remote-failed');
+        });
+        this.remoteUnlocked = false;
+        return;
+      }
+      body.querySelectorAll('img[data-remote-src]').forEach((img) => {
+        const url = img.getAttribute('data-remote-src');
+        if (!url) return;
+        img.classList.remove('remote-failed');
+        img.onerror = () => {
+          img.classList.add('remote-failed', 'remote-img');
+          img.classList.remove('remote-loaded');
+          img.setAttribute(
+            'src',
+            'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+          );
+        };
+        img.onload = () => {
+          img.classList.add('remote-loaded');
+          img.classList.remove('remote-img', 'remote-failed');
+          img.onerror = null;
+          img.onload = null;
+        };
+        img.setAttribute('src', url);
+      });
+      this.remoteUnlocked = true;
+      if (window.lucide) lucide.createIcons();
+    },
+  };
+}
+
 document.addEventListener('alpine:init', () => {
   if (window.Alpine) {
     Alpine.data('composeForm', composeForm);
@@ -742,11 +842,60 @@ document.addEventListener('alpine:init', () => {
     Alpine.data('accountOrderList', accountOrderList);
     Alpine.data('quickEventModal', quickEventModal);
     Alpine.data('tbImportForm', tbImportForm);
+    Alpine.data('messageView', messageView);
   }
 });
 
-
 window.HimaWeb = {
+  messageView,
+
+  openAttPreview(el) {
+    if (!el) return;
+    const previewUrl = el.getAttribute('data-preview-url');
+    const downloadUrl = el.getAttribute('data-download-url') || previewUrl;
+    const filename = el.getAttribute('data-filename') || 'pièce jointe';
+    const mime = (el.getAttribute('data-mime') || '').toLowerCase();
+    const modal = document.getElementById('att-preview-modal');
+    const body = document.getElementById('att-preview-body');
+    const title = document.getElementById('att-preview-title');
+    const dl = document.getElementById('att-preview-download');
+    if (!modal || !body || !title || !dl || !previewUrl) return;
+    title.textContent = filename;
+    dl.href = downloadUrl;
+    dl.setAttribute('download', filename);
+    body.innerHTML = '';
+    if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(filename)) {
+      const img = document.createElement('img');
+      img.src = previewUrl;
+      img.alt = filename;
+      img.className = 'att-preview-img';
+      body.appendChild(img);
+    } else {
+      const frame = document.createElement('iframe');
+      frame.src = previewUrl;
+      frame.title = filename;
+      frame.className = 'att-preview-frame';
+      body.appendChild(frame);
+    }
+    modal.hidden = false;
+    if (window.lucide) lucide.createIcons();
+    const onKey = (ev) => {
+      if (ev.key === 'Escape') {
+        document.removeEventListener('keydown', onKey);
+        this.closeAttPreview();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+  },
+
+  closeAttPreview() {
+    const modal = document.getElementById('att-preview-modal');
+    const body = document.getElementById('att-preview-body');
+    if (body) body.innerHTML = '';
+    if (modal) modal.hidden = true;
+  },
+
+
   _lastUnreadTotal: null,
   _folderClicksBound: false,
   _folderTreeBound: false,
@@ -2521,8 +2670,9 @@ document.addEventListener('htmx:afterSwap', (ev) => {
   if (t && window.Alpine && typeof Alpine.initTree === 'function') {
     if (
       t.id === 'compose-layer' ||
+      t.id === 'message-pane' ||
       t.classList.contains('side-widget-body') ||
-      (t.querySelector && t.querySelector('.side-widget-inner, .compose-backdrop'))
+      (t.querySelector && t.querySelector('.side-widget-inner, .compose-backdrop, .thread-view'))
     ) {
       Alpine.initTree(t);
     }

@@ -19,6 +19,8 @@ pub struct DownloadQuery {
     pub message_id: String,
     pub attachment_id: String,
     pub account: Option<String>,
+    /// `inline` pour prévisualisation navigateur ; sinon téléchargement.
+    pub disposition: Option<String>,
 }
 
 async fn download(
@@ -83,16 +85,24 @@ async fn download(
                 .first_or_octet_stream()
                 .essence_str()
                 .to_string();
+            let inline = q
+                .disposition
+                .as_deref()
+                .map(|d| d.eq_ignore_ascii_case("inline"))
+                .unwrap_or(false);
+            let disp = if inline {
+                format!("inline; filename=\"{}\"", filename.replace('"', ""))
+            } else {
+                format!("attachment; filename=\"{}\"", filename.replace('"', ""))
+            };
             (
                 StatusCode::OK,
                 [
                     (header::CONTENT_TYPE, mime),
+                    (header::CONTENT_DISPOSITION, disp),
                     (
-                        header::CONTENT_DISPOSITION,
-                        format!(
-                            "attachment; filename=\"{}\"",
-                            filename.replace('"', "")
-                        ),
+                        header::CACHE_CONTROL,
+                        "private, max-age=120".to_string(),
                     ),
                 ],
                 bytes,

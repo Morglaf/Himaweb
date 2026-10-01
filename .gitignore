@@ -8,6 +8,8 @@ Thumbs.db
 *.log
 .env
 .env.*
+README.local.md
+*.local.md
 
 # Données / secrets utilisateur (ne jamais committer)
 prefs.json

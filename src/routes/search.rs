@@ -24,6 +24,8 @@ struct SearchPageTemplate {
     pub folders: Vec<FolderOpt>,
     pub all_folders: bool,
     pub include_body: bool,
+    pub filter_attachment: bool,
+    pub filter_accessory: bool,
     pub sort: String,
     pub results_url: String,
 }
@@ -147,6 +149,8 @@ fn results_query_string(
     folders: &[FolderOpt],
     all_folders: bool,
     include_body: bool,
+    filter_attachment: bool,
+    filter_accessory: bool,
     sort: SortSpec,
 ) -> String {
     let mut parts = Vec::new();
@@ -165,6 +169,12 @@ fn results_query_string(
     }
     if include_body {
         parts.push("body=1".into());
+    }
+    if filter_attachment {
+        parts.push("has_attachment=1".into());
+    }
+    if filter_accessory {
+        parts.push("has_accessory=1".into());
     }
     if !sort.is_default() {
         parts.push(format!("sort={}", sort.as_str()));
@@ -206,6 +216,8 @@ async fn search_page(
     let selected_folders = query_values(&raw, "folder");
     let all_folders = has_flag(&raw, "all_folders");
     let include_body = has_flag(&raw, "body");
+    let filter_attachment = has_flag(&raw, "has_attachment");
+    let filter_accessory = has_flag(&raw, "has_accessory");
     let sort = SortSpec::parse(query_one(&raw, "sort").as_deref());
     let default_folders = selected_folders.is_empty() && !all_folders;
 
@@ -222,7 +234,16 @@ async fn search_page(
         })
         .collect();
 
-    let qs = results_query_string(&query, &accounts, &folders, all_folders, include_body, sort);
+    let qs = results_query_string(
+        &query,
+        &accounts,
+        &folders,
+        all_folders,
+        include_body,
+        filter_attachment,
+        filter_accessory,
+        sort,
+    );
     let results_url = if qs.is_empty() {
         "/partials/search-results".into()
     } else {
@@ -235,6 +256,8 @@ async fn search_page(
         folders,
         all_folders,
         include_body,
+        filter_attachment,
+        filter_accessory,
         sort: sort.as_str().into(),
         results_url,
     };
@@ -337,11 +360,13 @@ async fn search_results(
     let raw = raw.unwrap_or_default();
     let query = query_one(&raw, "q").unwrap_or_default();
     let include_body = has_flag(&raw, "body");
+    let filter_attachment = has_flag(&raw, "has_attachment");
+    let filter_accessory = has_flag(&raw, "has_accessory");
     let sort = SortSpec::parse(query_one(&raw, "sort").as_deref());
     let filter_tokens = search_query_tokens(&query, include_body);
     let started = std::time::Instant::now();
 
-    if filter_tokens.is_empty() {
+    if filter_tokens.is_empty() && !filter_attachment && !filter_accessory {
         let html = SearchResultsTemplate {
             query,
             envelopes: vec![],
@@ -395,6 +420,8 @@ async fn search_results(
         folders = ?wanted_folders,
         all_folders,
         include_body,
+        filter_attachment,
+        filter_accessory,
         "mail search start"
     );
 
@@ -493,6 +520,17 @@ async fn search_results(
         }
     }
 
+    if filter_attachment || filter_accessory {
+        hits = filter_hits_by_attachments(
+            &state,
+            hits,
+            filter_attachment,
+            filter_accessory,
+            &mut errs,
+        )
+        .await;
+    }
+
     sort_hits(&mut hits, sort);
     hits.truncate(150);
 
@@ -519,4 +557,62 @@ async fn search_results(
     .render()
     .unwrap_or_else(|e| format!("<pre>{e}</pre>"));
     Html(html).into_response()
+}
+
+async fn filter_hits_by_attachments(
+    state: &Arc<AppState>,
+    hits: Vec<SearchHit>,
+    want_real: bool,
+    want_accessory: bool,
+    errs: &mut Vec<String>,
+) -> Vec<SearchHit> {
+    let candidates: Vec<SearchHit> = hits.into_iter().filter(|h| h.has_attachment).collect();
+
+    let mut set = tokio::task::JoinSet::new();
+    for hit in candidates {
+        let state = Arc::clone(state);
+        set.spawn(async move {
+            let _permit = state.cli_limit.acquire().await.ok();
+            let list = state
+                .himalaya
+                .list_attachments(&hit.mailbox, &hit.id, Some(&hit.account))
+                .await;
+            (hit, list)
+        });
+    }
+
+    let mut kept = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok((hit, Ok(list))) => {
+                let mut has_real = false;
+                let mut has_acc = false;
+                for a in &list {
+                    if crate::attachments_class::is_accessory_attachment(
+                        &a.filename,
+                        &a.mime,
+                        a.size,
+                    ) {
+                        has_acc = true;
+                    } else {
+                        has_real = true;
+                    }
+                }
+                let ok = match (want_real, want_accessory) {
+                    (true, true) => has_real && has_acc,
+                    (true, false) => has_real,
+                    (false, true) => has_acc,
+                    (false, false) => true,
+                };
+                if ok {
+                    kept.push(hit);
+                }
+            }
+            Ok((hit, Err(e))) => {
+                errs.push(format!("{}/{} PJ: {}", hit.account, hit.id, e));
+            }
+            Err(e) => errs.push(format!("tâche PJ: {e}")),
+        }
+    }
+    kept
 }

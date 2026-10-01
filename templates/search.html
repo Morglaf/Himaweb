@@ -55,6 +55,18 @@
       <p class="muted tiny" style="margin-top:0.35rem">
         Par défaut : expéditeur et sujet (rapide). Le corps est beaucoup plus lent.
       </p>
+
+      <label class="check-row" style="margin-top:0.85rem">
+        <input type="checkbox" name="has_attachment" value="1" {% if filter_attachment %}checked{% endif %} />
+        <span>Pièces jointes</span>
+      </label>
+      <label class="check-row" style="margin-top:0.35rem">
+        <input type="checkbox" name="has_accessory" value="1" {% if filter_accessory %}checked{% endif %} />
+        <span>Pièces jointes accessoires</span>
+      </label>
+      <p class="muted tiny" style="margin-top:0.35rem">
+        Accessoires : signatures PGP, petits graphiques, pièces à 0 o.
+      </p>
     </form>
   </aside>
   <div class="col-resizer" data-resize="rail" title="Redimensionner"></div>
