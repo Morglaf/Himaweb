@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::extract::{Query, State};
+use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
@@ -140,9 +141,11 @@ async fn sidebar(
     let all_selected = prefs_snap.is_all_accounts();
     let selected_account = prefs_snap.account.clone().unwrap_or_default();
     let account_ref = prefs_snap.selected_account();
-    let _permit = state.cli_limit.acquire().await.ok();
 
+    // Permis relâché aussitôt : les phases suivantes acquièrent le leur, ce qui
+    // leur permet de s'exécuter en parallèle.
     let account_infos = if state.himalaya_available {
+        let _permit = state.cli_limit.acquire().await.ok();
         state.himalaya.list_accounts().await.unwrap_or_default()
     } else {
         vec![]
@@ -171,10 +174,42 @@ async fn sidebar(
 
     let mut offline = false;
     let mut rows: Vec<MailboxRow> = Vec::new();
+    // Dossiers surveillés dont Himalaya n'a pas fourni `unread` : à compter
+    // ensuite, en parallèle, plutôt que de relancer une recherche à chaque fois.
+    let mut need_count: Vec<(usize, String, Option<String>)> = Vec::new();
 
     if all_selected {
-        // Un arbre par compte (+ ntfy) selon rail_order
+        // Un `list_mailboxes` par compte, tous en parallèle. L'ordre d'arrivée
+        // des tâches est arbitraire : on reconstruit ensuite selon rail_order.
+        let mut boxes_tasks = tokio::task::JoinSet::new();
+        if state.himalaya_available {
+            for acc_name in rail.iter().filter(|a| !Prefs::is_ntfy_key(a)).cloned() {
+                let st = Arc::clone(&state);
+                boxes_tasks.spawn(async move {
+                    let _permit = st.cli_limit.acquire().await.ok();
+                    let res = st.himalaya.list_mailboxes(Some(&acc_name)).await;
+                    (acc_name, res)
+                });
+            }
+        }
+
+        let mut boxes_by_account: std::collections::HashMap<String, Vec<_>> =
+            std::collections::HashMap::new();
         let mut any_ok = false;
+        while let Some(joined) = boxes_tasks.join_next().await {
+            let Ok((acc_name, res)) = joined else {
+                continue;
+            };
+            match res {
+                Ok(list) => {
+                    any_ok = true;
+                    boxes_by_account.insert(acc_name, list);
+                }
+                Err(_) => offline = true,
+            }
+        }
+
+        // Un arbre par compte (+ ntfy) selon rail_order
         for acc_name in &rail {
             if Prefs::is_ntfy_key(acc_name) {
                 if let Some(row) = ntfy_sidebar_row(&prefs_snap, acc_name, &current) {
@@ -183,20 +218,7 @@ async fn sidebar(
                 continue;
             }
             let color = prefs_snap.account_color(acc_name);
-            let boxes = if state.himalaya_available {
-                match state.himalaya.list_mailboxes(Some(acc_name)).await {
-                    Ok(list) => {
-                        any_ok = true;
-                        list
-                    }
-                    Err(_) => {
-                        offline = true;
-                        vec![]
-                    }
-                }
-            } else {
-                vec![]
-            };
+            let boxes = boxes_by_account.remove(acc_name).unwrap_or_default();
             if boxes.is_empty() {
                 continue;
             }
@@ -238,10 +260,12 @@ async fn sidebar(
                 let tree_id = format!("{acc_name}::{}", m.name);
                 let active = m.name.eq_ignore_ascii_case(&current)
                     && (current_account.is_empty() || current_account == *acc_name);
-                let mut unread = m.unread;
-                if unread == 0 && prefs_snap.is_watched(&key, &m.name) && state.himalaya_available {
-                    if let Ok(n) = state.himalaya.count_unseen(&m.name, Some(acc_name)).await {
-                        unread = n;
+                let unread = m.unread.unwrap_or(0);
+                let idx = rows.len();
+                if m.unread.is_none() {
+                    let watched = prefs_snap.is_watched(&key, &m.name);
+                    if watched {
+                        need_count.push((idx, m.name.clone(), Some(acc_name.clone())));
                     }
                 }
                 rows.push(MailboxRow {
@@ -271,6 +295,7 @@ async fn sidebar(
         }
     } else {
         let (boxes, off) = if state.himalaya_available {
+            let _permit = state.cli_limit.acquire().await.ok();
             match state.himalaya.list_mailboxes(account_ref).await {
                 Ok(list) => {
                     let cache = state.cache.lock().await;
@@ -306,10 +331,15 @@ async fn sidebar(
             } else {
                 String::new()
             };
-            let mut unread = m.unread;
-            if unread == 0 && prefs_snap.is_watched(&key, &m.name) && state.himalaya_available {
-                if let Ok(n) = state.himalaya.count_unseen(&m.name, account_ref).await {
-                    unread = n;
+            let unread = m.unread.unwrap_or(0);
+            let idx = rows.len();
+            if m.unread.is_none() {
+                if prefs_snap.is_watched(&key, &m.name) {
+                    need_count.push((
+                        idx,
+                        m.name.clone(),
+                        account_ref.map(str::to_string),
+                    ));
                 }
             }
             rows.push(MailboxRow {
@@ -341,6 +371,29 @@ async fn sidebar(
         for key in prefs_snap.ntfy_order_keys() {
             if let Some(row) = ntfy_sidebar_row(&prefs_snap, &key, &current) {
                 rows.push(row);
+            }
+        }
+    }
+
+    // Himalaya renvoie souvent `unread: null` : il faut alors une recherche
+    // IMAP par dossier surveillé. C'était la boucle séquentielle la plus
+    // coûteuse de la sidebar ; les appels partent maintenant ensemble, et
+    // seulement quand le compteur n'était pas déjà fourni.
+    if state.himalaya_available && !need_count.is_empty() {
+        let mut count_tasks = tokio::task::JoinSet::new();
+        for (idx, mailbox, acc) in need_count {
+            let st = Arc::clone(&state);
+            count_tasks.spawn(async move {
+                let _permit = st.cli_limit.acquire().await.ok();
+                let n = st.himalaya.count_unseen(&mailbox, acc.as_deref()).await.ok();
+                (idx, n)
+            });
+        }
+        while let Some(joined) = count_tasks.join_next().await {
+            if let Ok((idx, Some(n))) = joined {
+                if let Some(row) = rows.get_mut(idx) {
+                    row.unread = n;
+                }
             }
         }
     }
@@ -511,24 +564,38 @@ pub struct PageQuery {
     pub account: Option<String>,
     pub q: Option<String>,
     pub sort: Option<String>,
+    /// Ne rendre que les lignes + la sentinelle (chargement progressif).
+    pub append: Option<u8>,
+    /// Ignorer le cache et interroger Himalaya.
+    pub fresh: Option<u8>,
+    /// Nombre de pages déjà chargées automatiquement au scroll.
+    pub auto_pages: Option<u32>,
 }
+
+/// Au-delà de ce nombre de pages enchaînées au scroll, la sentinelle redevient
+/// purement manuelle : on évite de tirer des milliers de messages par mégarde.
+const AUTO_PAGES_MAX: u32 = 5;
+const ENVELOPE_PAGE_SIZE: u32 = 50;
 
 #[derive(Template)]
 #[template(path = "envelopes.html")]
 struct EnvelopesTemplate {
     pub mailbox: String,
     pub mailbox_enc: String,
-    pub page: u32,
-    pub prev_page: Option<u32>,
     pub next_page: Option<u32>,
     pub envelopes: Vec<EnvelopeRow>,
     pub offline: bool,
     pub error: Option<String>,
     pub all_mode: bool,
     pub query: String,
-    pub query_enc: String,
-    pub account_filter_enc: String,
-    pub sort: String,
+    /// Réponse d'un « voir plus » : pas de bandeaux ni d'état vide.
+    pub rows_only: bool,
+    /// Liste servie depuis le cache, rafraîchissement déclenché côté client.
+    pub stale: bool,
+    /// Paramètres communs aux URLs de pagination (hors page/append/auto_pages).
+    pub base_qs: String,
+    pub next_auto_pages: u32,
+    pub auto_load: bool,
 }
 
 #[derive(Clone)]
@@ -1002,14 +1069,26 @@ async fn envelopes(
 ) -> impl IntoResponse {
     let name = q.mailbox.unwrap_or_else(|| "Inbox".into());
     let page = q.page.unwrap_or(1).max(1);
-    let page_size = 50u32;
+    let page_size = ENVELOPE_PAGE_SIZE;
     let query = q.q.unwrap_or_default();
     let sort = SortSpec::parse(q.sort.as_deref());
     let search_tokens = search_query_tokens(&query, false);
     let prefs_snap = state.prefs.lock().await.clone();
+    let rows_only = q.append.unwrap_or(0) == 1;
+    let want_fresh = q.fresh.unwrap_or(0) == 1;
+    let auto_pages = q.auto_pages.unwrap_or(0);
 
     if Prefs::is_ntfy_key(&name) {
-        return ntfy_envelopes(&prefs_snap, &name, &query, page, page_size).await;
+        return ntfy_envelopes(
+            &prefs_snap,
+            &name,
+            &query,
+            page,
+            page_size,
+            rows_only,
+            auto_pages,
+        )
+        .await;
     }
 
     let all_mode = prefs_snap.is_all_accounts();
@@ -1020,145 +1099,240 @@ async fn envelopes(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let _permit = state.cli_limit.acquire().await.ok();
 
-    let (rows, offline, error) = if state.himalaya_available && all_mode {
-        let infos = state.himalaya.list_accounts().await.unwrap_or_default();
-        let known: Vec<String> = infos.iter().map(|a| a.name.clone()).collect();
-        let ordered = prefs_snap.ordered_accounts(&known);
-        let targets: Vec<String> = if let Some(fa) = &filter_account {
-            if ordered.iter().any(|a| a == fa) {
-                vec![fa.clone()]
-            } else {
-                ordered
-            }
-        } else {
-            ordered
-        };
-        let mut merged = Vec::new();
-        let mut errs = Vec::new();
-        let mut offline_any = false;
-        let mut seen = std::collections::HashSet::new();
-        for acc in &targets {
-            match fetch_envelopes_for_account(
-                &state,
-                &name,
-                page,
-                page_size,
-                Some(acc),
-                &search_tokens,
-                sort,
-            )
-            .await
-            {
-                Ok(list) => {
-                    for row in envelope_rows(&list, acc, &prefs_snap) {
-                        let key = format!("{}::{}", row.account, row.id);
-                        if seen.insert(key) {
-                            merged.push(row);
-                        }
-                    }
-                }
-                Err(e) => {
-                    offline_any = true;
-                    errs.push(format!("{acc}: {e}"));
-                }
-            }
-        }
-        sort_envelope_rows(&mut merged, sort);
-        (
-            merged,
-            offline_any,
-            if errs.is_empty() {
-                None
-            } else {
-                Some(errs.join(" · "))
-            },
-        )
-    } else if state.himalaya_available {
-        let account_ref = account.as_deref();
-        match fetch_envelopes_for_account(
-            &state,
-            &name,
-            page,
-            page_size,
-            account_ref,
-            &search_tokens,
-            sort,
-        )
-        .await
-        {
-            Ok(list) => {
-                if search_tokens.is_empty() && sort.is_default() {
-                    let cache = state.cache.lock().await;
-                    let _ = cache.save_envelopes(&name, &list);
-                }
-                (
-                    envelope_rows(&list, account_ref.unwrap_or(""), &prefs_snap),
-                    false,
-                    None,
-                )
-            }
-            Err(e) => {
-                tracing::warn!("envelope list/search échoué: {e}");
-                if search_tokens.is_empty() {
-                    let cache = state.cache.lock().await;
-                    let mut cached = cache.load_envelopes(&name).unwrap_or_default();
-                    sort_envelopes(&mut cached, sort);
-                    let start = ((page - 1) * page_size) as usize;
-                    let slice: Vec<_> = cached
-                        .into_iter()
-                        .skip(start)
-                        .take(page_size as usize)
-                        .collect();
-                    (
-                        envelope_rows(&slice, account_ref.unwrap_or(""), &prefs_snap),
-                        true,
-                        Some(e.to_string()),
-                    )
-                } else {
-                    (vec![], true, Some(e.to_string()))
-                }
-            }
-        }
-    } else {
-        let cache = state.cache.lock().await;
-        let mut cached = cache.load_envelopes(&name).unwrap_or_default();
-        sort_envelopes(&mut cached, sort);
-        let start = ((page - 1) * page_size) as usize;
-        let slice: Vec<_> = cached
-            .into_iter()
-            .skip(start)
-            .take(page_size as usize)
-            .collect();
-        (
-            envelope_rows(&slice, account.as_deref().unwrap_or(""), &prefs_snap),
-            true,
-            None,
-        )
-    };
-
-    let has_next = rows.len() as u32 >= page_size;
     let mailbox_enc = urlencoding::encode(&name).into_owned();
     let query_enc = urlencoding::encode(&query).into_owned();
     let account_filter = filter_account.clone().unwrap_or_default();
     let account_filter_enc = urlencoding::encode(&account_filter).into_owned();
     let sort_s = sort.as_str().to_string();
+
+    let mut base_qs = format!("mailbox={mailbox_enc}&sort={sort_s}");
+    if !query_enc.is_empty() {
+        base_qs.push_str(&format!("&q={query_enc}"));
+    }
+    if !account_filter_enc.is_empty() {
+        base_qs.push_str(&format!("&account={account_filter_enc}"));
+    }
+
+    // Comptes concernés, dans l'ordre d'affichage.
+    let targets: Vec<Option<String>> = if state.himalaya_available && all_mode {
+        let infos = {
+            let _permit = state.cli_limit.acquire().await.ok();
+            state.himalaya.list_accounts().await.unwrap_or_default()
+        };
+        let known: Vec<String> = infos.iter().map(|a| a.name.clone()).collect();
+        let ordered = prefs_snap.ordered_accounts(&known);
+        let picked = match &filter_account {
+            Some(fa) if ordered.iter().any(|a| a == fa) => vec![fa.clone()],
+            _ => ordered,
+        };
+        picked.into_iter().map(Some).collect()
+    } else {
+        vec![account.clone()]
+    };
+
+    // Le cache ne couvre que la première page d'un dossier, sans recherche ni
+    // tri personnalisé : en dehors de ce cas, il ne peut rien servir.
+    let cacheable = page == 1 && search_tokens.is_empty() && sort.is_default();
+
+    let (rows, offline, error, has_next, stale) = if !state.himalaya_available {
+        let (rows, _, has_next) =
+            load_envelopes_from_cache(&state, &targets, &name, &prefs_snap, sort, page_size).await;
+        (rows, true, None, has_next, false)
+    } else if cacheable && !want_fresh && !rows_only {
+        // Chemin instantané : si le cache connaît ce dossier, on le rend tout de
+        // suite et le client redemande la version fraîche (voir `stale`).
+        let (cached_rows, found, has_next) =
+            load_envelopes_from_cache(&state, &targets, &name, &prefs_snap, sort, page_size).await;
+        if found {
+            (cached_rows, false, None, has_next, true)
+        } else {
+            let fetched =
+                fetch_envelopes_online(&state, &targets, &name, page, page_size, &search_tokens, sort, cacheable, &prefs_snap)
+                    .await;
+            (fetched.0, fetched.1, fetched.2, fetched.3, false)
+        }
+    } else {
+        let fetched = fetch_envelopes_online(
+            &state,
+            &targets,
+            &name,
+            page,
+            page_size,
+            &search_tokens,
+            sort,
+            cacheable,
+            &prefs_snap,
+        )
+        .await;
+        (fetched.0, fetched.1, fetched.2, fetched.3, false)
+    };
+
     render(EnvelopesTemplate {
         mailbox_enc,
         mailbox: name,
-        page,
-        prev_page: if page > 1 { Some(page - 1) } else { None },
         next_page: if has_next { Some(page + 1) } else { None },
         envelopes: rows,
         offline,
         error,
         all_mode,
         query,
-        query_enc,
-        account_filter_enc,
-        sort: sort_s,
+        rows_only,
+        stale,
+        base_qs,
+        next_auto_pages: auto_pages.saturating_add(1),
+        auto_load: auto_pages < AUTO_PAGES_MAX,
     })
+}
+
+/// Enveloppes du cache SQLite pour les comptes demandés, fusionnées et triées.
+///
+/// Le premier booléen indique si au moins un compte avait une entrée en cache
+/// (un dossier vraiment vide et un dossier jamais synchronisé se ressemblent).
+/// Le second est `has_next` **par compte** : une page pleine chez n'importe
+/// lequel des comptes suffit.
+async fn load_envelopes_from_cache(
+    state: &AppState,
+    targets: &[Option<String>],
+    mailbox: &str,
+    prefs_snap: &Prefs,
+    sort: SortSpec,
+    page_size: u32,
+) -> (Vec<EnvelopeRow>, bool, bool) {
+    let mut merged: Vec<EnvelopeRow> = Vec::new();
+    let mut found = false;
+    let mut has_next = false;
+    {
+        let cache = state.cache.lock().await;
+        for acc in targets {
+            let acc_name = acc.as_deref().unwrap_or("");
+            let mut list = cache.load_envelopes(acc_name, mailbox).unwrap_or_default();
+            if list.is_empty() {
+                continue;
+            }
+            found = true;
+            if list.len() as u32 >= page_size {
+                has_next = true;
+            }
+            sort_envelopes(&mut list, sort);
+            merged.extend(envelope_rows(&list, acc_name, prefs_snap));
+        }
+    }
+    sort_envelope_rows(&mut merged, sort);
+    (merged, found, has_next)
+}
+
+/// Enveloppes via Himalaya, un appel par compte, tous lancés ensemble.
+///
+/// Retourne `(lignes, hors-ligne, erreur, page suivante probable)`. `has_next`
+/// est évalué **par compte** : en mode fusionné, comparer le total agrégé à
+/// `page_size` donnerait toujours vrai dès qu'il y a plusieurs comptes.
+#[allow(clippy::too_many_arguments)]
+async fn fetch_envelopes_online(
+    state: &Arc<AppState>,
+    targets: &[Option<String>],
+    mailbox: &str,
+    page: u32,
+    page_size: u32,
+    search_tokens: &[String],
+    sort: SortSpec,
+    cacheable: bool,
+    prefs_snap: &Prefs,
+) -> (Vec<EnvelopeRow>, bool, Option<String>, bool) {
+    let mut tasks = tokio::task::JoinSet::new();
+    for acc in targets.iter().cloned() {
+        let st = Arc::clone(state);
+        let mailbox = mailbox.to_string();
+        let tokens = search_tokens.to_vec();
+        tasks.spawn(async move {
+            let _permit = st.cli_limit.acquire().await.ok();
+            let res = fetch_envelopes_for_account(
+                &st,
+                &mailbox,
+                page,
+                page_size,
+                acc.as_deref(),
+                &tokens,
+                sort,
+            )
+            .await;
+            (acc, res)
+        });
+    }
+
+    let mut lists: std::collections::HashMap<String, Vec<Envelope>> =
+        std::collections::HashMap::new();
+    // BTreeMap : message d'erreur stable malgré l'ordre d'arrivée des tâches.
+    let mut errs: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut offline_any = false;
+    let mut has_next = false;
+
+    while let Some(joined) = tasks.join_next().await {
+        let Ok((acc, res)) = joined else {
+            continue;
+        };
+        let acc_name = acc.as_deref().unwrap_or("").to_string();
+        match res {
+            Ok(list) => {
+                if list.len() as u32 >= page_size {
+                    has_next = true;
+                }
+                if cacheable {
+                    let cache = state.cache.lock().await;
+                    let _ = cache.save_envelopes(&acc_name, mailbox, &list);
+                }
+                lists.insert(acc_name, list);
+            }
+            Err(e) => {
+                tracing::warn!("envelope list/search échoué ({acc_name}): {e}");
+                offline_any = true;
+                errs.insert(acc_name, e.to_string());
+            }
+        }
+    }
+
+    // Reconstruction dans l'ordre des comptes, puis tri global.
+    let mut merged: Vec<EnvelopeRow> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for acc in targets {
+        let acc_name = acc.as_deref().unwrap_or("");
+        let Some(list) = lists.get(acc_name) else {
+            continue;
+        };
+        for row in envelope_rows(list, acc_name, prefs_snap) {
+            if seen.insert(format!("{}::{}", row.account, row.id)) {
+                merged.push(row);
+            }
+        }
+    }
+    sort_envelope_rows(&mut merged, sort);
+
+    // Repli hors-ligne : si tout a échoué, servir ce que le cache contient.
+    if merged.is_empty() && offline_any && search_tokens.is_empty() {
+        let (cached, _, has_next) =
+            load_envelopes_from_cache(state, targets, mailbox, prefs_snap, sort, page_size).await;
+        if !cached.is_empty() {
+            let error = Some(
+                errs.into_iter()
+                    .map(|(a, e)| if a.is_empty() { e } else { format!("{a}: {e}") })
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+            );
+            return (cached, true, error, has_next);
+        }
+    }
+
+    let error = if errs.is_empty() {
+        None
+    } else {
+        Some(
+            errs.into_iter()
+                .map(|(a, e)| if a.is_empty() { e } else { format!("{a}: {e}") })
+                .collect::<Vec<_>>()
+                .join(" · "),
+        )
+    };
+    (merged, offline_any, error, has_next)
 }
 
 #[derive(Deserialize)]
@@ -1168,6 +1342,8 @@ pub struct MessageQuery {
     pub account: Option<String>,
     /// IDs du fil (séparés par virgules), ordre chrono
     pub thread: Option<String>,
+    /// 1 = alimenter le cache sans rendre le HTML (survol).
+    pub prefetch: Option<u8>,
 }
 
 fn parse_thread_ids(raw: &str) -> Vec<String> {
@@ -1317,12 +1493,48 @@ fn att_rows_from_meta(list: Vec<crate::cli::himalaya::AttachmentMeta>) -> (Vec<A
     (real, accessory)
 }
 
+/// Alimente le cache du corps sans rendre de HTML. Utilisé au survol, via
+/// le pool de fond, pour que le clic suivant soit servi depuis SQLite.
+async fn prefetch_message_body(
+    state: &AppState,
+    mailbox: &str,
+    id: &str,
+    account: Option<&str>,
+) -> axum::response::Response {
+    {
+        let cache = state.cache.lock().await;
+        if cache.load_message(mailbox, id).ok().flatten().is_some() {
+            return StatusCode::NO_CONTENT.into_response();
+        }
+    }
+    if !state.himalaya_available {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let _permit = state.cli_bg_limit.acquire().await.ok();
+    if let Ok(msg) = state.himalaya.read_message(mailbox, id, account).await {
+        let cache = state.cache.lock().await;
+        let _ = cache.save_message(mailbox, &msg);
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
 async fn message(
     State(state): State<Arc<AppState>>,
     Query(q): Query<MessageQuery>,
 ) -> impl IntoResponse {
     let name = q.mailbox;
     let focus_id = q.id;
+    if q.prefetch.unwrap_or(0) == 1 {
+        if Prefs::is_ntfy_key(&name) {
+            return StatusCode::NO_CONTENT.into_response();
+        }
+        let account = if let Some(a) = q.account.filter(|s| !s.is_empty()) {
+            Some(a)
+        } else {
+            state.account().await
+        };
+        return prefetch_message_body(&state, &name, &focus_id, account.as_deref()).await;
+    }
     if Prefs::is_ntfy_key(&name) {
         let prefs_snap = state.prefs.lock().await.clone();
         return ntfy_message_view(&state, &prefs_snap, &name, &focus_id, true).await;
@@ -1417,48 +1629,69 @@ async fn message(
         }
     };
 
-    // Focus en réseau ; autres messages du fil uniquement depuis le cache (pas d'attente IMAP).
+    // Cache d'abord : un prefetch au survol (ou une ouverture précédente)
+    // évite d'attendre Himalaya au clic. Un rafraîchissement part en fond.
+    let cached = {
+        let cache = state.cache.lock().await;
+        cache.load_message(&name, &focus_id).ok().flatten()
+    };
+
     let mut loaded: Vec<(String, Option<crate::cli::himalaya::MessageView>, bool, Option<String>)> =
         Vec::with_capacity(thread_ids.len());
     let mut offline_any = false;
     let first_err: Option<String>;
 
-    {
-        let _permit = state.cli_limit.acquire().await.ok();
-        let (msg, offline, error) = if state.himalaya_available {
-            match state
-                .himalaya
-                .read_message(&name, &focus_id, account_ref)
-                .await
-            {
-                Ok(msg) => {
-                    let cache = state.cache.lock().await;
-                    let _ = cache.save_message(&name, &msg);
-                    (Some(msg), false, None)
+    let (msg, offline, error) = if let Some(msg) = cached {
+        if state.himalaya_available {
+            let himalaya = state.himalaya.clone();
+            let mb = name.clone();
+            let mid = focus_id.clone();
+            let acc = account.clone();
+            let cache = Arc::clone(&state.cache);
+            let bg_limit = Arc::clone(&state.cli_bg_limit);
+            tokio::spawn(async move {
+                let _permit = bg_limit.acquire().await.ok();
+                if let Ok(fresh) = himalaya.read_message(&mb, &mid, acc.as_deref()).await {
+                    let cache = cache.lock().await;
+                    let _ = cache.save_message(&mb, &fresh);
                 }
-                Err(e) => {
-                    let cache = state.cache.lock().await;
-                    (
-                        cache.load_message(&name, &focus_id).ok().flatten(),
-                        true,
-                        Some(e.to_string()),
-                    )
-                }
-            }
-        } else {
-            let cache = state.cache.lock().await;
-            (
-                cache.load_message(&name, &focus_id).ok().flatten(),
-                true,
-                None,
-            )
-        };
-        if offline {
-            offline_any = true;
+            });
         }
-        first_err = error;
-        loaded.push((focus_id.clone(), msg, offline, first_err.clone()));
+        (Some(msg), false, None)
+    } else if state.himalaya_available {
+        let _permit = state.cli_limit.acquire().await.ok();
+        match state
+            .himalaya
+            .read_message(&name, &focus_id, account_ref)
+            .await
+        {
+            Ok(msg) => {
+                let cache = state.cache.lock().await;
+                let _ = cache.save_message(&name, &msg);
+                (Some(msg), false, None)
+            }
+            Err(e) => {
+                let cache = state.cache.lock().await;
+                (
+                    cache.load_message(&name, &focus_id).ok().flatten(),
+                    true,
+                    Some(e.to_string()),
+                )
+            }
+        }
+    } else {
+        let cache = state.cache.lock().await;
+        (
+            cache.load_message(&name, &focus_id).ok().flatten(),
+            true,
+            None,
+        )
+    };
+    if offline {
+        offline_any = true;
     }
+    first_err = error;
+    loaded.push((focus_id.clone(), msg, offline, first_err.clone()));
 
     if prefs_snap.conversations && thread_ids.len() > 1 {
         let cache = state.cache.lock().await;
@@ -1508,7 +1741,11 @@ async fn message(
             let mb = name.clone();
             let mid = tid.clone();
             let acc = account.clone();
+            let bg_limit = Arc::clone(&state.cli_bg_limit);
             tokio::spawn(async move {
+                // Marquage différé : compte dans le pool de fond, pas dans
+                // celui des actions utilisateur.
+                let _permit = bg_limit.acquire().await.ok();
                 let _ = himalaya
                     .set_flag(&mb, &mid, "seen", true, acc.as_deref())
                     .await;
@@ -2451,8 +2688,11 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         .into_response();
     }
 
-    let _permit = state.cli_limit.acquire().await.ok();
-    let infos = state.himalaya.list_accounts().await.unwrap_or_default();
+    // Poll périodique : pool de fond, pour ne jamais retarder un clic.
+    let infos = {
+        let _permit = state.cli_bg_limit.acquire().await.ok();
+        state.himalaya.list_accounts().await.unwrap_or_default()
+    };
     let known: Vec<String> = infos.iter().map(|a| a.name.clone()).collect();
     let ordered = prefs_snap.ordered_accounts(&known);
 
@@ -2464,39 +2704,73 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         vec![None]
     };
 
+    // Un `list_mailboxes` par compte, en parallèle.
+    let mut boxes_tasks = tokio::task::JoinSet::new();
     for acc in accounts {
-        let acc_ref = acc.as_deref();
-        let Ok(boxes) = state.himalaya.list_mailboxes(acc_ref).await else {
+        let st = Arc::clone(&state);
+        boxes_tasks.spawn(async move {
+            let _permit = st.cli_bg_limit.acquire().await.ok();
+            let boxes = st.himalaya.list_mailboxes(acc.as_deref()).await;
+            (acc, boxes)
+        });
+    }
+
+    // Puis un `count_unseen` par dossier surveillé, en parallèle également.
+    // C'est le point chaud : `count_unseen` est une recherche IMAP complète,
+    // et il y en a un par dossier suivi de chaque compte.
+    let mut count_tasks = tokio::task::JoinSet::new();
+    while let Some(res) = boxes_tasks.join_next().await {
+        let Ok((acc, Ok(boxes))) = res else {
             continue;
         };
         for m in boxes {
-            let key = Prefs::folder_key(acc_ref, &m.name);
+            let key = Prefs::folder_key(acc.as_deref(), &m.name);
             if !prefs_snap.is_watched(&key, &m.name) {
                 continue;
             }
-            // Himalaya renvoie souvent unread: null → compter via recherche
-            let unread = match state.himalaya.count_unseen(&m.name, acc_ref).await {
-                Ok(n) => n,
-                Err(_) => m.unread,
-            };
-            if unread == 0 {
-                continue;
-            }
-            let in_total = prefs_snap.contributes_to_unread_total(&key, &m.name);
-            folders.push(UnreadFolder {
-                label: if let Some(a) = acc_ref {
-                    format!("{a} / {}", mailbox_label(&m.name))
+            let st = Arc::clone(&state);
+            let acc = acc.clone();
+            let prefs_snap = prefs_snap.clone();
+            count_tasks.spawn(async move {
+                let acc_ref = acc.as_deref();
+                // Himalaya renvoie souvent unread: null → compter via recherche
+                // uniquement quand le compteur n'était pas déjà fourni.
+                let unread = if let Some(n) = m.unread {
+                    n
                 } else {
-                    mailbox_label(&m.name)
-                },
-                account: acc_ref.unwrap_or("").to_string(),
-                mailbox: m.name.clone(),
-                unread,
-                key,
-                in_total,
+                    let _permit = st.cli_bg_limit.acquire().await.ok();
+                    match st.himalaya.count_unseen(&m.name, acc_ref).await {
+                        Ok(n) => n,
+                        Err(_) => 0,
+                    }
+                };
+                if unread == 0 {
+                    return None;
+                }
+                let in_total = prefs_snap.contributes_to_unread_total(&key, &m.name);
+                Some(UnreadFolder {
+                    label: if let Some(a) = acc_ref {
+                        format!("{a} / {}", mailbox_label(&m.name))
+                    } else {
+                        mailbox_label(&m.name)
+                    },
+                    account: acc_ref.unwrap_or("").to_string(),
+                    mailbox: m.name.clone(),
+                    unread,
+                    key,
+                    in_total,
+                })
             });
         }
     }
+
+    while let Some(res) = count_tasks.join_next().await {
+        if let Ok(Some(folder)) = res {
+            folders.push(folder);
+        }
+    }
+    // L'ordre d'un JoinSet n'est pas déterministe : stabiliser l'affichage.
+    folders.sort_by(|a, b| a.account.cmp(&b.account).then_with(|| a.mailbox.cmp(&b.mailbox)));
 
     // Compteurs NTFY surveillés
     for key in prefs_snap.ntfy_order_keys() {
@@ -2602,24 +2876,29 @@ async fn ntfy_envelopes(
     query: &str,
     page: u32,
     page_size: u32,
+    rows_only: bool,
+    auto_pages: u32,
 ) -> axum::response::Response {
+    let mut base_qs = format!("mailbox={}", urlencoding::encode(mailbox_key));
+    if !query.is_empty() {
+        base_qs.push_str(&format!("&q={}", urlencoding::encode(query)));
+    }
     let sources = prefs.ntfy_sources_for_key(mailbox_key);
     if sources.is_empty() {
         return render(EnvelopesTemplate {
             mailbox: mailbox_key.into(),
             mailbox_enc: urlencoding::encode(mailbox_key).into_owned(),
-            page: 1,
-            prev_page: None,
             next_page: None,
             envelopes: vec![],
             offline: false,
             error: Some("ntfy non configuré (Plugins → NTFY)".into()),
             all_mode: false,
             query: query.to_string(),
-            query_enc: urlencoding::encode(query).into_owned(),
-
-            account_filter_enc: String::new(),
-            sort: "date_desc".into(),
+            rows_only,
+            stale: false,
+            base_qs,
+            next_auto_pages: auto_pages.saturating_add(1),
+            auto_load: false,
         });
     }
 
@@ -2705,7 +2984,6 @@ async fn ntfy_envelopes(
     if page > 1 && rows.is_empty() {
         rows.clear();
     }
-    let prev_page = if page > 1 { Some(page - 1) } else { None };
     let next_page = if ((page * page_size) as usize) < total {
         Some(page + 1)
     } else {
@@ -2720,18 +2998,17 @@ async fn ntfy_envelopes(
     render(EnvelopesTemplate {
         mailbox: mailbox_key.into(),
         mailbox_enc: urlencoding::encode(mailbox_key).into_owned(),
-        page,
-        prev_page,
         next_page,
         envelopes: rows,
         offline: false,
         error,
         all_mode: false,
         query: query.to_string(),
-        query_enc: urlencoding::encode(query).into_owned(),
-
-        account_filter_enc: String::new(),
-        sort: "date_desc".into(),
+        rows_only,
+        stale: false,
+        base_qs,
+        next_auto_pages: auto_pages.saturating_add(1),
+        auto_load: auto_pages < AUTO_PAGES_MAX,
     })
 }
 

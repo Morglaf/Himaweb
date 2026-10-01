@@ -172,7 +172,7 @@ async fn calendar_page(
         let y = year;
         let m = month;
         tokio::spawn(async move {
-            let _ = refresh_calendar_month(&bg, y, m).await;
+            let _ = refresh_calendar_month(&bg, y, m, true).await;
         });
     }
 
@@ -468,7 +468,7 @@ async fn load_calendar_data(
         }
     }
 
-    match fetch_and_cache_month(state, preferred, year, month).await {
+    match fetch_and_cache_month(state, preferred, year, month, false).await {
         Ok((calendars, current_id, events)) => {
             (calendars, current_id, events, None, account_hints, false)
         }
@@ -532,13 +532,19 @@ async fn fetch_and_cache_month(
     preferred: Option<&str>,
     year: i32,
     month: u32,
+    background: bool,
 ) -> Result<(Vec<CalRow>, String, Vec<EventRow>), String> {
     let Some(client) = &state.calendula else {
         return Err("Calendula indisponible.".into());
     };
     let from = format!("{year:04}-{month:02}-01");
     let to = format!("{year:04}-{month:02}-{:02}", days_in_month(year, month));
-    let _permit = state.cli_limit.acquire().await.map_err(|e| e.to_string())?;
+    let pool = if background {
+        &state.cli_bg_limit
+    } else {
+        &state.cli_limit
+    };
+    let _permit = pool.acquire().await.map_err(|e| e.to_string())?;
 
     let list = client.list_calendars().await.map_err(|e| {
         format!("{e} — vérifiez l’URL CalDAV (home complète) et le mot de passe dans Paramètres.")
@@ -621,9 +627,9 @@ async fn fetch_and_cache_month(
 /// Warm / refresh mois courant + mois suivant pour le cache (widget agenda).
 pub async fn refresh_calendar_into_cache(state: &AppState) -> Result<usize, String> {
     let now = Local::now().date_naive();
-    let mut n = refresh_calendar_month(state, now.year(), now.month()).await?;
+    let mut n = refresh_calendar_month(state, now.year(), now.month(), true).await?;
     if let Some(next) = now.checked_add_months(chrono::Months::new(1)) {
-        match refresh_calendar_month(state, next.year(), next.month()).await {
+        match refresh_calendar_month(state, next.year(), next.month(), true).await {
             Ok(m) => n = n.saturating_add(m),
             Err(e) => tracing::warn!("warm calendar next month: {e}"),
         }
@@ -631,12 +637,15 @@ pub async fn refresh_calendar_into_cache(state: &AppState) -> Result<usize, Stri
     Ok(n)
 }
 
+/// `background` : utiliser le pool CLI de fond plutôt que le pool interactif.
 pub async fn refresh_calendar_month(
     state: &AppState,
     year: i32,
     month: u32,
+    background: bool,
 ) -> Result<usize, String> {
-    let (cals, _, events) = fetch_and_cache_month(state, Some("__all__"), year, month).await?;
+    let (cals, _, events) =
+        fetch_and_cache_month(state, Some("__all__"), year, month, background).await?;
     Ok(cals.len().saturating_add(events.len()))
 }
 
@@ -954,7 +963,7 @@ async fn create_event(
             let now = chrono::Local::now();
             let y = form.year.unwrap_or_else(|| now.year());
             let m = form.month.unwrap_or_else(|| now.month());
-            let _ = refresh_calendar_month(&state, y, m).await;
+            let _ = refresh_calendar_month(&state, y, m, false).await;
             if stay {
                 return Html(
                     r##"<script>
@@ -1038,7 +1047,7 @@ async fn update_event(
     {
         Ok(()) => {
             if let (Some(y), Some(m)) = (form.year, form.month) {
-                let _ = refresh_calendar_month(&state, y, m).await;
+                let _ = refresh_calendar_month(&state, y, m, false).await;
             }
             Redirect::to(&format!("{redirect}&refresh=1&msg=Événement%20modifié")).into_response()
         }
@@ -1096,7 +1105,7 @@ async fn delete_event(
     {
         Ok(()) => {
             if let (Some(y), Some(m)) = (form.year, form.month) {
-                let _ = refresh_calendar_month(&state, y, m).await;
+                let _ = refresh_calendar_month(&state, y, m, false).await;
             }
             Redirect::to(&format!("{redirect}&refresh=1&msg=Événement%20supprimé")).into_response()
         }

@@ -36,16 +36,6 @@ impl Cache {
                 unread INTEGER NOT NULL DEFAULT 0,
                 synced_at TEXT
             );
-            CREATE TABLE IF NOT EXISTS envelopes (
-                mailbox TEXT NOT NULL,
-                id TEXT NOT NULL,
-                flags TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                sender TEXT NOT NULL,
-                date TEXT NOT NULL,
-                has_attachment INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (mailbox, id)
-            );
             CREATE TABLE IF NOT EXISTS messages (
                 mailbox TEXT NOT NULL,
                 id TEXT NOT NULL,
@@ -81,7 +71,49 @@ impl Cache {
             CREATE INDEX IF NOT EXISTS idx_cal_events_start ON cal_events(start_raw);
             "#,
         )?;
+        self.migrate_envelopes()?;
         Ok(())
+    }
+
+    /// Les enveloppes sont toujours re-téléchargeables : plutôt que de migrer
+    /// colonne par colonne, on repart d'une table neuve quand le schéma change.
+    fn migrate_envelopes(&self) -> Result<(), CacheError> {
+        const SCHEMA: &str = "2";
+        let current = self.get_meta("envelopes_schema")?;
+        let outdated = current.as_deref() != Some(SCHEMA);
+        if outdated {
+            self.conn.execute_batch("DROP TABLE IF EXISTS envelopes;")?;
+        }
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS envelopes (
+                account TEXT NOT NULL DEFAULT '',
+                mailbox TEXT NOT NULL,
+                id TEXT NOT NULL,
+                message_id TEXT NOT NULL DEFAULT '',
+                flags TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                recipient TEXT NOT NULL DEFAULT '',
+                date TEXT NOT NULL,
+                has_attachment INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (account, mailbox, id)
+            );
+            "#,
+        )?;
+        if outdated {
+            self.set_meta("envelopes_schema", SCHEMA)?;
+        }
+        Ok(())
+    }
+
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>, CacheError> {
+        Ok(self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?)
     }
 
     pub fn set_meta(&self, key: &str, value: &str) -> Result<(), CacheError> {
@@ -103,7 +135,12 @@ impl Cache {
                 "INSERT INTO mailboxes(name, desc, unread, synced_at) VALUES (?1, ?2, ?3, ?4)",
             )?;
             for m in boxes {
-                stmt.execute(params![m.name, m.desc, m.unread as i64, now])?;
+                stmt.execute(params![
+                    m.name,
+                    m.desc,
+                    m.unread.unwrap_or(0) as i64,
+                    now
+                ])?;
             }
         }
         tx.commit()?;
@@ -119,28 +156,41 @@ impl Cache {
             Ok(Mailbox {
                 name: r.get(0)?,
                 desc: r.get(1)?,
-                unread: r.get::<_, i64>(2)? as u64,
+                unread: Some(r.get::<_, i64>(2)? as u64),
             })
         })?;
         Ok(rows.filter_map(Result::ok).collect())
     }
 
-    pub fn save_envelopes(&self, mailbox: &str, envelopes: &[Envelope]) -> Result<(), CacheError> {
+    /// `account` vide = compte Himalaya par défaut (pas de `--account`).
+    pub fn save_envelopes(
+        &self,
+        account: &str,
+        mailbox: &str,
+        envelopes: &[Envelope],
+    ) -> Result<(), CacheError> {
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM envelopes WHERE mailbox = ?1", params![mailbox])?;
+        tx.execute(
+            "DELETE FROM envelopes WHERE account = ?1 AND mailbox = ?2",
+            params![account, mailbox],
+        )?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO envelopes(mailbox, id, flags, subject, sender, date, has_attachment)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO envelopes(account, mailbox, id, message_id, flags, subject, sender,
+                                       recipient, date, has_attachment)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             )?;
             for e in envelopes {
                 let flags = e.flags.join(",");
                 stmt.execute(params![
+                    account,
                     mailbox,
                     e.id,
+                    e.message_id,
                     flags,
                     e.subject,
                     e.from,
+                    e.to,
                     e.date,
                     e.has_attachment as i64
                 ])?;
@@ -148,16 +198,20 @@ impl Cache {
         }
         tx.commit()?;
         let now = chrono::Utc::now().to_rfc3339();
-        self.set_meta(&format!("envelopes:{mailbox}"), &now)?;
+        self.set_meta(&format!("envelopes:{account}\u{1}{mailbox}"), &now)?;
         Ok(())
     }
 
-    pub fn load_envelopes(&self, mailbox: &str) -> Result<Vec<Envelope>, CacheError> {
+    pub fn load_envelopes(
+        &self,
+        account: &str,
+        mailbox: &str,
+    ) -> Result<Vec<Envelope>, CacheError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, flags, subject, sender, date, has_attachment
-             FROM envelopes WHERE mailbox = ?1 ORDER BY date DESC",
+            "SELECT id, flags, subject, sender, date, has_attachment, message_id, recipient
+             FROM envelopes WHERE account = ?1 AND mailbox = ?2 ORDER BY date DESC",
         )?;
-        let rows = stmt.query_map(params![mailbox], |r| {
+        let rows = stmt.query_map(params![account, mailbox], |r| {
             let flags: String = r.get(1)?;
             Ok(Envelope {
                 id: r.get(0)?,
@@ -168,10 +222,10 @@ impl Cache {
                 },
                 subject: r.get(2)?,
                 from: r.get(3)?,
-                to: String::new(),
+                to: r.get(7)?,
                 date: r.get(4)?,
                 has_attachment: r.get::<_, i64>(5)? != 0,
-                message_id: String::new(),
+                message_id: r.get(6)?,
                 in_reply_to: vec![],
                 references: vec![],
             })

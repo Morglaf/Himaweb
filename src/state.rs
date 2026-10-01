@@ -23,7 +23,13 @@ pub struct AppState {
     pub ortie: Option<OrtieClient>,
     pub cache: Arc<Mutex<Cache>>,
     pub prefs: Arc<Mutex<Prefs>>,
+    /// Appels CLI déclenchés par une action utilisateur.
     pub cli_limit: Arc<Semaphore>,
+    /// Appels CLI de fond (préchauffage, poll des non-lus, rafraîchissements).
+    ///
+    /// Pool séparé pour qu'un clic ne fasse jamais la queue derrière des
+    /// tâches dont l'utilisateur n'attend pas le résultat.
+    pub cli_bg_limit: Arc<Semaphore>,
     pub himalaya_available: bool,
     pub cardamum_available: bool,
     pub calendula_available: bool,
@@ -125,6 +131,7 @@ impl AppState {
             cache: Arc::new(Mutex::new(cache)),
             prefs: Arc::new(Mutex::new(prefs)),
             cli_limit: Arc::new(Semaphore::new(6)),
+            cli_bg_limit: Arc::new(Semaphore::new(2)),
             himalaya_available,
             cardamum_available,
             calendula_available,

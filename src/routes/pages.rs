@@ -106,10 +106,16 @@ fn format_event_when(start: &str) -> String {
 
 async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let limit = state.prefs.lock().await.side_widget_events.max(1) as usize;
-    // Toujours rafraîchir mois courant + suivant pour le panneau (sinon les RDV
-    // du mois prochain manquent si le cache n'a vu que le mois affiché).
+    // Toujours servir le cache tout de suite : le rafraîchissement Calendula
+    // (deux mois × tous les agendas) ne doit pas bloquer le premier rendu.
     if state.calendula_available {
-        let _ = crate::routes::calendar::refresh_calendar_into_cache(&state).await;
+        let bg = Arc::clone(&state);
+        tokio::spawn(async move {
+            match crate::routes::calendar::refresh_calendar_into_cache(&bg).await {
+                Ok(n) => tracing::debug!("side-widget calendar warm: {n}"),
+                Err(e) => tracing::debug!("side-widget calendar warm: {e}"),
+            }
+        });
     }
     let (events, calendars) = {
         let cache = state.cache.lock().await;
@@ -283,7 +289,8 @@ async fn home(
                         hx-target="#envelope-list"
                         hx-swap="innerHTML"
                         hx-include="#mail-sort-ctx"
-                        hx-vals='{{"page":"1"}}'>
+                        hx-vals='{{"page":"1"}}'
+                        hx-on::before-request="HimaWeb.showListLoading()">
                   <option value="date_desc" selected>Date ↓</option>
                   <option value="date_asc">Date ↑</option>
                   <option value="from_asc">De A→Z</option>
@@ -299,17 +306,27 @@ async fn home(
                         hx-get="/partials/envelopes?mailbox={mailbox_q}&page={page}{account_q}"
                         hx-target="#envelope-list" hx-swap="innerHTML"
                         hx-include="#mail-sort"
-                        onclick="setTimeout(()=>lucide.createIcons(),50)">
+                        hx-disabled-elt="this"
+                        hx-on::before-request="HimaWeb.showListLoading()">
                   <i data-lucide="refresh-cw"></i>
                 </button>
               </div>
             </div>
-            <div id="envelope-list" class="envelope-list"
+            <div id="envelope-list" class="envelope-list" aria-busy="true"
                  hx-get="/partials/envelopes?mailbox={mailbox_q}&page={page}{account_q}"
                  hx-trigger="load"
                  hx-include="#mail-sort"
+                 hx-disinherit="hx-include"
                  hx-swap="innerHTML">
-              <div class="loading">Chargement des messages…</div>
+              <div class="hw-skeleton-list" aria-hidden="true">
+                <div class="hw-skeleton-row"><div class="hw-skeleton hw-skeleton-avatar"></div><div class="hw-skeleton-lines"><div class="hw-skeleton hw-skeleton-line w-40"></div><div class="hw-skeleton hw-skeleton-line w-80"></div></div></div>
+                <div class="hw-skeleton-row"><div class="hw-skeleton hw-skeleton-avatar"></div><div class="hw-skeleton-lines"><div class="hw-skeleton hw-skeleton-line w-40"></div><div class="hw-skeleton hw-skeleton-line w-60"></div></div></div>
+                <div class="hw-skeleton-row"><div class="hw-skeleton hw-skeleton-avatar"></div><div class="hw-skeleton-lines"><div class="hw-skeleton hw-skeleton-line w-40"></div><div class="hw-skeleton hw-skeleton-line w-100"></div></div></div>
+                <div class="hw-skeleton-row"><div class="hw-skeleton hw-skeleton-avatar"></div><div class="hw-skeleton-lines"><div class="hw-skeleton hw-skeleton-line w-40"></div><div class="hw-skeleton hw-skeleton-line w-80"></div></div></div>
+                <div class="hw-skeleton-row"><div class="hw-skeleton hw-skeleton-avatar"></div><div class="hw-skeleton-lines"><div class="hw-skeleton hw-skeleton-line w-40"></div><div class="hw-skeleton hw-skeleton-line w-60"></div></div></div>
+                <div class="hw-skeleton-row"><div class="hw-skeleton hw-skeleton-avatar"></div><div class="hw-skeleton-lines"><div class="hw-skeleton hw-skeleton-line w-40"></div><div class="hw-skeleton hw-skeleton-line w-100"></div></div></div>
+                <div class="hw-skeleton-row"><div class="hw-skeleton hw-skeleton-avatar"></div><div class="hw-skeleton-lines"><div class="hw-skeleton hw-skeleton-line w-40"></div><div class="hw-skeleton hw-skeleton-line w-80"></div></div></div>
+              </div>
             </div>
           </section>
 

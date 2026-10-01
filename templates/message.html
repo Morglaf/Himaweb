@@ -87,7 +87,8 @@
         <a class="icon-btn" title="Répondre" href="/compose?kind=reply&mailbox={{ mailbox_enc }}&id={{ m.id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="reply"></i></a>
         <a class="icon-btn" title="Répondre à tous" href="/compose?kind=reply-all&mailbox={{ mailbox_enc }}&id={{ m.id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="reply-all"></i></a>
         <a class="icon-btn" title="Transférer" href="/compose?kind=forward&mailbox={{ mailbox_enc }}&id={{ m.id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="forward"></i></a>
-        <form class="inline" hx-post="/partials/message/flag" hx-target="#message-pane" hx-swap="innerHTML">
+        <form class="inline" hx-post="/partials/message/flag" hx-target="#message-pane" hx-swap="innerHTML"
+              hx-disabled-elt="find button[type='submit']">
           <input type="hidden" name="mailbox" value="{{ mailbox }}" />
           <input type="hidden" name="id" value="{{ m.id }}" />
           <input type="hidden" name="account" value="{{ account }}" />
@@ -100,13 +101,15 @@
           <button class="icon-btn" type="submit" title="Marquer non lu"><i data-lucide="mail"></i></button>
           {% endif %}
         </form>
-        <form class="inline" hx-post="/partials/message/delete" hx-target="#message-pane" hx-swap="innerHTML">
+        <form class="inline" hx-post="/partials/message/delete" hx-target="#message-pane" hx-swap="innerHTML"
+              hx-disabled-elt="find button[type='submit']">
           <input type="hidden" name="mailbox" value="{{ mailbox }}" />
           <input type="hidden" name="id" value="{{ m.id }}" />
           <input type="hidden" name="account" value="{{ account }}" />
           <button class="icon-btn danger" type="submit" title="Supprimer"><i data-lucide="trash-2"></i></button>
         </form>
-        <form class="inline move-form" hx-post="/partials/message/move" hx-target="#message-pane" hx-swap="innerHTML">
+        <form class="inline move-form" hx-post="/partials/message/move" hx-target="#message-pane" hx-swap="innerHTML"
+              hx-disabled-elt="find button[type='submit']">
           <input type="hidden" name="mailbox" value="{{ mailbox }}" />
           <input type="hidden" name="id" value="{{ m.id }}" />
           <input type="hidden" name="account" value="{{ account }}" />

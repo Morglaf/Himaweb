@@ -48,6 +48,7 @@
             hx-post="/calendar/create"
             hx-target="#htmx-sink"
             hx-swap="innerHTML"
+            hx-disabled-elt="find button[type='submit']"
             @submit="busy = true">
         <input type="hidden" name="stay" value="1" />
         <input type="hidden" name="view" value="month" />

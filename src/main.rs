@@ -4,6 +4,7 @@
 
 mod accounts_config;
 mod account_colors;
+mod assets;
 mod attachments_class;
 mod cache;
 mod calendar_import;
@@ -24,16 +25,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::http::{header, HeaderValue, StatusCode};
-use axum::response::IntoResponse;
-use axum::routing::get;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
 use state::AppState;
-
-const APP_CSS: &str = include_str!("../static/app.css");
-const APP_JS: &str = include_str!("../static/app.js");
 
 fn print_version() {
     println!("himaweb {}", env!("CARGO_PKG_VERSION"));
@@ -88,36 +83,6 @@ fn handle_cli_flags() -> bool {
     true
 }
 
-async fn serve_app_css() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        [(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("text/css; charset=utf-8"),
-        ),
-        (
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=3600"),
-        )],
-        APP_CSS,
-    )
-}
-
-async fn serve_app_js() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        [(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/javascript; charset=utf-8"),
-        ),
-        (
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=3600"),
-        )],
-        APP_JS,
-    )
-}
-
 #[tokio::main]
 async fn main() {
     if handle_cli_flags() {
@@ -166,7 +131,10 @@ async fn main() {
         });
     }
 
-    tracing::info!("static assets: embarqués dans le binaire");
+    tracing::info!(
+        "static assets: embarqués dans le binaire (v{})",
+        assets::version()
+    );
 
     let open_browser = {
         let prefs = state.prefs.lock().await;
@@ -174,8 +142,7 @@ async fn main() {
     };
 
     let app = routes::router()
-        .route("/static/app.css", get(serve_app_css))
-        .route("/static/app.js", get(serve_app_js))
+        .merge(assets::router())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

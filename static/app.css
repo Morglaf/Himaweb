@@ -2483,3 +2483,195 @@ input.toggle:checked::after {
   border-top: 1px solid var(--line);
   margin: 0.25rem 0;
 }
+
+/* ======================================================================
+   Retour visuel de chargement
+   ====================================================================== */
+
+@keyframes hw-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes hw-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+@keyframes hw-progress-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Spinner ------------------------------------------------------------- */
+
+.hw-spinner {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  flex: none;
+  vertical-align: -0.1em;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  opacity: 0.75;
+  animation: hw-spin 0.6s linear infinite;
+}
+.hw-spinner.lg { width: 1.6rem; height: 1.6rem; border-width: 3px; }
+.hw-spinner.accent { color: var(--accent); }
+
+/* Masqué par défaut, révélé par HTMX le temps de la requête. */
+.hw-spinner.hw-when-busy { display: none; }
+.htmx-request .hw-spinner.hw-when-busy,
+.htmx-request.hw-spinner.hw-when-busy { display: inline-block; }
+
+/* Skeletons ----------------------------------------------------------- */
+
+.hw-skeleton {
+  border-radius: var(--radius);
+  background-color: var(--surface-2);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--ink) 7%, transparent) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: hw-shimmer 1.4s ease-in-out infinite;
+}
+
+.hw-skeleton-list { padding: 0.15rem 0; }
+.hw-skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid var(--line);
+}
+.hw-skeleton-avatar {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: 50%;
+}
+.hw-skeleton-lines { flex: 1; min-width: 0; display: grid; gap: 0.35rem; }
+.hw-skeleton-line { height: 0.6rem; }
+.hw-skeleton-line.w-40 { width: 40%; }
+.hw-skeleton-line.w-60 { width: 60%; }
+.hw-skeleton-line.w-80 { width: 80%; }
+.hw-skeleton-line.w-100 { width: 100%; }
+
+.hw-skeleton-message { padding: 1rem 1.1rem; display: grid; gap: 0.75rem; }
+.hw-skeleton-message .hw-skeleton-title { height: 1.1rem; width: 65%; }
+.hw-skeleton-message .hw-skeleton-meta { height: 0.7rem; width: 35%; }
+.hw-skeleton-message .hw-skeleton-body { display: grid; gap: 0.5rem; margin-top: 0.6rem; }
+
+/* Barre de progression globale ---------------------------------------- */
+
+.hw-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 2px;
+  width: 0;
+  z-index: 9999;
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent);
+  border-radius: 0 2px 2px 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: width 0.18s ease-out, opacity 0.25s ease-out;
+}
+.hw-progress.is-active {
+  opacity: 1;
+  animation: hw-progress-enter 0.12s ease-out;
+}
+
+/* Zones en cours de mise à jour --------------------------------------- */
+
+[aria-busy="true"] { cursor: progress; }
+#message-pane[aria-busy="true"],
+#envelope-list[aria-busy="true"] { cursor: progress; }
+
+/* Liste servie depuis le cache, rafraîchissement en cours. */
+#envelope-list[data-stale="1"] .envelope,
+.hw-stale { opacity: 0.55; transition: opacity 0.2s ease-out; }
+
+/* Enveloppe cliquée : retour immédiat, avant même la réponse serveur. */
+.envelope.is-opening {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.envelope.is-pending {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.envelope.is-pending .env-avatar { position: relative; }
+
+/* Boutons en attente -------------------------------------------------- */
+
+.hw-busy,
+button[disabled].hw-busy {
+  position: relative;
+  opacity: 0.72;
+  cursor: progress;
+}
+.hw-busy > .hw-spinner { margin-right: 0.4rem; }
+
+/* Bouton « Voir plus » en fin de liste -------------------------------- */
+
+.hw-load-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  width: 100%;
+  margin: 0;
+  padding: 0.7rem 0.6rem;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.hw-load-more:hover { background: var(--surface-2); color: var(--ink); }
+.hw-load-more:disabled { cursor: progress; }
+.hw-load-more i { width: 15px; height: 15px; }
+.hw-load-more .hw-load-more-busy { display: none; }
+.hw-load-more.htmx-request .hw-load-more-idle { display: none; }
+.hw-load-more.htmx-request .hw-load-more-busy {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.hw-list-end {
+  padding: 0.7rem 0.6rem;
+  border-top: 1px solid var(--line);
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* Accessibilité : respecter le réglage système ------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .hw-spinner {
+    animation: none;
+    border-top-color: currentColor;
+    opacity: 0.4;
+  }
+  .hw-skeleton {
+    animation: none;
+    background-image: none;
+  }
+  .hw-progress { transition: none; }
+  .message-view { animation: none; }
+}

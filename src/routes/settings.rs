@@ -386,47 +386,69 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
     let cardamum_accounts = contacts_import::list_cardamum_accounts().unwrap_or_default();
     let calendula_accounts = calendar_import::list_calendula_accounts().unwrap_or_default();
 
-    let editable = {
-        let _permit = state.cli_limit.acquire().await.ok();
-        let mut rows = Vec::with_capacity(editable_raw.len());
-        for a in editable_raw {
-            let copy_move = prefs_snap.uses_copy_move(&a.name);
-            let boxes = if state.himalaya_available {
-                state
+    // Un seul `list_mailboxes` par compte, partagé par les trois blocs
+    // (édition, préférences dossiers, dossier de déplacement par défaut).
+    let mut mailbox_names: Vec<String> = Vec::new();
+    for a in &editable_raw {
+        if !mailbox_names.iter().any(|n| n == &a.name) {
+            mailbox_names.push(a.name.clone());
+        }
+    }
+    for acc in &account_order {
+        if !mailbox_names.iter().any(|n| n == acc) {
+            mailbox_names.push(acc.clone());
+        }
+    }
+    let mut boxes_by_account: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    if state.himalaya_available && !mailbox_names.is_empty() {
+        let mut tasks = tokio::task::JoinSet::new();
+        for acc in mailbox_names {
+            let st = Arc::clone(&state);
+            tasks.spawn(async move {
+                let _permit = st.cli_limit.acquire().await.ok();
+                let names = st
                     .himalaya
-                    .list_mailboxes(Some(&a.name))
+                    .list_mailboxes(Some(&acc))
                     .await
                     .unwrap_or_default()
                     .into_iter()
                     .map(|m| m.name)
-                    .collect::<Vec<_>>()
-            } else {
-                vec![]
-            };
+                    .collect::<Vec<_>>();
+                (acc, names)
+            });
+        }
+        while let Some(joined) = tasks.join_next().await {
+            if let Ok((acc, names)) = joined {
+                boxes_by_account.insert(acc, names);
+            }
+        }
+    }
+
+    let editable = {
+        let mut rows = Vec::with_capacity(editable_raw.len());
+        for a in editable_raw {
+            let copy_move = prefs_snap.uses_copy_move(&a.name);
+            let boxes = boxes_by_account.get(&a.name).cloned().unwrap_or_default();
             rows.push(EditableAccountRow::from_edit(a, boxes, copy_move));
         }
         rows
     };
     let folder_groups = {
-        let _permit = state.cli_limit.acquire().await.ok();
         let mut groups = Vec::new();
         if state.himalaya_available {
             for acc in &account_order {
-                let boxes = state
-                    .himalaya
-                    .list_mailboxes(Some(acc))
-                    .await
-                    .unwrap_or_default();
+                let boxes = boxes_by_account.get(acc).cloned().unwrap_or_default();
                 let folders = boxes
                     .into_iter()
-                    .map(|m| {
-                        let key = Prefs::folder_key(Some(acc), &m.name);
+                    .map(|name| {
+                        let key = Prefs::folder_key(Some(acc), &name);
                         FolderPrefRow {
                             pinned: prefs_snap.is_pinned(&key),
                             hidden: prefs_snap.is_hidden(&key),
-                            watched: prefs_snap.is_watched(&key, &m.name),
-                            count_in_total: prefs_snap.contributes_to_unread_total(&key, &m.name),
-                            label: m.name.clone(),
+                            watched: prefs_snap.is_watched(&key, &name),
+                            count_in_total: prefs_snap.contributes_to_unread_total(&key, &name),
+                            label: name,
                             key,
                         }
                     })
@@ -466,21 +488,19 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
 
     let mut move_defaults: Vec<MoveDefaultRow> = Vec::new();
     if state.himalaya_available {
-        let _permit = state.cli_limit.acquire().await.ok();
         for acc in &account_order {
             let current = prefs_snap
                 .default_move_for(acc)
                 .unwrap_or("")
                 .to_string();
-            let options = state
-                .himalaya
-                .list_mailboxes(Some(acc))
-                .await
+            let options = boxes_by_account
+                .get(acc)
+                .cloned()
                 .unwrap_or_default()
                 .into_iter()
-                .map(|m| MoveFolderOpt {
-                    selected: m.name.eq_ignore_ascii_case(&current),
-                    name: m.name,
+                .map(|name| MoveFolderOpt {
+                    selected: name.eq_ignore_ascii_case(&current),
+                    name,
                 })
                 .collect::<Vec<_>>();
             move_defaults.push(MoveDefaultRow {

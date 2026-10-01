@@ -24,7 +24,8 @@ jobs:
             target: aarch64-unknown-linux-gnu
             asset: himaweb.aarch64-linux.tgz
             bin: himaweb
-          - os: macos-13
+          # macos-13 (Intel) est retiré / file infinie — on cross-compile depuis Apple Silicon.
+          - os: macos-latest
             target: x86_64-apple-darwin
             asset: himaweb.x86_64-darwin.tgz
             bin: himaweb
@@ -38,7 +39,7 @@ jobs:
             bin: himaweb.exe
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Linux deps (tray / GTK)
         if: runner.os == 'Linux'

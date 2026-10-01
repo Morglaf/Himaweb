@@ -13,7 +13,10 @@ pub struct HimalayaClient {
 pub struct Mailbox {
     pub name: String,
     pub desc: Option<String>,
-    pub unread: u64,
+    /// `None` si Himalaya n'a pas fourni de compteur (`unread: null`).
+    /// Dans ce cas seulement, on lance `count_unseen` (recherche IMAP).
+    #[serde(default)]
+    pub unread: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,8 +175,7 @@ impl HimalayaClient {
                         Value::Number(n) => n.as_u64(),
                         Value::String(s) => s.parse().ok(),
                         _ => None,
-                    })
-                    .unwrap_or(0);
+                    });
                 Mailbox {
                     name,
                     desc,

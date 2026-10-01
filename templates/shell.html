@@ -4,20 +4,21 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{ title }}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <link rel="stylesheet" href="/static/app.css?v={{ crate::assets::version() }}" />
+  <script src="/static/vendor/htmx.min.js?v={{ crate::assets::version() }}"></script>
   <script>
     // App locale de confiance : autoriser les scripts dans les fragments HTMX
     htmx.config.allowScriptTags = true;
   </script>
-  <script defer src="/static/app.js?v=20261001m"></script>
-  <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
-  <script src="https://unpkg.com/lucide@0.469.0"></script>
-  <script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js"></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css" />
-  <link rel="stylesheet" href="/static/app.css?v=20261001n" />
+  <script src="/static/vendor/lucide.min.js?v={{ crate::assets::version() }}"></script>
+  <script defer src="/static/app.js?v={{ crate::assets::version() }}"></script>
+  <script defer src="/static/vendor/alpine.min.js?v={{ crate::assets::version() }}"></script>
+  <!-- Quill ne sert qu'à la rédaction : chargé à la demande par ensureQuill() -->
+  <!-- Inter en non bloquant : var(--font) retombe sur la police système en attendant -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" media="print" onload="this.media='all'"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
 </head>
 <body>
   <header class="topbar">
@@ -49,7 +50,6 @@
 
   <div id="compose-layer" aria-live="polite"></div>
   <div id="htmx-sink" class="sr-only" aria-hidden="true"></div>
-
-  <script>lucide.createIcons()</script>
+  <!-- Icônes rendues par app.js au DOMContentLoaded (rendu scopé, voir hwRenderIcons) -->
 </body>
 </html>

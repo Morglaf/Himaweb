@@ -320,7 +320,8 @@ pub async fn refresh_contacts_into_cache(state: &AppState) -> Result<usize, Stri
     let Some(client) = &state.cardamum else {
         return Ok(0);
     };
-    let _permit = state.cli_limit.acquire().await.map_err(|e| e.to_string())?;
+    // Tâche de fond : ne pas consommer un créneau du pool interactif.
+    let _permit = state.cli_bg_limit.acquire().await.map_err(|e| e.to_string())?;
     let books = client
         .list_all_addressbooks()
         .await

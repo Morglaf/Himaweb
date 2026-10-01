@@ -1,3 +1,273 @@
+/* Assets chargés à la demande ------------------------------------------- */
+
+/** Version des assets embarqués, lue sur l'URL de ce script. */
+function hwAssetVersion() {
+  if (hwAssetVersion._v !== undefined) return hwAssetVersion._v;
+  let v = '';
+  try {
+    const src = (document.currentScript && document.currentScript.src) || '';
+    v = new URL(src, location.href).searchParams.get('v') || '';
+  } catch (_) {}
+  if (!v) {
+    const el = document.querySelector('script[src*="/static/app.js"]');
+    if (el) {
+      try {
+        v = new URL(el.src, location.href).searchParams.get('v') || '';
+      } catch (_) {}
+    }
+  }
+  hwAssetVersion._v = v;
+  return v;
+}
+
+const hwPendingAssets = {};
+
+function hwLoadAsset(url, kind) {
+  if (hwPendingAssets[url]) return hwPendingAssets[url];
+  hwPendingAssets[url] = new Promise((resolve, reject) => {
+    const el =
+      kind === 'css'
+        ? Object.assign(document.createElement('link'), { rel: 'stylesheet', href: url })
+        : Object.assign(document.createElement('script'), { src: url });
+    el.addEventListener('load', () => resolve());
+    el.addEventListener('error', () => reject(new Error(`asset: ${url}`)));
+    document.head.appendChild(el);
+  });
+  return hwPendingAssets[url];
+}
+
+/**
+ * Quill ne sert qu'à la rédaction HTML : 230 Ko hors du chemin critique,
+ * chargés à la première ouverture d'un éditeur.
+ */
+function ensureQuill() {
+  if (typeof Quill !== 'undefined') return Promise.resolve();
+  const v = hwAssetVersion();
+  const q = v ? `?v=${encodeURIComponent(v)}` : '';
+  return Promise.all([
+    hwLoadAsset(`/static/vendor/quill.snow.css${q}`, 'css'),
+    hwLoadAsset(`/static/vendor/quill.js${q}`, 'js'),
+  ]);
+}
+
+/* Icônes Lucide : rendu scopé et idempotent ------------------------------ */
+
+/**
+ * `lucide.createIcons()` rescanne tout le document ET reconstruit les icônes
+ * déjà rendues (le `<svg>` produit conserve `data-lucide`). Sur une liste de
+ * 50 messages — plus de 300 icônes — chaque appel recrée donc tout le DOM des
+ * icônes, plusieurs fois par action à cause des appels empilés.
+ *
+ * On marque les icônes traitées et on sait se limiter à un sous-arbre, en
+ * réutilisant `lucide.icons` et `lucide.createElement` (API publiques).
+ */
+const HW_ICON_DONE = 'data-hw-icon';
+
+function hwIconPascal(name) {
+  return name.replace(/(\w)(\w*)(_|-|\s*)/g, (_m, head, tail) => head.toUpperCase() + tail.toLowerCase());
+}
+
+function hwRenderIcons(root) {
+  const lu = window.lucide;
+  if (!lu || !lu.icons || typeof lu.createElement !== 'function') return 0;
+
+  const scope = root && typeof root.querySelectorAll === 'function' ? root : document;
+  const sel = `[data-lucide]:not([${HW_ICON_DONE}])`;
+  const targets = [];
+  if (scope.matches && scope.matches(sel)) targets.push(scope);
+  scope.querySelectorAll(sel).forEach((el) => targets.push(el));
+
+  let done = 0;
+  targets.forEach((el) => {
+    const name = el.getAttribute('data-lucide');
+    if (!name) return;
+    const node = lu.icons[hwIconPascal(name)];
+    if (!node) return;
+    const [tag, baseAttrs, children] = node;
+    const attrs = { ...baseAttrs };
+    for (const a of el.attributes) attrs[a.name] = a.value;
+    attrs['data-lucide'] = name;
+    attrs[HW_ICON_DONE] = '1';
+    attrs.class = `lucide lucide-${name} ${el.getAttribute('class') || ''}`
+      .trim()
+      .split(/\s+/)
+      .filter((c, i, all) => c && all.indexOf(c) === i)
+      .join(' ');
+    const svg = lu.createElement([tag, attrs, children]);
+    if (el.parentNode) {
+      el.parentNode.replaceChild(svg, el);
+      done += 1;
+    }
+  });
+  return done;
+}
+
+/**
+ * Les appels `lucide.createIcons()` sont dispersés dans les templates et les
+ * expressions Alpine. Plutôt que de les réécrire un par un, on redirige
+ * l'entrée publique vers la version scopée ; la signature d'origine reste
+ * disponible pour un appel explicitement paramétré.
+ */
+(function hwInstallIconShim() {
+  const lu = window.lucide;
+  if (!lu || lu.__hwScoped) return;
+  if (!lu.icons || typeof lu.createElement !== 'function') return;
+  const original = lu.createIcons;
+  lu.__hwScoped = true;
+  lu.createIcons = function hwCreateIcons(arg) {
+    if (arg && arg.nodeType === 1) return hwRenderIcons(arg);
+    const configured = arg && typeof arg === 'object' && (arg.icons || arg.nameAttr || arg.attrs);
+    if (configured) return original.call(lu, arg);
+    return hwRenderIcons(document);
+  };
+})();
+
+/* Barre de progression globale ------------------------------------------ */
+
+/**
+ * Indicateur unique pour toute requête en vol, HTMX comme `fetch`.
+ *
+ * Un délai de grâce évite le clignotement sur les réponses immédiates
+ * (fragments servis depuis le cache), et la progression tend vers 92 % sans
+ * jamais l'atteindre : on ne connaît pas la durée réelle d'un appel CLI.
+ */
+const HWProgress = (() => {
+  const GRACE_MS = 120;
+  const TICK_MS = 180;
+  const CEILING = 92;
+
+  let el = null;
+  let active = 0;
+  let pct = 0;
+  let graceTimer = null;
+  let tickTimer = null;
+  let hideTimer = null;
+
+  function bar() {
+    if (el && el.isConnected) return el;
+    el = document.createElement('div');
+    el.className = 'hw-progress';
+    el.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(el);
+    return el;
+  }
+
+  function paint() {
+    bar().style.width = `${pct}%`;
+  }
+
+  function show() {
+    pct = 8;
+    bar().classList.add('is-active');
+    paint();
+    clearInterval(tickTimer);
+    tickTimer = setInterval(() => {
+      pct += (CEILING - pct) * 0.14;
+      paint();
+    }, TICK_MS);
+  }
+
+  function finish() {
+    clearTimeout(graceTimer);
+    graceTimer = null;
+    clearInterval(tickTimer);
+    tickTimer = null;
+    // Jamais affichée : la requête a répondu dans le délai de grâce.
+    if (!el || !el.classList.contains('is-active')) {
+      if (el) el.style.width = '0';
+      pct = 0;
+      return;
+    }
+    pct = 100;
+    paint();
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => {
+      if (active > 0) return;
+      const b = bar();
+      b.classList.remove('is-active');
+      setTimeout(() => {
+        if (active === 0) {
+          pct = 0;
+          b.style.width = '0';
+        }
+      }, 280);
+    }, 180);
+  }
+
+  return {
+    begin() {
+      active += 1;
+      if (active !== 1) return;
+      clearTimeout(hideTimer);
+      hideTimer = null;
+      clearTimeout(graceTimer);
+      graceTimer = setTimeout(() => {
+        graceTimer = null;
+        if (active > 0) show();
+      }, GRACE_MS);
+    },
+    end() {
+      active = Math.max(0, active - 1);
+      if (active === 0) finish();
+    },
+    /** Encadre une promesse par begin/end, quoi qu'il arrive. */
+    async track(promise) {
+      this.begin();
+      try {
+        return await promise;
+      } finally {
+        this.end();
+      }
+    },
+  };
+})();
+
+window.HWProgress = HWProgress;
+
+/* Requêtes HTMX en vol : un seul compteur, dédupliqué par XHR. */
+const hwTrackedXhr = new WeakMap();
+
+document.addEventListener('htmx:beforeRequest', (ev) => {
+  const xhr = ev.detail && ev.detail.xhr;
+  if (xhr) {
+    if (hwTrackedXhr.has(xhr)) return;
+    hwTrackedXhr.set(xhr, true);
+  }
+  HWProgress.begin();
+});
+
+function hwRequestSettled(ev) {
+  const xhr = ev.detail && ev.detail.xhr;
+  if (xhr) {
+    if (!hwTrackedXhr.has(xhr)) return;
+    hwTrackedXhr.delete(xhr);
+  }
+  HWProgress.end();
+}
+
+['htmx:afterRequest', 'htmx:sendError', 'htmx:timeout', 'htmx:abort'].forEach((name) =>
+  document.addEventListener(name, hwRequestSettled),
+);
+
+/* Filet de sécurité : une requête en échec ne produit aucun swap, les zones
+   marquées occupées resteraient figées sur leur squelette. */
+['htmx:responseError', 'htmx:sendError', 'htmx:timeout', 'htmx:abort'].forEach((name) =>
+  document.addEventListener(name, () => {
+    ['message-pane', 'envelope-list'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el || !el.hasAttribute('aria-busy')) return;
+      el.removeAttribute('aria-busy');
+      if (el.querySelector('.hw-skeleton')) {
+        el.innerHTML =
+          '<div class="empty-list"><p class="muted">Échec du chargement</p></div>';
+      }
+    });
+    document
+      .querySelectorAll('.envelope.is-opening, .envelope.is-pending')
+      .forEach((el) => el.classList.remove('is-opening', 'is-pending'));
+  }),
+);
+
 function contactsPage() {
   return {
     openCreate: false,
@@ -222,7 +492,7 @@ function composeForm() {
       this._quillIniting = true;
       const tryInit = (attempt) => {
         if (typeof Quill === 'undefined') {
-          if (attempt < 20) {
+          if (attempt < 40) {
             setTimeout(() => tryInit(attempt + 1), 50);
           } else {
             this._quillIniting = false;
@@ -262,7 +532,12 @@ function composeForm() {
         });
         this._quillIniting = false;
       };
-      tryInit(0);
+      ensureQuill().then(
+        () => tryInit(0),
+        () => {
+          this._quillIniting = false;
+        },
+      );
     },
     destroyQuill() {
       this._quillIniting = false;
@@ -538,7 +813,10 @@ window.__lucideIconNames = null;
 async function loadLucideIconNames() {
   if (window.__lucideIconNames) return window.__lucideIconNames;
   try {
-    const res = await fetch('https://unpkg.com/lucide-static@0.469.0/tags.json');
+    const v = hwAssetVersion();
+    const res = await fetch(
+      `/static/vendor/lucide-tags.json${v ? `?v=${encodeURIComponent(v)}` : ''}`,
+    );
     if (!res.ok) throw new Error('tags');
     const tags = await res.json();
     window.__lucideIconNames = Object.keys(tags).sort();
@@ -1112,6 +1390,7 @@ window.HimaWeb = {
     const toast = document.getElementById('mail-undo-toast');
     if (toast) toast.remove();
     if (!entry || !entry.items || !entry.items.length) return;
+    HWProgress.begin();
     try {
       const res = await fetch('/api/mail/undo', {
         method: 'POST',
@@ -1140,12 +1419,14 @@ window.HimaWeb = {
         if (pane) {
           pane.innerHTML =
             '<div class="empty-read"><i data-lucide="mail-open"></i><p>Sélectionnez un message</p></div>';
-          if (window.lucide) lucide.createIcons();
+          hwRenderIcons(pane);
         }
       }
     } catch (e) {
       console.error(e);
       alert('Échec de l’annulation');
+    } finally {
+      HWProgress.end();
     }
   },
 
@@ -1186,16 +1467,18 @@ window.HimaWeb = {
   markEnvelopeRead(id, account) {
     const acc = account || '';
     let changed = false;
-    document.querySelectorAll('.envelope.unread').forEach((el) => {
-      if (el.dataset.id !== String(id)) return;
-      // Si account est fourni, filtrer ; sinon matcher l’id seul (NTFY, etc.)
-      if (acc && (el.dataset.account || '') !== acc) return;
-      el.classList.remove('unread');
-      changed = true;
-      el.querySelectorAll('.from strong').forEach((s) => {
-        const parent = s.parentNode;
-        while (s.firstChild) parent.insertBefore(s.firstChild, s);
-        s.remove();
+    this.envelopeRoots().forEach((root) => {
+      root.querySelectorAll('.envelope.unread').forEach((el) => {
+        if (el.dataset.id !== String(id)) return;
+        // Si account est fourni, filtrer ; sinon matcher l’id seul (NTFY, etc.)
+        if (acc && (el.dataset.account || '') !== acc) return;
+        el.classList.remove('unread');
+        changed = true;
+        el.querySelectorAll('.from strong').forEach((s) => {
+          const parent = s.parentNode;
+          while (s.firstChild) parent.insertBefore(s.firstChild, s);
+          s.remove();
+        });
       });
     });
     if (changed) this.bumpUnread(-1);
@@ -1205,30 +1488,32 @@ window.HimaWeb = {
   applyEnvelopeSeen(id, account, seen) {
     const acc = account || '';
     let changed = false;
-    document.querySelectorAll('.envelope').forEach((el) => {
-      if (el.dataset.id !== String(id)) return;
-      if (acc && (el.dataset.account || '') !== acc) return;
-      const wasUnread = el.classList.contains('unread');
-      if (seen) {
-        if (!wasUnread) return;
-        el.classList.remove('unread');
-        changed = true;
-        el.querySelectorAll('.from strong').forEach((s) => {
-          const parent = s.parentNode;
-          while (s.firstChild) parent.insertBefore(s.firstChild, s);
-          s.remove();
-        });
-      } else {
-        if (wasUnread) return;
-        el.classList.add('unread');
-        changed = true;
-        const from = el.querySelector('.from');
-        if (from && !from.querySelector('strong')) {
-          const strong = document.createElement('strong');
-          while (from.firstChild) strong.appendChild(from.firstChild);
-          from.appendChild(strong);
+    this.envelopeRoots().forEach((root) => {
+      root.querySelectorAll('.envelope').forEach((el) => {
+        if (el.dataset.id !== String(id)) return;
+        if (acc && (el.dataset.account || '') !== acc) return;
+        const wasUnread = el.classList.contains('unread');
+        if (seen) {
+          if (!wasUnread) return;
+          el.classList.remove('unread');
+          changed = true;
+          el.querySelectorAll('.from strong').forEach((s) => {
+            const parent = s.parentNode;
+            while (s.firstChild) parent.insertBefore(s.firstChild, s);
+            s.remove();
+          });
+        } else {
+          if (wasUnread) return;
+          el.classList.add('unread');
+          changed = true;
+          const from = el.querySelector('.from');
+          if (from && !from.querySelector('strong')) {
+            const strong = document.createElement('strong');
+            while (from.firstChild) strong.appendChild(from.firstChild);
+            from.appendChild(strong);
+          }
         }
-      }
+      });
     });
     if (changed) this.bumpUnread(seen ? -1 : 1);
     this.scheduleMailRefresh({ envelopes: false, sidebar: false, unread: true, unreadDelay: 900 });
@@ -1375,6 +1660,196 @@ window.HimaWeb = {
     });
   },
 
+  /* --- Retour visuel de chargement ------------------------------------ */
+
+  /** Lignes fantômes imitant la liste d'enveloppes. */
+  listSkeletonHtml(rows) {
+    const widths = ['w-60', 'w-80', 'w-40', 'w-100', 'w-60'];
+    let out = '<div class="hw-skeleton-list" aria-hidden="true">';
+    for (let i = 0; i < (rows || 7); i++) {
+      out +=
+        '<div class="hw-skeleton-row">' +
+        '<div class="hw-skeleton hw-skeleton-avatar"></div>' +
+        '<div class="hw-skeleton-lines">' +
+        '<div class="hw-skeleton hw-skeleton-line w-40"></div>' +
+        `<div class="hw-skeleton hw-skeleton-line ${widths[i % widths.length]}"></div>` +
+        '</div></div>';
+    }
+    return `${out}</div>`;
+  },
+
+  messageSkeletonHtml() {
+    return (
+      '<div class="hw-skeleton-message" aria-hidden="true">' +
+      '<div class="hw-skeleton hw-skeleton-title"></div>' +
+      '<div class="hw-skeleton hw-skeleton-meta"></div>' +
+      '<div class="hw-skeleton-body">' +
+      '<div class="hw-skeleton hw-skeleton-line w-100"></div>' +
+      '<div class="hw-skeleton hw-skeleton-line w-100"></div>' +
+      '<div class="hw-skeleton hw-skeleton-line w-80"></div>' +
+      '<div class="hw-skeleton hw-skeleton-line w-100"></div>' +
+      '<div class="hw-skeleton hw-skeleton-line w-60"></div>' +
+      '</div></div>'
+    );
+  },
+
+  /** Marque une zone comme en cours de mise à jour (lecteurs d'écran inclus). */
+  setPaneBusy(el, busy) {
+    if (!el) return;
+    if (busy) el.setAttribute('aria-busy', 'true');
+    else el.removeAttribute('aria-busy');
+  },
+
+  showMessageLoading() {
+    const pane = document.getElementById('message-pane');
+    if (!pane) return;
+    this.setPaneBusy(pane, true);
+    pane.innerHTML = this.messageSkeletonHtml();
+  },
+
+  showListLoading() {
+    const list = document.getElementById('envelope-list');
+    if (!list) return;
+    this.setPaneBusy(list, true);
+    list.removeAttribute('data-stale');
+    list.innerHTML = this.listSkeletonHtml(8);
+  },
+
+  /** Surligne l'enveloppe ouverte dès le clic, avant la réponse serveur. */
+  markEnvelopeOpening(env) {
+    const list = document.getElementById('envelope-list') || document;
+    list.querySelectorAll('.envelope.is-opening').forEach((el) => {
+      if (el !== env) el.classList.remove('is-opening');
+    });
+    if (env) env.classList.add('is-opening');
+  },
+
+  clearEnvelopeOpening() {
+    document
+      .querySelectorAll('.envelope.is-opening')
+      .forEach((el) => el.classList.remove('is-opening'));
+  },
+
+  /** Grise les enveloppes visées par une suppression / un déplacement en cours. */
+  setEnvelopesPending(items, on) {
+    (items || []).forEach((it) => {
+      if (!it || !it.id) return;
+      const acc = it.account || '';
+      const sel = `.envelope[data-id="${cssEsc(String(it.id))}"]${
+        acc ? `[data-account="${cssEsc(acc)}"]` : ''
+      }`;
+      document.querySelectorAll(sel).forEach((el) => el.classList.toggle('is-pending', !!on));
+    });
+  },
+
+  /**
+   * Les formulaires POST classiques (envoi, sync, CRUD calendrier/contacts)
+   * provoquent une navigation complète : sans retour visuel, le clic semble
+   * sans effet pendant toute la requête.
+   */
+  bindFormBusy() {
+    if (this._formBusyBound) return;
+    this._formBusyBound = true;
+    document.addEventListener('submit', (ev) => {
+      const form = ev.target;
+      if (!form || !form.matches || ev.defaultPrevented) return;
+      // HTMX gère déjà son propre cycle d'indicateurs.
+      if (form.hasAttribute('hx-post') || form.hasAttribute('hx-get')) return;
+
+      const btn =
+        (ev.submitter && ev.submitter.tagName === 'BUTTON' ? ev.submitter : null) ||
+        form.querySelector('button[type="submit"], button:not([type])');
+      if (!btn || btn.dataset.hwBusy === '1') return;
+
+      btn.dataset.hwBusy = '1';
+      btn.classList.add('hw-busy');
+      const spinner = document.createElement('span');
+      spinner.className = 'hw-spinner';
+      spinner.setAttribute('aria-hidden', 'true');
+      btn.insertBefore(spinner, btn.firstChild);
+      HWProgress.begin();
+
+      // La page va être remplacée ; ce filet ne sert qu'en cas d'échec réseau.
+      setTimeout(() => {
+        if (btn.dataset.hwBusy !== '1') return;
+        delete btn.dataset.hwBusy;
+        btn.classList.remove('hw-busy');
+        spinner.remove();
+        HWProgress.end();
+      }, 30000);
+    });
+  },
+
+  envelopeRoots() {
+    const roots = [
+      document.getElementById('envelope-list'),
+      document.getElementById('search-results'),
+    ].filter(Boolean);
+    return roots.length ? roots : [document];
+  },
+
+  /**
+   * Au survol, précharge le corps dans le cache SQLite (pool de fond).
+   * Plafonné à 2 requêtes simultanées, délai 150 ms, sans barre de progression.
+   */
+  bindMessagePrefetch() {
+    if (this._prefetchBound) return;
+    this._prefetchBound = true;
+    this._prefetchSeen = new Set();
+    this._prefetchInflight = 0;
+    this._prefetchTimer = null;
+    this._prefetchUrl = null;
+
+    const schedule = (env) => {
+      const url = env.getAttribute('hx-get');
+      if (!url || url === this._prefetchUrl) return;
+      if (this._prefetchTimer) clearTimeout(this._prefetchTimer);
+      this._prefetchUrl = url;
+      this._prefetchTimer = setTimeout(() => {
+        this._prefetchTimer = null;
+        this.runMessagePrefetch(url);
+      }, 150);
+    };
+
+    document.addEventListener('pointerover', (ev) => {
+      const env = ev.target.closest && ev.target.closest('.envelope[hx-get]');
+      if (!env) return;
+      const from = ev.relatedTarget;
+      if (from && env.contains(from)) return;
+      schedule(env);
+    });
+    document.addEventListener('pointerout', (ev) => {
+      const env = ev.target.closest && ev.target.closest('.envelope[hx-get]');
+      if (!env) return;
+      const to = ev.relatedTarget;
+      if (to && env.contains(to)) return;
+      if (this._prefetchTimer) {
+        clearTimeout(this._prefetchTimer);
+        this._prefetchTimer = null;
+        this._prefetchUrl = null;
+      }
+    });
+  },
+
+  runMessagePrefetch(url) {
+    if (!url || this._prefetchInflight >= 2) return;
+    if (this._prefetchSeen.has(url)) return;
+    this._prefetchSeen.add(url);
+    if (this._prefetchSeen.size > 80) {
+      const first = this._prefetchSeen.values().next().value;
+      this._prefetchSeen.delete(first);
+    }
+    this._prefetchInflight += 1;
+    const sep = url.includes('?') ? '&' : '?';
+    fetch(`${url}${sep}prefetch=1`, { credentials: 'same-origin', headers: { Accept: 'text/plain' } })
+      .catch(() => {
+        this._prefetchSeen.delete(url);
+      })
+      .finally(() => {
+        this._prefetchInflight = Math.max(0, this._prefetchInflight - 1);
+      });
+  },
+
   bindFolderClicks() {
     if (this._folderClicksBound) return;
     this._folderClicksBound = true;
@@ -1416,8 +1891,11 @@ window.HimaWeb = {
       if (pane) {
         pane.innerHTML =
           '<div class="empty-read"><i data-lucide="mail-open"></i><p>Sélectionnez un message</p></div>';
-        if (window.lucide) lucide.createIcons();
+        if (window.lucide) lucide.createIcons(pane);
       }
+      // La liste va être remplacée par HTMX : montrer l'attente tout de suite.
+      this.clearEnvelopeOpening();
+      this.showListLoading();
     });
   },
 
@@ -1858,6 +2336,8 @@ window.HimaWeb = {
 
   async moveMailsToFolder(items, toMailbox, toAccount) {
     if (!items || !items.length || !toMailbox) return;
+    this.setEnvelopesPending(items, true);
+    HWProgress.begin();
     try {
       const res = await fetch('/api/mail/move', {
         method: 'POST',
@@ -1902,6 +2382,9 @@ window.HimaWeb = {
     } catch (e) {
       console.error(e);
       alert('Échec du déplacement');
+    } finally {
+      HWProgress.end();
+      this.setEnvelopesPending(items, false);
     }
   },
 
@@ -2084,6 +2567,8 @@ window.HimaWeb = {
 
   async deleteMailsApi(items) {
     if (!items || !items.length) return;
+    this.setEnvelopesPending(items, true);
+    HWProgress.begin();
     try {
       const res = await fetch('/api/mail/delete', {
         method: 'POST',
@@ -2128,6 +2613,10 @@ window.HimaWeb = {
     } catch (e) {
       console.error(e);
       alert('Échec de la suppression');
+    } finally {
+      HWProgress.end();
+      // Les enveloppes supprimées ont disparu ; restaurer celles qui restent.
+      this.setEnvelopesPending(items, false);
     }
   },
 
@@ -2268,6 +2757,12 @@ window.HimaWeb = {
         const i = selectedIdx(list);
         const next = list[Math.min(list.length - 1, Math.max(0, i) + (i < 0 ? 0 : 1))];
         selectSingle(next);
+        if (next === list[list.length - 1]) {
+          const more = document.querySelector('#envelope-list .hw-load-more');
+          if (more && !more.classList.contains('htmx-request') && !more.disabled) {
+            more.click();
+          }
+        }
         return;
       }
       if (key === 'ArrowUp' || key === 'k') {
@@ -2359,6 +2854,11 @@ window.HimaWeb = {
         this._mailSelected = new Set([envKey(env)]);
         this._mailAnchor = list.indexOf(env);
         paintSelection(list);
+        // Retour immédiat : l'ouverture d'un message passe par un appel CLI.
+        if (env.hasAttribute('hx-get')) {
+          this.markEnvelopeOpening(env);
+          this.showMessageLoading();
+        }
       },
       true
     );
@@ -2665,8 +3165,13 @@ function cssEsc(s) {
 }
 
 document.addEventListener('htmx:afterSwap', (ev) => {
-  if (window.lucide) lucide.createIcons();
   const t = ev.detail && ev.detail.target;
+  // Rendu limité au fragment muté : voir hwRenderIcons.
+  hwRenderIcons(t || document);
+  if (t && (t.id === 'message-pane' || t.id === 'envelope-list')) {
+    window.HimaWeb.setPaneBusy(t, false);
+  }
+  if (t && t.id === 'message-pane') window.HimaWeb.clearEnvelopeOpening();
   if (t && window.Alpine && typeof Alpine.initTree === 'function') {
     if (
       t.id === 'compose-layer' ||
@@ -2733,7 +3238,7 @@ document.addEventListener('click', (ev) => {
 }, true);
 
 document.addEventListener('DOMContentLoaded', () => {
-  if (window.lucide) lucide.createIcons();
+  hwRenderIcons(document);
   window.HimaWeb.bindFolderClicks();
   window.HimaWeb.bindFolderTree(true);
   window.HimaWeb.bindColumnResize();
@@ -2741,6 +3246,8 @@ document.addEventListener('DOMContentLoaded', () => {
   window.HimaWeb.bindContextMenus();
   window.HimaWeb.bindMailDragDrop();
   window.HimaWeb.bindDeleteFormConfirm();
+  window.HimaWeb.bindFormBusy();
+  window.HimaWeb.bindMessagePrefetch();
   window.HimaWeb.bindUiPreview();
   window.HimaWeb.loadPrefs();
   window.HimaWeb.startUnreadPolling();
