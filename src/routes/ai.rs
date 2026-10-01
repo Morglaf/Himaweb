@@ -280,7 +280,7 @@ async fn complete(prefs: &Prefs, system: &str, user: &str) -> Result<String, Str
         "gemini" => gemini_chat(prefs, system, user).await,
         _ => {
             // Ollama d'abord, fallback distant optionnel
-            match ollama_chat(&prefs.ai_endpoint, &prefs.ai_model, system, user).await {
+            match ollama_chat(prefs, system, user).await {
                 Ok(t) => Ok(t),
                 Err(local_err) => {
                     if prefs.ai_remote_endpoint.trim().is_empty() {
@@ -404,21 +404,36 @@ fn extract_gemini_text(v: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-async fn ollama_chat(
-    endpoint: &str,
-    model: &str,
-    system: &str,
-    user: &str,
-) -> Result<String, String> {
-    let url = format!("{}/api/chat", endpoint.trim_end_matches('/'));
-    let body = json!({
-        "model": model,
+async fn ollama_chat(prefs: &Prefs, system: &str, user: &str) -> Result<String, String> {
+    let url = format!("{}/api/chat", prefs.ai_endpoint.trim_end_matches('/'));
+    let system = {
+        let pre = prefs.ai_ollama_preprompt.trim();
+        if pre.is_empty() {
+            system.to_string()
+        } else {
+            format!("{pre}\n\n{system}")
+        }
+    };
+    let mut body = json!({
+        "model": prefs.ai_model,
         "stream": false,
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user }
         ]
     });
+    match prefs.ai_ollama_think.as_str() {
+        "off" => {
+            body["think"] = json!(false);
+        }
+        "low" | "medium" | "high" => {
+            body["think"] = json!(prefs.ai_ollama_think.as_str());
+        }
+        _ => {}
+    }
+    if let Some(t) = prefs.ai_ollama_temperature {
+        body["options"] = json!({ "temperature": t });
+    }
     let client = reqwest::Client::new();
     let res = client
         .post(&url)

@@ -128,6 +128,15 @@ pub struct Prefs {
     /// Clé API Gemini (ou autre distant)
     #[serde(default)]
     pub ai_api_key: String,
+    /// Ollama : raisonnement — `default` | `off` | `low` | `medium` | `high`
+    #[serde(default = "default_ai_ollama_think")]
+    pub ai_ollama_think: String,
+    /// Ollama : température (None = défaut modèle)
+    #[serde(default)]
+    pub ai_ollama_temperature: Option<f32>,
+    /// Ollama : préprompt utilisateur (préfixé au system métier)
+    #[serde(default)]
+    pub ai_ollama_preprompt: String,
     /// Apparence comptes Calendula (comme mail)
     #[serde(default)]
     pub cal_account_colors: std::collections::BTreeMap<String, String>,
@@ -175,6 +184,10 @@ fn default_ai_model() -> String {
 
 fn default_ai_provider() -> String {
     "ollama".into()
+}
+
+fn default_ai_ollama_think() -> String {
+    "default".into()
 }
 
 fn default_side_events() -> u16 {
@@ -225,6 +238,9 @@ impl Default for Prefs {
             ai_model: default_ai_model(),
             ai_remote_endpoint: String::new(),
             ai_api_key: String::new(),
+            ai_ollama_think: default_ai_ollama_think(),
+            ai_ollama_temperature: None,
+            ai_ollama_preprompt: String::new(),
             cal_account_colors: Default::default(),
             cal_account_labels: Default::default(),
             cal_account_icons: Default::default(),

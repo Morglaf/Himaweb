@@ -135,6 +135,9 @@ struct SettingsTemplate {
     pub ai_remote_endpoint: String,
     pub ai_api_key_set: bool,
     pub ai_gemini_model: String,
+    pub ai_ollama_think: String,
+    pub ai_ollama_temperature: String,
+    pub ai_ollama_preprompt: String,
     pub ai_message: Option<String>,
     pub cal_color_accounts: Vec<ColorAccountRow>,
     pub backup_message: Option<String>,
@@ -582,6 +585,12 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         ai_remote_endpoint: prefs_snap.ai_remote_endpoint.clone(),
         ai_api_key_set: !prefs_snap.ai_api_key.is_empty(),
         ai_gemini_model,
+        ai_ollama_think: prefs_snap.ai_ollama_think.clone(),
+        ai_ollama_temperature: prefs_snap
+            .ai_ollama_temperature
+            .map(|t| format!("{t}"))
+            .unwrap_or_default(),
+        ai_ollama_preprompt: prefs_snap.ai_ollama_preprompt.clone(),
         ai_message: flash.ai_message,
         cal_color_accounts,
         backup_message: flash.backup_message,
@@ -1794,6 +1803,9 @@ pub struct AiSettingsForm {
     pub gemini_model: Option<String>,
     pub remote_endpoint: Option<String>,
     pub api_key: Option<String>,
+    pub ollama_think: Option<String>,
+    pub ollama_temperature: Option<String>,
+    pub ollama_preprompt: Option<String>,
 }
 
 async fn save_ai(
@@ -1851,6 +1863,28 @@ async fn save_ai(
             }
             p.ai_remote_endpoint = form
                 .remote_endpoint
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let think = form
+                .ollama_think
+                .as_deref()
+                .unwrap_or("default")
+                .trim()
+                .to_ascii_lowercase();
+            p.ai_ollama_think = match think.as_str() {
+                "off" | "low" | "medium" | "high" => think,
+                _ => "default".into(),
+            };
+            p.ai_ollama_temperature = form
+                .ollama_temperature
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .and_then(|s| s.parse::<f32>().ok())
+                .map(|t| t.clamp(0.0, 2.0));
+            p.ai_ollama_preprompt = form
+                .ollama_preprompt
                 .unwrap_or_default()
                 .trim()
                 .to_string();

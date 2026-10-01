@@ -920,6 +920,27 @@
               <input class="input w-full" name="model" value="{{ ai_model }}" placeholder="llama3.2" />
             </label>
             <label class="block">
+              <span class="label">Raisonnement / réflexion</span>
+              <select name="ollama_think" class="select w-full">
+                <option value="default" {% if ai_ollama_think == "default" %}selected{% endif %}>Défaut du modèle</option>
+                <option value="off" {% if ai_ollama_think == "off" %}selected{% endif %}>Désactivé</option>
+                <option value="low" {% if ai_ollama_think == "low" %}selected{% endif %}>Faible</option>
+                <option value="medium" {% if ai_ollama_think == "medium" %}selected{% endif %}>Moyen</option>
+                <option value="high" {% if ai_ollama_think == "high" %}selected{% endif %}>Élevé</option>
+              </select>
+              <span class="muted tiny">Désactive ou réduit le raisonnement si le modèle le prend en charge (ex. Qwen3, DeepSeek R1, GPT-OSS).</span>
+            </label>
+            <label class="block">
+              <span class="label">Température</span>
+              <input class="input w-full" type="number" name="ollama_temperature" min="0" max="2" step="0.1"
+                     value="{{ ai_ollama_temperature }}" placeholder="défaut modèle (ex. 0.7)" />
+            </label>
+            <label class="block">
+              <span class="label">Préprompt</span>
+              <textarea class="input w-full" name="ollama_preprompt" rows="3" placeholder="Ex. : Réponds toujours en français, ton professionnel…">{{ ai_ollama_preprompt }}</textarea>
+              <span class="muted tiny">Ajouté au début du prompt système (mail / événement).</span>
+            </label>
+            <label class="block">
               <span class="label">Fallback distant (optionnel)</span>
               <input class="input w-full" name="remote_endpoint" value="{{ ai_remote_endpoint }}" placeholder="https://…" />
             </label>
