@@ -25,6 +25,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/mail/unread", get(unread_counts))
         .route("/api/mail/move", post(move_api))
         .route("/api/mail/delete", post(delete_api))
+        .route("/api/mail/undo", post(undo_api))
         .route("/mailboxes", get(sidebar))
 }
 
@@ -38,14 +39,12 @@ pub struct MailboxQuery {
 #[template(path = "sidebar.html")]
 struct SidebarTemplate {
     pub accounts: Vec<AccountRow>,
-    pub selected_account: String,
     pub all_selected: bool,
     pub show_merged_inbox: bool,
     pub merged_inbox_active: bool,
     pub merged_inbox_unread: u64,
     pub pinned: Vec<MailboxRow>,
     pub mailboxes: Vec<MailboxRow>,
-    pub more: Vec<MailboxRow>,
     pub current: String,
     pub offline: bool,
 }
@@ -53,10 +52,8 @@ struct SidebarTemplate {
 pub struct AccountRow {
     pub name: String,
     pub label: String,
-    pub icon: String,
     pub is_default: bool,
     pub selected: bool,
-    pub color: String,
 }
 
 pub struct MailboxRow {
@@ -67,7 +64,6 @@ pub struct MailboxRow {
     pub icon: String,
     pub active: bool,
     pub pinned: bool,
-    pub folder_key: String,
     pub depth: u8,
     pub pad: String,
     pub has_children: bool,
@@ -82,7 +78,9 @@ pub struct MailboxRow {
 
 pub(crate) fn mailbox_icon(name: &str) -> &'static str {
     let n = name.to_ascii_lowercase();
-    if n == "inbox" || n.ends_with("/inbox") {
+    if n == "__ntfy__" || n.starts_with("__ntfy__:") {
+        "bell"
+    } else if n == "inbox" || n.ends_with("/inbox") {
         "inbox"
     } else if n.contains("sent") || n.contains("envoy") {
         "send"
@@ -101,8 +99,12 @@ pub(crate) fn mailbox_icon(name: &str) -> &'static str {
     }
 }
 
-fn mailbox_label(name: &str) -> String {
-    name.rsplit('/').next().unwrap_or(name).to_string()
+pub(crate) fn mailbox_label(name: &str) -> String {
+    if name == "__ntfy__" || name.starts_with("__ntfy__:") {
+        "Ntfy".into()
+    } else {
+        name.rsplit('/').next().unwrap_or(name).to_string()
+    }
 }
 
 fn folder_rank(name: &str) -> u8 {
@@ -146,6 +148,7 @@ async fn sidebar(
 
     let known_names: Vec<String> = account_infos.iter().map(|a| a.name.clone()).collect();
     let ordered = prefs_snap.ordered_accounts(&known_names);
+    let rail = prefs_snap.rail_order(&known_names);
 
     let accounts: Vec<AccountRow> = ordered
         .iter()
@@ -157,10 +160,8 @@ async fn sidebar(
                 AccountRow {
                     name: a.name.clone(),
                     label: prefs_snap.account_label(&a.name),
-                    icon: prefs_snap.account_icon(&a.name),
                     is_default: a.is_default,
                     selected,
-                    color: prefs_snap.account_color(&a.name),
                 }
             })
         })
@@ -170,9 +171,15 @@ async fn sidebar(
     let mut rows: Vec<MailboxRow> = Vec::new();
 
     if all_selected {
-        // Un arbre par compte + couleur, pour distinguer l'appartenance
+        // Un arbre par compte (+ ntfy) selon rail_order
         let mut any_ok = false;
-        for acc_name in &ordered {
+        for acc_name in &rail {
+            if Prefs::is_ntfy_key(acc_name) {
+                if let Some(row) = ntfy_sidebar_row(&prefs_snap, acc_name, &current) {
+                    rows.push(row);
+                }
+                continue;
+            }
             let color = prefs_snap.account_color(acc_name);
             let boxes = if state.himalaya_available {
                 match state.himalaya.list_mailboxes(Some(acc_name)).await {
@@ -201,7 +208,7 @@ async fn sidebar(
                 icon: prefs_snap.account_icon(acc_name),
                 active: false,
                 pinned: false,
-                folder_key: String::new(),
+
                 depth: 0,
                 pad: "0.75rem".into(),
                 has_children: true,
@@ -240,7 +247,7 @@ async fn sidebar(
                     label: mailbox_label(&m.name),
                     name_enc: urlencoding::encode(&m.name).into_owned(),
                     pinned: prefs_snap.is_pinned(&key),
-                    folder_key: key,
+
                     name: m.name.clone(),
                     unread,
                     active,
@@ -308,7 +315,7 @@ async fn sidebar(
                 label: mailbox_label(&m.name),
                 name_enc: urlencoding::encode(&m.name).into_owned(),
                 pinned: prefs_snap.is_pinned(&key),
-                folder_key: key,
+
                 tree_id: m.name.clone(),
                 name: m.name,
                 unread,
@@ -328,6 +335,22 @@ async fn sidebar(
                 is_account_header: false,
             });
         }
+        // En mode compte unique : intercaler les ntfy selon rail_order (après les dossiers mail)
+        for key in prefs_snap.ntfy_order_keys() {
+            if let Some(row) = ntfy_sidebar_row(&prefs_snap, &key, &current) {
+                rows.push(row);
+            }
+        }
+    }
+
+    // Compteurs non-lus NTFY (si surveillés)
+    for r in &mut rows {
+        if Prefs::is_ntfy_key(&r.name) {
+            let fk = Prefs::ntfy_folder_key(&r.name);
+            if prefs_snap.is_watched(&fk, &r.name) {
+                r.unread = ntfy_unread_count(&prefs_snap, &r.name).await;
+            }
+        }
     }
 
     // Marquer les parents qui ont des enfants (via parent == tree_id)
@@ -339,23 +362,32 @@ async fn sidebar(
 
     if !all_selected {
         rows.sort_by(|a, b| {
-            let ar = if a.name.contains('/') {
-                folder_rank(a.name.split('/').next().unwrap_or(&a.name))
-            } else {
-                folder_rank(&a.name)
-            };
-            let br = if b.name.contains('/') {
-                folder_rank(b.name.split('/').next().unwrap_or(&b.name))
-            } else {
-                folder_rank(&b.name)
-            };
-            ar.cmp(&br)
-                .then(a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()))
+            // ntfy après les dossiers mail, ordre relatif des clés ntfy
+            let a_ntfy = Prefs::is_ntfy_key(&a.name);
+            let b_ntfy = Prefs::is_ntfy_key(&b.name);
+            match (a_ntfy, b_ntfy) {
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                (true, true) => a.name.cmp(&b.name),
+                (false, false) => {
+                    let ar = if a.name.contains('/') {
+                        folder_rank(a.name.split('/').next().unwrap_or(&a.name))
+                    } else {
+                        folder_rank(&a.name)
+                    };
+                    let br = if b.name.contains('/') {
+                        folder_rank(b.name.split('/').next().unwrap_or(&b.name))
+                    } else {
+                        folder_rank(&b.name)
+                    };
+                    ar.cmp(&br)
+                        .then(a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()))
+                }
+            }
         });
     } else {
         let order_idx = |name: &str| {
-            ordered
-                .iter()
+            rail.iter()
                 .position(|n| n == name)
                 .unwrap_or(usize::MAX)
         };
@@ -390,6 +422,7 @@ async fn sidebar(
         rows.iter()
             .filter(|r| {
                 !r.is_account_header
+                    && !Prefs::is_ntfy_key(&r.name)
                     && (r.name.eq_ignore_ascii_case("inbox")
                         || r.name.to_ascii_lowercase().ends_with("/inbox"))
             })
@@ -411,17 +444,62 @@ async fn sidebar(
 
     render(SidebarTemplate {
         accounts,
-        selected_account,
         all_selected,
         show_merged_inbox,
         merged_inbox_active,
         merged_inbox_unread,
         pinned,
         mailboxes,
-        more: vec![],
         current,
         offline,
     })
+}
+
+fn ntfy_sidebar_row(prefs: &Prefs, key: &str, current: &str) -> Option<MailboxRow> {
+    let folder_key = Prefs::ntfy_folder_key(key);
+    if prefs.is_hidden(&folder_key) {
+        return None;
+    }
+    Some(MailboxRow {
+        name: key.to_string(),
+        name_enc: urlencoding::encode(key).into_owned(),
+        label: prefs.account_label(key),
+        unread: 0, // renseigné après poll si surveillé
+        icon: prefs.account_icon(key),
+        active: current == key,
+        pinned: prefs.is_pinned(&folder_key),
+        depth: 0,
+        pad: "0.75rem".into(),
+        has_children: false,
+        parent: String::new(),
+        tree_id: key.to_string(),
+        account: key.to_string(),
+        account_enc: urlencoding::encode(key).into_owned(),
+        account_label: prefs.account_label(key),
+        color: prefs.account_color(key),
+        is_account_header: false,
+    })
+}
+
+async fn ntfy_unread_count(prefs: &Prefs, mailbox_key: &str) -> u64 {
+    let mut n = 0u64;
+    for src in prefs.ntfy_sources_for_key(mailbox_key) {
+        match crate::plugins::ntfy_poll(&src.server, &src.topic).await {
+            Ok(msgs) => {
+                for m in msgs {
+                    let composite = format!("{}::{}", src.id, m.id);
+                    if prefs.is_ntfy_deleted(&composite) {
+                        continue;
+                    }
+                    if !prefs.is_ntfy_read(&composite) {
+                        n += 1;
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+    }
+    n
 }
 
 #[derive(Deserialize)]
@@ -447,7 +525,6 @@ struct EnvelopesTemplate {
     pub all_mode: bool,
     pub query: String,
     pub query_enc: String,
-    pub account_filter: String,
     pub account_filter_enc: String,
     pub sort: String,
 }
@@ -475,6 +552,9 @@ pub struct EnvelopeRow {
     /// IDs du fil (ordre chrono croissant), séparés par des virgules
     pub thread_ids: String,
     pub thread_ids_enc: String,
+    /// Message-ID RFC (pour undo)
+    pub message_id: String,
+    pub id_enc: String,
 }
 
 fn envelope_rows(list: &[Envelope], account: &str, prefs: &Prefs) -> Vec<EnvelopeRow> {
@@ -535,6 +615,8 @@ fn envelope_rows_styled(
                 participants: String::new(),
                 thread_ids: e.id.clone(),
                 thread_ids_enc: urlencoding::encode(&e.id).into_owned(),
+                message_id: e.message_id.clone(),
+                id_enc: urlencoding::encode(&e.id).into_owned(),
             }
         })
         .collect()
@@ -635,8 +717,10 @@ fn collapse_conversations(list: &[Envelope], rows: Vec<EnvelopeRow>) -> Vec<Enve
             })
         }) {
             row.id = list[u].id.clone();
+            row.id_enc = urlencoding::encode(&list[u].id).into_owned();
             row.unread = true;
             row.from = list[u].from.clone();
+            row.message_id = list[u].message_id.clone();
             row.from_initial = list[u]
                 .from
                 .chars()
@@ -921,6 +1005,11 @@ async fn envelopes(
     let sort = SortSpec::parse(q.sort.as_deref());
     let search_tokens = search_query_tokens(&query, false);
     let prefs_snap = state.prefs.lock().await.clone();
+
+    if Prefs::is_ntfy_key(&name) {
+        return ntfy_envelopes(&prefs_snap, &name, &query, page, page_size).await;
+    }
+
     let all_mode = prefs_snap.is_all_accounts();
     let account = prefs_snap.selected_account().map(str::to_string);
     let filter_account = q
@@ -949,7 +1038,6 @@ async fn envelopes(
         let mut offline_any = false;
         let mut seen = std::collections::HashSet::new();
         for acc in &targets {
-            let color = prefs_snap.account_color(acc);
             match fetch_envelopes_for_account(
                 &state,
                 &name,
@@ -1066,7 +1154,6 @@ async fn envelopes(
         all_mode,
         query,
         query_enc,
-        account_filter,
         account_filter_enc,
         sort: sort_s,
     })
@@ -1142,6 +1229,10 @@ async fn message(
 ) -> impl IntoResponse {
     let name = q.mailbox;
     let focus_id = q.id;
+    if Prefs::is_ntfy_key(&name) {
+        let prefs_snap = state.prefs.lock().await.clone();
+        return ntfy_message_view(&state, &prefs_snap, &name, &focus_id, true).await;
+    }
     let account = if let Some(a) = q.account.filter(|s| !s.is_empty()) {
         Some(a)
     } else {
@@ -1444,6 +1535,32 @@ async fn flag(
     let add = form.seen.as_deref() == Some("1") || form.seen.as_deref() == Some("true");
     let quiet =
         form.quiet.as_deref() == Some("1") || form.quiet.as_deref() == Some("true");
+
+    if Prefs::is_ntfy_key(&form.mailbox) {
+        {
+            let mut prefs = state.prefs.lock().await;
+            prefs.set_ntfy_read(&form.id, add);
+            let _ = prefs.save();
+        }
+        if quiet {
+            let id_js = serde_json::to_string(&form.id).unwrap_or_else(|_| "\"\"".into());
+            let acc_js = serde_json::to_string(&form.mailbox).unwrap_or_else(|_| "\"\"".into());
+            let seen_js = if add { "true" } else { "false" };
+            return Html(format!(
+                r##"<script>
+if (window.HimaWeb) {{
+  window.HimaWeb.applyEnvelopeSeen({id_js}, {acc_js}, {seen_js});
+  window.HimaWeb.applyEnvelopeSeen({id_js}, "", {seen_js});
+  window.HimaWeb.pollUnread();
+}}
+</script>"##
+            ))
+            .into_response();
+        }
+        let prefs_snap = state.prefs.lock().await.clone();
+        return ntfy_message_view(&state, &prefs_snap, &form.mailbox, &form.id, false).await;
+    }
+
     let account = form
         .account
         .filter(|s| !s.is_empty())
@@ -1514,6 +1631,19 @@ async fn move_msg(
     State(state): State<Arc<AppState>>,
     Form(form): Form<MoveForm>,
 ) -> impl IntoResponse {
+    if Prefs::is_ntfy_key(&form.mailbox)
+        || form
+            .account
+            .as_deref()
+            .map(Prefs::is_ntfy_key)
+            .unwrap_or(false)
+    {
+        return Html(
+            r#"<div class="error">Les notifications NTFY ne se déplacent pas vers IMAP — utilisez Transférer / Répondre, ou Supprimer (masquage local).</div>"#
+                .to_string(),
+        )
+        .into_response();
+    }
     let _permit = state.cli_limit.acquire().await.ok();
     let account = form
         .account
@@ -1572,6 +1702,8 @@ pub struct MoveApiItem {
     pub id: String,
     pub mailbox: String,
     pub account: Option<String>,
+    #[serde(default)]
+    pub message_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1593,6 +1725,73 @@ struct MoveApiMoved {
     id: String,
     mailbox: String,
     account: String,
+    message_id: String,
+    to_mailbox: String,
+    permanent: bool,
+}
+
+fn resolve_trash_mailbox(account: &str) -> String {
+    crate::accounts_config::get_mailbox_alias(account, "trash")
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "Trash".into())
+}
+
+fn mailbox_is_trash(mailbox: &str, trash: &str) -> bool {
+    mailbox.eq_ignore_ascii_case(trash)
+        || mailbox.eq_ignore_ascii_case("Trash")
+        || mailbox.eq_ignore_ascii_case("Corbeille")
+        || mailbox.to_ascii_lowercase().ends_with("/trash")
+        || mailbox.to_ascii_lowercase().ends_with(".trash")
+}
+
+async fn lookup_message_id(
+    state: &AppState,
+    mailbox: &str,
+    id: &str,
+    account: Option<&str>,
+    hinted: Option<&str>,
+) -> String {
+    if let Some(h) = hinted.map(str::trim).filter(|s| !s.is_empty()) {
+        return h.to_string();
+    }
+    match state
+        .himalaya
+        .list_envelopes(mailbox, 1, 200, account)
+        .await
+    {
+        Ok(list) => list
+            .into_iter()
+            .find(|e| e.id == id)
+            .map(|e| e.message_id)
+            .unwrap_or_default(),
+        Err(_) => String::new(),
+    }
+}
+
+async fn find_uid_by_message_id(
+    state: &AppState,
+    mailbox: &str,
+    message_id: &str,
+    account: Option<&str>,
+) -> Option<String> {
+    let mid = message_id.trim();
+    if mid.is_empty() {
+        return None;
+    }
+    let normalize = |s: &str| {
+        s.trim()
+            .trim_matches(|c| c == '<' || c == '>')
+            .to_ascii_lowercase()
+    };
+    let target = normalize(mid);
+    let list = state
+        .himalaya
+        .list_envelopes(mailbox, 1, 200, account)
+        .await
+        .ok()?;
+    list.into_iter()
+        .find(|e| !e.message_id.is_empty() && normalize(&e.message_id) == target)
+        .map(|e| e.id)
 }
 
 async fn move_api(
@@ -1619,6 +1818,14 @@ async fn move_api(
             .filter(|s| !s.is_empty())
             .or_else(|| default_acc.clone());
         let to_acc = to_account_opt.clone().or_else(|| from_acc.clone());
+        let message_id = lookup_message_id(
+            &state,
+            &item.mailbox,
+            &item.id,
+            from_acc.as_deref(),
+            item.message_id.as_deref(),
+        )
+        .await;
         match state
             .himalaya
             .move_message_to_account(
@@ -1634,6 +1841,9 @@ async fn move_api(
                 id: item.id,
                 mailbox: item.mailbox,
                 account: from_acc.unwrap_or_default(),
+                message_id,
+                to_mailbox: to_mailbox.clone(),
+                permanent: false,
             }),
             Err(e) => errors.push(format!("{}: {e}", item.id)),
         }
@@ -1674,11 +1884,52 @@ async fn delete_api(
     let mut deleted = Vec::new();
     let mut errors = Vec::new();
     for item in body.items {
-        let _permit = state.cli_limit.acquire().await.ok();
         let account = item
             .account
+            .clone()
             .filter(|s| !s.is_empty())
             .or_else(|| default_acc.clone());
+        let acc_name = account.clone().unwrap_or_default();
+
+        // NTFY : masquage local (pas d’IMAP)
+        if Prefs::is_ntfy_key(&item.mailbox) || Prefs::is_ntfy_key(&acc_name) {
+            delete_ntfy_local(&state, &item.id).await;
+            let mb = item.mailbox.clone();
+            deleted.push(MoveApiMoved {
+                id: item.id,
+                mailbox: mb.clone(),
+                account: if Prefs::is_ntfy_key(&acc_name) {
+                    acc_name
+                } else {
+                    mb
+                },
+                message_id: String::new(),
+                to_mailbox: String::new(),
+                permanent: true,
+            });
+            continue;
+        }
+
+        let _permit = state.cli_limit.acquire().await.ok();
+        let trash = if acc_name.is_empty() {
+            "Trash".into()
+        } else {
+            resolve_trash_mailbox(&acc_name)
+        };
+        let permanent = mailbox_is_trash(&item.mailbox, &trash);
+        let message_id = lookup_message_id(
+            &state,
+            &item.mailbox,
+            &item.id,
+            account.as_deref(),
+            item.message_id.as_deref(),
+        )
+        .await;
+        let to_mailbox = if permanent {
+            String::new()
+        } else {
+            trash
+        };
         match state
             .himalaya
             .delete_message(&item.mailbox, &item.id, account.as_deref())
@@ -1687,7 +1938,10 @@ async fn delete_api(
             Ok(()) => deleted.push(MoveApiMoved {
                 id: item.id,
                 mailbox: item.mailbox,
-                account: account.unwrap_or_default(),
+                account: acc_name,
+                message_id,
+                to_mailbox,
+                permanent,
             }),
             Err(e) => errors.push(format!("{}: {e}", item.id)),
         }
@@ -1701,16 +1955,139 @@ async fn delete_api(
 }
 
 #[derive(Deserialize)]
+pub struct UndoApiItem {
+    pub account: String,
+    pub message_id: String,
+    pub from_mailbox: String,
+    pub to_mailbox: String,
+}
+
+#[derive(Deserialize)]
+pub struct UndoApiBody {
+    pub items: Vec<UndoApiItem>,
+}
+
+#[derive(Serialize)]
+struct UndoApiResult {
+    ok: bool,
+    restored: usize,
+    errors: Vec<String>,
+}
+
+async fn undo_api(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<UndoApiBody>,
+) -> impl IntoResponse {
+    if body.items.is_empty() {
+        return Json(UndoApiResult {
+            ok: false,
+            restored: 0,
+            errors: vec!["rien à annuler".into()],
+        })
+        .into_response();
+    }
+    let mut restored = 0usize;
+    let mut errors = Vec::new();
+    for item in body.items {
+        let mid = item.message_id.trim();
+        let to_mb = item.to_mailbox.trim();
+        let from_mb = item.from_mailbox.trim();
+        if mid.is_empty() || to_mb.is_empty() || from_mb.is_empty() {
+            errors.push("entrée undo incomplète (message-id / dossiers)".into());
+            continue;
+        }
+        let _permit = state.cli_limit.acquire().await.ok();
+        let account = if item.account.trim().is_empty() {
+            None
+        } else {
+            Some(item.account.trim().to_string())
+        };
+        let Some(uid) =
+            find_uid_by_message_id(&state, to_mb, mid, account.as_deref()).await
+        else {
+            errors.push(format!(
+                "message introuvable dans « {to_mb} » (Message-ID manquant ou déjà déplacé)"
+            ));
+            continue;
+        };
+        match state
+            .himalaya
+            .move_message_to_account(
+                to_mb,
+                from_mb,
+                &uid,
+                account.as_deref(),
+                account.as_deref(),
+            )
+            .await
+        {
+            Ok(()) => restored += 1,
+            Err(e) => errors.push(format!("{uid}: {e}")),
+        }
+    }
+    Json(UndoApiResult {
+        ok: errors.is_empty() && restored > 0,
+        restored,
+        errors,
+    })
+    .into_response()
+}
+
+#[derive(Deserialize)]
 pub struct DeleteForm {
     pub mailbox: String,
     pub id: String,
     pub account: Option<String>,
 }
 
+async fn delete_ntfy_local(state: &AppState, id: &str) {
+    let mut prefs = state.prefs.lock().await;
+    prefs.set_ntfy_deleted(id, true);
+    let _ = prefs.save();
+}
+
+fn ntfy_delete_ok_html(id: &str, mailbox: &str, account: &str) -> axum::response::Response {
+    let id_js = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".into());
+    let mb_js = serde_json::to_string(mailbox).unwrap_or_else(|_| "\"\"".into());
+    let acc_js = serde_json::to_string(account).unwrap_or_else(|_| "\"\"".into());
+    Html(format!(
+        r##"<div class="empty-read" data-mail-event="deleted" data-id="{}" data-mailbox="{}" data-account="{}">
+  <i data-lucide="mail-open"></i><p class="muted">Notification masquée (local)</p>
+</div>
+<script>
+if (window.HimaWeb) {{
+  window.HimaWeb.onMessageDeleted({{ id: {id_js}, mailbox: {mb_js}, account: {acc_js} }});
+  window.HimaWeb.pollUnread && window.HimaWeb.pollUnread();
+}}
+if (window.lucide) lucide.createIcons();
+</script>"##,
+        html_escape(id),
+        html_escape(mailbox),
+        html_escape(account),
+    ))
+    .into_response()
+}
+
 async fn delete_msg(
     State(state): State<Arc<AppState>>,
     Form(form): Form<DeleteForm>,
 ) -> impl IntoResponse {
+    if Prefs::is_ntfy_key(&form.mailbox)
+        || form
+            .account
+            .as_deref()
+            .map(Prefs::is_ntfy_key)
+            .unwrap_or(false)
+    {
+        delete_ntfy_local(&state, &form.id).await;
+        let acc = form
+            .account
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| form.mailbox.clone());
+        return ntfy_delete_ok_html(&form.id, &form.mailbox, &acc);
+    }
+
     let _permit = state.cli_limit.acquire().await.ok();
     let account = form
         .account
@@ -1785,6 +2162,20 @@ async fn delete_batch(
     let mut last_ok: Option<(String, String, String)> = None;
 
     for it in &items {
+        if Prefs::is_ntfy_key(&it.mailbox) || Prefs::is_ntfy_key(&it.account) {
+            delete_ntfy_local(&state, &it.id).await;
+            ok += 1;
+            last_ok = Some((
+                it.id.clone(),
+                it.mailbox.clone(),
+                if it.account.is_empty() {
+                    it.mailbox.clone()
+                } else {
+                    it.account.clone()
+                },
+            ));
+            continue;
+        }
         let _permit = state.cli_limit.acquire().await.ok();
         let account = if it.account.is_empty() {
             default_account.clone()
@@ -1954,30 +2345,57 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         }
     }
 
+    // Compteurs NTFY surveillés
+    for key in prefs_snap.ntfy_order_keys() {
+        let folder_key = Prefs::ntfy_folder_key(&key);
+        if !prefs_snap.is_watched(&folder_key, &key) {
+            continue;
+        }
+        let unread = ntfy_unread_count(&prefs_snap, &key).await;
+        if unread == 0 {
+            continue;
+        }
+        folders.push(UnreadFolder {
+            label: prefs_snap.account_label(&key),
+            account: String::new(),
+            mailbox: key.clone(),
+            unread,
+            key: folder_key,
+            in_total: prefs_snap.contributes_to_unread_total(&Prefs::ntfy_folder_key(&key), &key),
+        });
+    }
+
     let total: u64 = folders
         .iter()
         .filter(|f| f.in_total)
         .map(|f| f.unread)
         .sum();
 
-    // Plugin NTFY : notifie seulement si le total augmente
-    if prefs_snap.ntfy_enabled && !prefs_snap.ntfy_topic.is_empty() {
+    // Plugin NTFY push : notifie seulement si le total augmente
+    if prefs_snap.ntfy_sources.iter().any(|s| s.enabled && !s.topic.is_empty()) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static LAST_NTFY_TOTAL: AtomicU64 = AtomicU64::new(0);
         let prev = LAST_NTFY_TOTAL.load(Ordering::Relaxed);
         if total > prev {
             LAST_NTFY_TOTAL.store(total, Ordering::Relaxed);
-            let server = prefs_snap.ntfy_server.clone();
-            let topic = prefs_snap.ntfy_topic.clone();
             let title = format!("HimaWeb — {total} non-lu(s)");
             let body = folders
                 .iter()
                 .map(|f| format!("{}: {}", f.label, f.unread))
                 .collect::<Vec<_>>()
                 .join("\n");
+            let targets: Vec<(String, String)> = prefs_snap
+                .ntfy_sources
+                .iter()
+                .filter(|s| s.enabled && !s.topic.is_empty())
+                .map(|s| (s.server.clone(), s.topic.clone()))
+                .collect();
             tokio::spawn(async move {
-                if let Err(e) = crate::plugins::ntfy_publish(&server, &topic, &title, &body).await {
-                    tracing::debug!("ntfy: {e}");
+                for (server, topic) in targets {
+                    if let Err(e) = crate::plugins::ntfy_publish(&server, &topic, &title, &body).await
+                    {
+                        tracing::debug!("ntfy: {e}");
+                    }
                 }
             });
         } else if total < prev {
@@ -1999,6 +2417,323 @@ fn render(tpl: impl Template) -> axum::response::Response {
         Ok(html) => Html(html).into_response(),
         Err(e) => Html(format!("<pre>template error: {e}</pre>")).into_response(),
     }
+}
+
+fn ntfy_epoch_date(ts: i64) -> String {
+    if ts <= 0 {
+        return "—".into();
+    }
+    // Affichage simple UTC : YYYY-MM-DD HH:MM
+    let secs = ts;
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let hour = rem / 3600;
+    let min = (rem % 3600) / 60;
+    // Algorithme civil depuis jours Unix (1970-01-01)
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02} {hour:02}:{min:02}")
+}
+
+async fn ntfy_envelopes(
+    prefs: &Prefs,
+    mailbox_key: &str,
+    query: &str,
+    page: u32,
+    page_size: u32,
+) -> axum::response::Response {
+    let sources = prefs.ntfy_sources_for_key(mailbox_key);
+    if sources.is_empty() {
+        return render(EnvelopesTemplate {
+            mailbox: mailbox_key.into(),
+            mailbox_enc: urlencoding::encode(mailbox_key).into_owned(),
+            page: 1,
+            prev_page: None,
+            next_page: None,
+            envelopes: vec![],
+            offline: false,
+            error: Some("ntfy non configuré (Plugins → NTFY)".into()),
+            all_mode: false,
+            query: query.to_string(),
+            query_enc: urlencoding::encode(query).into_owned(),
+
+            account_filter_enc: String::new(),
+            sort: "date_desc".into(),
+        });
+    }
+
+    let q = query.trim().to_ascii_lowercase();
+    let mut envelopes = Vec::new();
+    let mut errs = Vec::new();
+    let label = prefs.account_label(mailbox_key);
+    let icon = prefs.account_icon(mailbox_key);
+    let color = prefs.account_color(mailbox_key);
+
+    for src in sources {
+        match crate::plugins::ntfy_poll(&src.server, &src.topic).await {
+            Ok(msgs) => {
+                for m in msgs {
+                    if !q.is_empty()
+                        && !m.title.to_ascii_lowercase().contains(&q)
+                        && !m.message.to_ascii_lowercase().contains(&q)
+                        && !m.topic.to_ascii_lowercase().contains(&q)
+                    {
+                        continue;
+                    }
+                    let subject = if m.title.trim().is_empty() {
+                        let preview: String = m.message.chars().take(80).collect();
+                        if m.message.chars().count() > 80 {
+                            format!("{preview}…")
+                        } else if preview.is_empty() {
+                            "(sans titre)".into()
+                        } else {
+                            preview
+                        }
+                    } else {
+                        m.title.clone()
+                    };
+                    let from = if m.tags.is_empty() {
+                        format!("ntfy/{}", m.topic)
+                    } else {
+                        format!("ntfy/{} · {}", m.topic, m.tags.join(","))
+                    };
+                    let date = ntfy_epoch_date(m.time);
+                    // id composé source::msg pour retrouver le bon topic en lecture
+                    let composite = format!("{}::{}", src.id, m.id);
+                    if prefs.is_ntfy_deleted(&composite) {
+                        continue;
+                    }
+                    let unread = !prefs.is_ntfy_read(&composite);
+                    envelopes.push(EnvelopeRow {
+                        id: composite.clone(),
+                        subject,
+                        from,
+                        to: String::new(),
+                        from_initial: "N".into(),
+                        date: date.clone(),
+                        date_short: date,
+                        unread,
+                        has_attachment: false,
+                        account: mailbox_key.to_string(),
+                        account_enc: urlencoding::encode(mailbox_key).into_owned(),
+                        account_label: label.clone(),
+                        account_icon: icon.clone(),
+                        color: color.clone(),
+                        thread_count: 1,
+                        participants: String::new(),
+                        thread_ids: composite.clone(),
+                        thread_ids_enc: urlencoding::encode(&composite).into_owned(),
+                        message_id: m.id,
+                        id_enc: urlencoding::encode(&composite).into_owned(),
+                    });
+                }
+            }
+            Err(e) => errs.push(format!("{}: {e}", src.topic)),
+        }
+    }
+    envelopes.sort_by(|a, b| b.date.cmp(&a.date));
+
+    let total = envelopes.len();
+    let start = ((page - 1) * page_size) as usize;
+    let mut rows = if start < envelopes.len() {
+        let end = (start + page_size as usize).min(envelopes.len());
+        envelopes[start..end].to_vec()
+    } else {
+        vec![]
+    };
+    if page > 1 && rows.is_empty() {
+        rows.clear();
+    }
+    let prev_page = if page > 1 { Some(page - 1) } else { None };
+    let next_page = if ((page * page_size) as usize) < total {
+        Some(page + 1)
+    } else {
+        None
+    };
+    let error = if errs.is_empty() {
+        None
+    } else {
+        Some(errs.join(" · "))
+    };
+
+    render(EnvelopesTemplate {
+        mailbox: mailbox_key.into(),
+        mailbox_enc: urlencoding::encode(mailbox_key).into_owned(),
+        page,
+        prev_page,
+        next_page,
+        envelopes: rows,
+        offline: false,
+        error,
+        all_mode: false,
+        query: query.to_string(),
+        query_enc: urlencoding::encode(query).into_owned(),
+
+        account_filter_enc: String::new(),
+        sort: "date_desc".into(),
+    })
+}
+
+#[derive(Template)]
+#[template(path = "ntfy_message.html")]
+struct NtfyMessageTemplate {
+    pub id: String,
+    pub mailbox: String,
+    pub subject: String,
+    pub from: String,
+    pub date: String,
+    pub body: String,
+    pub body_enc: String,
+    pub subject_enc: String,
+    pub unread: bool,
+    pub marked_read: bool,
+    pub error: Option<String>,
+}
+
+async fn ntfy_message_view(
+    state: &AppState,
+    prefs: &Prefs,
+    mailbox_key: &str,
+    id: &str,
+    auto_mark_read: bool,
+) -> axum::response::Response {
+    let (src_id, msg_id) = id
+        .split_once("::")
+        .map(|(a, b)| (Some(a), b))
+        .unwrap_or((None, id));
+
+    let sources: Vec<crate::prefs::NtfySource> = if let Some(sid) = src_id {
+        prefs
+            .ntfy_sources
+            .iter()
+            .filter(|s| s.id == sid)
+            .cloned()
+            .collect()
+    } else {
+        prefs
+            .ntfy_sources_for_key(mailbox_key)
+            .into_iter()
+            .cloned()
+            .collect()
+    };
+
+    if sources.is_empty() {
+        return render(NtfyMessageTemplate {
+            id: id.to_string(),
+            mailbox: mailbox_key.to_string(),
+            subject: String::new(),
+            from: String::new(),
+            date: String::new(),
+            body: String::new(),
+            body_enc: String::new(),
+            subject_enc: String::new(),
+            unread: false,
+            marked_read: false,
+            error: Some("ntfy non configuré".into()),
+        });
+    }
+
+    for src in &sources {
+        match crate::plugins::ntfy_poll(&src.server, &src.topic).await {
+            Ok(msgs) => {
+                if let Some(m) = msgs.into_iter().find(|m| m.id == msg_id) {
+                    let composite = format!("{}::{}", src.id, m.id);
+                    if prefs.is_ntfy_deleted(&composite) {
+                        return render(NtfyMessageTemplate {
+                            id: composite,
+                            mailbox: mailbox_key.to_string(),
+                                            subject: String::new(),
+                            from: String::new(),
+                            date: String::new(),
+                            body: String::new(),
+                            body_enc: String::new(),
+                            subject_enc: String::new(),
+                            unread: false,
+                            marked_read: false,
+                            error: Some("Notification masquée.".into()),
+                        });
+                    }
+                    let subject = if m.title.trim().is_empty() {
+                        "(sans titre)".to_string()
+                    } else {
+                        m.title.clone()
+                    };
+                    let from = if m.tags.is_empty() {
+                        format!("ntfy/{}", m.topic)
+                    } else {
+                        format!("ntfy/{} · {}", m.topic, m.tags.join(","))
+                    };
+                    let body_text = m.message.clone();
+                    let quoted = format!(
+                        "\n\n——— Notification ntfy ——\nTopic: {}\nDate: {}\n\n{}",
+                        m.topic,
+                        ntfy_epoch_date(m.time),
+                        body_text
+                    );
+                    let was_unread = !prefs.is_ntfy_read(&composite);
+                    let mut marked_read = false;
+                    let mut unread = was_unread;
+                    if auto_mark_read && was_unread {
+                        let mut p = state.prefs.lock().await;
+                        p.set_ntfy_read(&composite, true);
+                        let _ = p.save();
+                        marked_read = true;
+                        unread = false;
+                    }
+                    return render(NtfyMessageTemplate {
+                        id: composite,
+                        mailbox: mailbox_key.to_string(),
+                                    subject: subject.clone(),
+                        from,
+                        date: ntfy_epoch_date(m.time),
+                        body: plain_to_html(&body_text),
+                        body_enc: urlencoding::encode(&quoted).into_owned(),
+                        subject_enc: urlencoding::encode(&format!("Re: {subject}")).into_owned(),
+                        unread,
+                        marked_read,
+                        error: None,
+                    });
+                }
+            }
+            Err(e) => {
+                return render(NtfyMessageTemplate {
+                    id: id.to_string(),
+                    mailbox: mailbox_key.to_string(),
+                            subject: String::new(),
+                    from: String::new(),
+                    date: String::new(),
+                    body: String::new(),
+                    body_enc: String::new(),
+                    subject_enc: String::new(),
+                    unread: false,
+                    marked_read: false,
+                    error: Some(e),
+                });
+            }
+        }
+    }
+
+    render(NtfyMessageTemplate {
+        id: id.to_string(),
+        mailbox: mailbox_key.to_string(),
+        subject: String::new(),
+        from: String::new(),
+        date: String::new(),
+        body: String::new(),
+        body_enc: String::new(),
+        subject_enc: String::new(),
+        unread: false,
+        marked_read: false,
+        error: Some("Notification introuvable (expirée du cache ntfy ?)".into()),
+    })
 }
 
 fn html_escape(s: &str) -> String {

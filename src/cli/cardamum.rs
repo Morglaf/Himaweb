@@ -28,7 +28,6 @@ pub struct AddressBookInfo {
 #[derive(Debug, Clone)]
 pub struct CardamumAccount {
     pub name: String,
-    pub is_default: bool,
 }
 
 impl CardamumClient {
@@ -58,10 +57,6 @@ impl CardamumClient {
                     .and_then(|x| x.as_str())
                     .unwrap_or("default")
                     .to_string(),
-                is_default: item
-                    .get("default")
-                    .and_then(|x| x.as_bool())
-                    .unwrap_or(false),
             })
             .collect()
     }
@@ -286,39 +281,6 @@ impl CardamumClient {
         out
     }
 
-    pub async fn read_card(
-        &self,
-        book_ref: &str,
-        card_id: &str,
-    ) -> CliResult<(String, Option<String>)> {
-        let (account, book_id) = split_ref(book_ref);
-        let mut owned = Vec::new();
-        if let Some(a) = account.as_deref() {
-            owned.push("--account".into());
-            owned.push(a.to_string());
-        }
-        owned.extend([
-            "card".into(),
-            "read".into(),
-            "-k".into(),
-            book_id,
-            card_id.to_string(),
-        ]);
-        let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
-        let v = self.runner.run_json(&self.bin, &refs).await?;
-        let contents = v
-            .get("contents")
-            .or_else(|| v.get("content"))
-            .or_else(|| v.get("vcard"))
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let etag = v
-            .get("etag")
-            .and_then(|x| x.as_str())
-            .map(str::to_string);
-        Ok((contents, etag))
-    }
 
     pub async fn create_card(&self, book_ref: &str, vcard: &[u8]) -> CliResult<()> {
         let (account, book_id) = split_ref(book_ref);
@@ -341,32 +303,6 @@ impl CardamumClient {
         Ok(())
     }
 
-    pub async fn update_card(
-        &self,
-        book_ref: &str,
-        card_id: &str,
-        vcard: &[u8],
-        etag: Option<&str>,
-    ) -> CliResult<()> {
-        let (account, book_id) = split_ref(book_ref);
-        let mut owned = Vec::new();
-        if let Some(a) = account.as_deref() {
-            owned.push("--account".into());
-            owned.push(a.to_string());
-        }
-        owned.extend(["card".into(), "update".into(), "-k".into(), book_id]);
-        if let Some(e) = etag.filter(|s| !s.is_empty()) {
-            owned.push("--if-match".into());
-            owned.push(e.to_string());
-        }
-        owned.push(card_id.to_string());
-        owned.push("-".into());
-        let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
-        self.runner
-            .run_with_stdin(&self.bin, &refs, vcard)
-            .await?;
-        Ok(())
-    }
 
     pub async fn delete_card(&self, book_ref: &str, card_id: &str) -> CliResult<()> {
         let (account, book_id) = split_ref(book_ref);

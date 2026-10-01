@@ -12,9 +12,6 @@ impl OrtieClient {
         Self { bin, runner }
     }
 
-    pub fn bin(&self) -> &str {
-        &self.bin
-    }
 
     /// Lance `ortie [-a ACCOUNT] auth get` dans une console dédiée, avec log fichier.
     pub async fn authorize(&self, account: Option<&str>) -> CliResult<String> {

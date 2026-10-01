@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -31,6 +30,7 @@ pub struct CliRunner {
 /// Évite le flash de console Windows quand le parent est `windows_subsystem`.
 #[cfg(windows)]
 fn hide_console(cmd: &mut Command) {
+    #[allow(unused_imports)]
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -188,7 +188,4 @@ impl CliRunner {
         serde_json::from_str(&stdout).map_err(|e| CliError::Json(e.to_string()))
     }
 
-    pub async fn which_exists(bin: &str) -> bool {
-        which::which(bin).is_ok() || PathBuf::from(bin).exists()
-    }
 }

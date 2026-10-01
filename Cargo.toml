@@ -1,6 +1,6 @@
 [package]
 name = "himaweb"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Local web GUI for Himalaya (and Cardamum/Calendula)"
 license = "GPL-3.0-only"
@@ -38,6 +38,7 @@ tray-icon = "0.19"
 muda = "0.15"
 open = "5"
 base64 = "0.22"
+zip = { version = "2", features = ["deflate"] }
 
 [profile.release]
 lto = true

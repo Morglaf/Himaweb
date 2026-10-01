@@ -143,9 +143,6 @@ impl AppState {
             .map(str::to_string)
     }
 
-    pub async fn is_all_accounts(&self) -> bool {
-        self.prefs.lock().await.is_all_accounts()
-    }
 
     pub async fn theme_layout(&self) -> (String, String) {
         let p = self.prefs.lock().await;

@@ -36,14 +36,7 @@ pub struct ComposeQuery {
 #[template(path = "compose.html")]
 struct ComposeTemplate {
     pub title: String,
-    pub to: String,
-    pub cc: String,
-    pub bcc: String,
-    pub subject: String,
     pub body: String,
-    pub accounts: Vec<AccountOpt>,
-    pub selected_account: String,
-    pub cardamum_available: bool,
     /// JSON meta sans le corps (évite de casser x-data)
     pub compose_boot: String,
     pub error: Option<String>,
@@ -64,8 +57,7 @@ struct ShellTemplate {
     pub active_tab: String,
     pub offline: bool,
     pub himalaya_available: bool,
-    pub calendula_available: bool,
-    pub cardamum_available: bool,
+
     pub theme: String,
     pub layout: String,
     pub topbar_mode: String,
@@ -180,10 +172,12 @@ async fn compose_get(
     let compose_boot = serde_json::json!({
         "cardamum": state.cardamum_available,
         "ai": prefs_snap.ai_enabled,
+        "toolbarMode": prefs_snap.compose_toolbar_mode,
         "kind": match kind {
             ComposeKind::Reply | ComposeKind::ReplyAll => "reply",
             _ => "compose",
         },
+        "title": title,
         "to": draft.to,
         "cc": draft.cc,
         "bcc": draft.bcc,
@@ -200,14 +194,7 @@ async fn compose_get(
 
     let inner = ComposeTemplate {
         title: title.into(),
-        to: draft.to.clone(),
-        cc: draft.cc.clone(),
-        bcc: draft.bcc.clone(),
-        subject: draft.subject.clone(),
         body: draft.body,
-        accounts,
-        selected_account,
-        cardamum_available: state.cardamum_available,
         compose_boot,
         error,
     };
@@ -229,8 +216,7 @@ async fn compose_get(
         active_tab: "mail".into(),
         offline: false,
         himalaya_available: state.himalaya_available,
-        calendula_available: state.calendula_available,
-        cardamum_available: state.cardamum_available,
+
         theme,
         layout,
         topbar_mode: state.topbar_mode().await,
@@ -306,6 +292,7 @@ struct ParsedCompose {
     to: String,
     cc: Option<String>,
     bcc: Option<String>,
+    reply_to: Option<String>,
     subject: String,
     body: String,
     body_html: Option<String>,
@@ -345,6 +332,12 @@ async fn parse_compose_multipart(mut multipart: Multipart) -> Result<ParsedCompo
                 let s = String::from_utf8_lossy(&data).to_string();
                 if !s.trim().is_empty() {
                     out.bcc = Some(s);
+                }
+            }
+            "reply_to" => {
+                let s = String::from_utf8_lossy(&data).to_string();
+                if !s.trim().is_empty() {
+                    out.reply_to = Some(s);
                 }
             }
             "subject" => out.subject = String::from_utf8_lossy(&data).to_string(),
@@ -432,11 +425,16 @@ async fn finish_send(state: Arc<AppState>, form: ParsedCompose) -> axum::respons
     let from = resolve_from_header(account.as_deref());
     let as_html = form_wants_html(&form);
     let has_files = !form.files.is_empty();
+    let has_reply_to = form
+        .reply_to
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
 
     let _permit = state.cli_limit.acquire().await.ok();
 
-    // PJ ou HTML : EML multipart (himalaya compose = plain sans fichiers)
-    if as_html || has_files {
+    // PJ, HTML ou Reply-To : EML (himalaya compose = plain sans fichiers / sans Reply-To)
+    if as_html || has_files || has_reply_to {
         let eml = build_eml(&form, from.as_deref().unwrap_or(""), &to, cc.as_deref(), bcc.as_deref(), &form.files);
         return match state
             .himalaya
@@ -557,9 +555,14 @@ async fn finish_draft(state: Arc<AppState>, form: ParsedCompose) -> axum::respon
     let from = resolve_from_header(account.as_deref());
     let as_html = form_wants_html(&form);
     let has_files = !form.files.is_empty();
+    let has_reply_to = form
+        .reply_to
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
 
     let _permit = state.cli_limit.acquire().await.ok();
-    let saved = if as_html || has_files {
+    let saved = if as_html || has_files || has_reply_to {
         let eml = build_eml(
             &form,
             from.as_deref().unwrap_or(""),
@@ -678,6 +681,14 @@ fn build_eml(
     }
     if let Some(bcc) = bcc.filter(|s| !s.is_empty()) {
         headers.push_str(&format!("Bcc: {bcc}\r\n"));
+    }
+    if let Some(rt) = form
+        .reply_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        headers.push_str(&format!("Reply-To: {rt}\r\n"));
     }
     // Obligatoire (RFC 5322) — sans Date, IMAP/Himalaya renvoient date=null.
     headers.push_str(&format!(

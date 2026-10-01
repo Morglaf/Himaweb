@@ -1,0 +1,57 @@
+{% if let Some(e) = error %}
+<div class="offline-strip">{{ e }}</div>
+{% endif %}
+
+<div class="thread-view" data-msg-id="{{ id }}" data-msg-account="{{ mailbox }}" data-ntfy-unread="{% if unread %}1{% else %}0{% endif %}"{% if marked_read %} data-marked-read="1"{% endif %}>
+  <div class="thread-title-bar">
+    <h1 class="msg-subject">{{ subject }}</h1>
+  </div>
+
+  <article class="message-view thread-item is-focus {% if unread %}is-unread{% endif %}">
+    <header class="msg-header">
+      <div class="msg-meta-row">
+        <div class="msg-avatar" style="background:#0ea5e9">N</div>
+        <div class="msg-meta">
+          <div class="msg-from">{{ from }}</div>
+          <div class="msg-date muted tiny">{{ date }}</div>
+        </div>
+      </div>
+      <div class="msg-actions">
+        <a class="icon-btn" title="Répondre (compose avec un autre compte)"
+           href="/compose?subject={{ subject_enc }}&body={{ body_enc }}"><i data-lucide="reply"></i></a>
+        <a class="icon-btn" title="Transférer vers une boîte mail"
+           href="/compose?subject={{ subject_enc }}&body={{ body_enc }}"><i data-lucide="forward"></i></a>
+        <form class="inline" hx-post="/partials/message/flag" hx-target="#message-pane" hx-swap="innerHTML"
+              hx-on::after-request="lucide.createIcons()">
+          <input type="hidden" name="mailbox" value="{{ mailbox }}" />
+          <input type="hidden" name="id" value="{{ id }}" />
+          {% if unread %}
+          <input type="hidden" name="seen" value="1" />
+          <button class="icon-btn" type="submit" title="Marquer lu"><i data-lucide="mail-open"></i></button>
+          {% else %}
+          <input type="hidden" name="seen" value="0" />
+          <button class="icon-btn" type="submit" title="Marquer non lu"><i data-lucide="mail"></i></button>
+          {% endif %}
+        </form>
+      </div>
+    </header>
+
+    <div class="msg-body">
+      {{ body|safe }}
+    </div>
+  </article>
+</div>
+<script>
+lucide.createIcons();
+(function () {
+  if (!window.HimaWeb) return;
+  const el = document.querySelector('.thread-view[data-msg-id]');
+  if (!el) return;
+  const id = el.getAttribute('data-msg-id') || '';
+  const acc = el.getAttribute('data-msg-account') || '';
+  const unread = el.getAttribute('data-ntfy-unread') === '1';
+  window.HimaWeb.applyEnvelopeSeen(id, acc, !unread);
+  window.HimaWeb.applyEnvelopeSeen(id, '', !unread);
+  if (window.HimaWeb.pollUnread) window.HimaWeb.pollUnread();
+})();
+</script>

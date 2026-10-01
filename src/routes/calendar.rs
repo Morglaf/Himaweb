@@ -37,8 +37,7 @@ struct ShellTemplate {
     pub active_tab: String,
     pub offline: bool,
     pub himalaya_available: bool,
-    pub calendula_available: bool,
-    pub cardamum_available: bool,
+
     pub theme: String,
     pub layout: String,
     pub topbar_mode: String,
@@ -261,8 +260,7 @@ async fn calendar_page(
         active_tab: "calendar".into(),
         offline: false,
         himalaya_available: state.himalaya_available,
-        calendula_available: state.calendula_available,
-        cardamum_available: state.cardamum_available,
+
         theme,
         layout,
         topbar_mode: state.topbar_mode().await,
@@ -281,10 +279,6 @@ async fn calendar_page(
 struct EventsFragment {
     pub events: Vec<EventRow>,
     pub error: Option<String>,
-    pub year: i32,
-    pub month: u32,
-    pub day: u32,
-    pub view: String,
 }
 
 async fn events_fragment(
@@ -296,7 +290,6 @@ async fn events_fragment(
     let year = q.year.unwrap_or(now.year());
     let month = q.month.unwrap_or(now.month());
     let day = q.day.unwrap_or(now.day());
-    let view = q.view.unwrap_or_else(|| "day".into());
 
     let (_cals, _cur, events, error, _hints, _) =
         load_calendar_data(&state, Some(&id), year, month, false).await;
@@ -308,10 +301,6 @@ async fn events_fragment(
     let tpl = EventsFragment {
         events: day_events,
         error,
-        year,
-        month,
-        day,
-        view,
     };
     match tpl.render() {
         Ok(html) => Html(html).into_response(),

@@ -3,6 +3,18 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub const ACCOUNT_ALL: &str = "__all__";
+pub const NTFY_MERGED: &str = "__ntfy__";
+pub const NTFY_KEY_PREFIX: &str = "__ntfy__:";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NtfySource {
+    pub id: String,
+    #[serde(default = "default_ntfy_server")]
+    pub server: String,
+    pub topic: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prefs {
@@ -11,6 +23,9 @@ pub struct Prefs {
     /// Affichage barre du haut : `icon-text` | `icon` | `text`
     #[serde(default = "default_topbar_mode")]
     pub topbar_mode: String,
+    /// Affichage barre d’outils compose : `icon-text` | `icon` | `text`
+    #[serde(default = "default_topbar_mode")]
+    pub compose_toolbar_mode: String,
     /// None / empty = Himalaya default account; `__all__` = tous les comptes
     pub account: Option<String>,
     #[serde(default)]
@@ -28,6 +43,12 @@ pub struct Prefs {
     /// Notifications navigateur pour nouveaux non-lus
     #[serde(default = "default_true")]
     pub notifications: bool,
+    /// Demander confirmation avant suppression de messages
+    #[serde(default = "default_true")]
+    pub confirm_delete: bool,
+    /// Ouvrir le navigateur au démarrage de HimaWeb
+    #[serde(default = "default_true")]
+    pub open_browser_on_start: bool,
     /// Couleurs par nom de compte Himalaya (`#rrggbb`)
     #[serde(default)]
     pub account_colors: std::collections::BTreeMap<String, String>,
@@ -73,13 +94,25 @@ pub struct Prefs {
     /// Watch Mirador (complète le poll)
     #[serde(default)]
     pub mirador_enabled: bool,
-    /// Notifications NTFY
+    /// Notifications NTFY (legacy mono-topic — migré vers `ntfy_sources`)
     #[serde(default)]
     pub ntfy_enabled: bool,
     #[serde(default = "default_ntfy_server")]
     pub ntfy_server: String,
     #[serde(default)]
     pub ntfy_topic: String,
+    /// Sources NTFY (plusieurs topics)
+    #[serde(default)]
+    pub ntfy_sources: Vec<NtfySource>,
+    /// Une seule entrée « Ntfy » dans l’ordre / la barre, sinon une par source
+    #[serde(default = "default_true")]
+    pub ntfy_merged: bool,
+    /// IDs de notifications NTFY marquées lues (`sourceId::msgId`)
+    #[serde(default)]
+    pub ntfy_read_ids: Vec<String>,
+    /// IDs de notifications NTFY masquées localement (pas de delete serveur)
+    #[serde(default)]
+    pub ntfy_deleted_ids: Vec<String>,
     /// Assistant IA
     #[serde(default)]
     pub ai_enabled: bool,
@@ -117,7 +150,7 @@ fn default_font_scale() -> f32 {
 }
 
 fn default_radius() -> u16 {
-    16
+    2
 }
 
 fn default_rail() -> u16 {
@@ -154,6 +187,7 @@ impl Default for Prefs {
             theme: "light".into(),
             layout: "classic".into(),
             topbar_mode: default_topbar_mode(),
+            compose_toolbar_mode: default_topbar_mode(),
             account: None,
             account_order: vec![],
             pinned_folders: vec![],
@@ -161,6 +195,8 @@ impl Default for Prefs {
             watched_folders: vec![],
             badge_only_folders: vec![],
             notifications: true,
+            confirm_delete: true,
+            open_browser_on_start: true,
             account_colors: Default::default(),
             account_labels: Default::default(),
             account_icons: Default::default(),
@@ -179,6 +215,10 @@ impl Default for Prefs {
             ntfy_enabled: false,
             ntfy_server: default_ntfy_server(),
             ntfy_topic: String::new(),
+            ntfy_sources: vec![],
+            ntfy_merged: true,
+            ntfy_read_ids: vec![],
+            ntfy_deleted_ids: vec![],
             ai_enabled: false,
             ai_provider: default_ai_provider(),
             ai_endpoint: default_ai_endpoint(),
@@ -233,6 +273,12 @@ impl Prefs {
         {
             self.topbar_mode = default_topbar_mode();
         }
+        if self.compose_toolbar_mode != "icon-text"
+            && self.compose_toolbar_mode != "icon"
+            && self.compose_toolbar_mode != "text"
+        {
+            self.compose_toolbar_mode = default_topbar_mode();
+        }
         self.ui_font_scale = self.ui_font_scale.clamp(0.8, 1.4);
         self.ui_space = self.ui_space.clamp(0.75, 1.4);
         self.ui_radius = self.ui_radius.clamp(0, 28);
@@ -250,7 +296,165 @@ impl Prefs {
             .retain(|b| self.watched_folders.iter().any(|w| w == b));
         self.hidden_folders
             .retain(|h| !self.pinned_folders.iter().any(|p| p == h));
+        self.migrate_ntfy_sources();
         self
+    }
+
+    fn migrate_ntfy_sources(&mut self) {
+        if self.ntfy_sources.is_empty() && !self.ntfy_topic.trim().is_empty() {
+            let topic = self.ntfy_topic.trim().to_string();
+            let id = make_ntfy_id(&topic);
+            self.ntfy_sources.push(NtfySource {
+                id,
+                server: if self.ntfy_server.trim().is_empty() {
+                    default_ntfy_server()
+                } else {
+                    self.ntfy_server.trim_end_matches('/').to_string()
+                },
+                topic,
+                enabled: self.ntfy_enabled,
+            });
+        }
+        // IDs uniques + serveurs nettoyés
+        let mut seen = std::collections::HashSet::new();
+        for s in &mut self.ntfy_sources {
+            s.server = s.server.trim().trim_end_matches('/').to_string();
+            if s.server.is_empty() {
+                s.server = default_ntfy_server();
+            }
+            s.topic = s.topic.trim().to_string();
+            if s.id.trim().is_empty() {
+                s.id = make_ntfy_id(&s.topic);
+            }
+            let mut id = s.id.clone();
+            let mut n = 2u32;
+            while !seen.insert(id.clone()) {
+                id = format!("{}-{n}", s.id);
+                n += 1;
+            }
+            s.id = id;
+        }
+        self.ntfy_sources.retain(|s| !s.topic.is_empty());
+        // Sync legacy pour ancien code / affichage plugins
+        self.ntfy_enabled = self.ntfy_sources.iter().any(|s| s.enabled);
+        if let Some(first) = self.ntfy_sources.iter().find(|s| s.enabled).or(self.ntfy_sources.first())
+        {
+            self.ntfy_server = first.server.clone();
+            self.ntfy_topic = first.topic.clone();
+        } else if self.ntfy_sources.is_empty() {
+            self.ntfy_topic.clear();
+        }
+    }
+
+    pub fn is_ntfy_key(key: &str) -> bool {
+        key == NTFY_MERGED || key.starts_with(NTFY_KEY_PREFIX)
+    }
+
+    pub fn ntfy_source_key(id: &str) -> String {
+        format!("{NTFY_KEY_PREFIX}{id}")
+    }
+
+    pub fn ntfy_order_keys(&self) -> Vec<String> {
+        let enabled: Vec<&NtfySource> = self
+            .ntfy_sources
+            .iter()
+            .filter(|s| s.enabled && !s.topic.is_empty())
+            .collect();
+        if enabled.is_empty() {
+            return vec![];
+        }
+        if self.ntfy_merged {
+            vec![NTFY_MERGED.into()]
+        } else {
+            enabled
+                .into_iter()
+                .map(|s| Self::ntfy_source_key(&s.id))
+                .collect()
+        }
+    }
+
+    pub fn ntfy_sources_for_key(&self, key: &str) -> Vec<&NtfySource> {
+        if key == NTFY_MERGED {
+            self.ntfy_sources
+                .iter()
+                .filter(|s| s.enabled && !s.topic.is_empty())
+                .collect()
+        } else if let Some(id) = key.strip_prefix(NTFY_KEY_PREFIX) {
+            self.ntfy_sources
+                .iter()
+                .filter(|s| s.id == id && s.enabled && !s.topic.is_empty())
+                .collect()
+        } else {
+            vec![]
+        }
+    }
+
+    pub fn is_ntfy_read(&self, composite_id: &str) -> bool {
+        self.ntfy_read_ids.iter().any(|id| id == composite_id)
+    }
+
+    pub fn set_ntfy_read(&mut self, composite_id: &str, read: bool) {
+        if read {
+            if !self.ntfy_read_ids.iter().any(|id| id == composite_id) {
+                self.ntfy_read_ids.push(composite_id.to_string());
+            }
+            const MAX: usize = 1500;
+            if self.ntfy_read_ids.len() > MAX {
+                let drop = self.ntfy_read_ids.len() - MAX;
+                self.ntfy_read_ids.drain(0..drop);
+            }
+        } else {
+            self.ntfy_read_ids.retain(|id| id != composite_id);
+        }
+    }
+
+    pub fn is_ntfy_deleted(&self, composite_id: &str) -> bool {
+        self.ntfy_deleted_ids.iter().any(|id| id == composite_id)
+    }
+
+    pub fn set_ntfy_deleted(&mut self, composite_id: &str, deleted: bool) {
+        if deleted {
+            if !self.ntfy_deleted_ids.iter().any(|id| id == composite_id) {
+                self.ntfy_deleted_ids.push(composite_id.to_string());
+            }
+            // Une notif supprimée est aussi « lue »
+            self.set_ntfy_read(composite_id, true);
+            const MAX: usize = 1500;
+            if self.ntfy_deleted_ids.len() > MAX {
+                let drop = self.ntfy_deleted_ids.len() - MAX;
+                self.ntfy_deleted_ids.drain(0..drop);
+            }
+        } else {
+            self.ntfy_deleted_ids.retain(|id| id != composite_id);
+        }
+    }
+
+    /// Clé de préférence dossier pour une entrée NTFY virtuelle.
+    pub fn ntfy_folder_key(mailbox_key: &str) -> String {
+        Self::folder_key(Some(NTFY_MERGED), mailbox_key)
+    }
+
+    /// Ordre rail / liste : comptes mail + entrées NTFY (fusionnées ou individuelles).
+    pub fn rail_order(&self, known_mail: &[String]) -> Vec<String> {
+        let ntfy = self.ntfy_order_keys();
+        let mut known: Vec<String> = known_mail.to_vec();
+        for k in &ntfy {
+            if !known.contains(k) {
+                known.push(k.clone());
+            }
+        }
+        let mut out = Vec::new();
+        for a in &self.account_order {
+            if known.iter().any(|k| k == a) && !out.contains(a) {
+                out.push(a.clone());
+            }
+        }
+        for a in &known {
+            if !out.contains(a) {
+                out.push(a.clone());
+            }
+        }
+        out
     }
 
     pub fn ui_style_attr(&self) -> String {
@@ -275,8 +479,14 @@ impl Prefs {
         match self.account.as_deref() {
             None | Some("") => None,
             Some(ACCOUNT_ALL) => None,
+            Some(a) if Self::is_ntfy_key(a) => None,
             Some(a) => Some(a),
         }
+    }
+
+    /// Compte actif = une boîte NTFY (virtuelle).
+    pub fn selected_ntfy_key(&self) -> Option<&str> {
+        self.account.as_deref().filter(|a| Self::is_ntfy_key(a))
     }
 
     pub fn folder_key(account: Option<&str>, mailbox: &str) -> String {
@@ -318,16 +528,34 @@ impl Prefs {
         self.account_colors
             .get(name)
             .cloned()
-            .unwrap_or_else(|| crate::account_colors::default_color_for(name))
+            .unwrap_or_else(|| {
+                if Self::is_ntfy_key(name) {
+                    "#0ea5e9".into()
+                } else {
+                    crate::account_colors::default_color_for(name)
+                }
+            })
     }
 
     pub fn account_label(&self, name: &str) -> String {
-        self.account_labels
+        if let Some(label) = self
+            .account_labels
             .get(name)
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| name.to_string())
+        {
+            return label.to_string();
+        }
+        if name == NTFY_MERGED {
+            return "Ntfy".into();
+        }
+        if let Some(id) = name.strip_prefix(NTFY_KEY_PREFIX) {
+            if let Some(s) = self.ntfy_sources.iter().find(|s| s.id == id) {
+                return format!("Ntfy · {}", s.topic);
+            }
+            return format!("Ntfy · {id}");
+        }
+        name.to_string()
     }
 
     pub fn account_icon(&self, name: &str) -> String {
@@ -336,7 +564,13 @@ impl Prefs {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| "circle-user".into())
+            .unwrap_or_else(|| {
+                if Self::is_ntfy_key(name) {
+                    "bell".into()
+                } else {
+                    "circle-user".into()
+                }
+            })
     }
 
     /// Serveur sans UID MOVE : COPY + purge au lieu de `message move`.
@@ -380,6 +614,9 @@ impl Prefs {
     pub fn ordered_accounts(&self, known: &[String]) -> Vec<String> {
         let mut out = Vec::new();
         for a in &self.account_order {
+            if Self::is_ntfy_key(a) {
+                continue;
+            }
             if known.iter().any(|k| k == a) && !out.contains(a) {
                 out.push(a.clone());
             }
@@ -391,6 +628,32 @@ impl Prefs {
         }
         out
     }
+}
+
+fn make_ntfy_id(topic: &str) -> String {
+    let mut s: String = topic
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    while s.contains("--") {
+        s = s.replace("--", "-");
+    }
+    let s = s.trim_matches('-').to_string();
+    if s.is_empty() {
+        "ntfy".into()
+    } else {
+        s.chars().take(32).collect()
+    }
+}
+
+pub fn make_ntfy_id_pub(topic: &str) -> String {
+    make_ntfy_id(topic)
 }
 
 pub fn himalaya_config_path() -> PathBuf {

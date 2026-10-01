@@ -9,7 +9,6 @@ pub struct PluginInfo {
     pub id: String,
     pub name: String,
     pub description: String,
-    pub path: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -18,8 +17,6 @@ struct Manifest {
     name: String,
     #[serde(default)]
     description: String,
-    #[serde(default)]
-    hooks: Vec<String>,
 }
 
 pub fn plugins_dir() -> Result<PathBuf, String> {
@@ -62,7 +59,6 @@ pub fn list_plugins() -> Vec<PluginInfo> {
             id,
             name,
             description,
-            path,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -169,4 +165,56 @@ pub async fn ntfy_publish(server: &str, topic: &str, title: &str, body: &str) ->
         return Err(format!("NTFY HTTP {}", res.status()));
     }
     Ok(())
+}
+
+/// Message reçu depuis un topic ntfy (poll JSON).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct NtfyMessage {
+    pub id: String,
+    #[serde(default)]
+    pub time: i64,
+    #[serde(default)]
+    pub event: String,
+    #[serde(default)]
+    pub topic: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Récupère les messages d’un topic (poll, NDJSON).
+pub async fn ntfy_poll(server: &str, topic: &str) -> Result<Vec<NtfyMessage>, String> {
+    let server = server.trim_end_matches('/');
+    let topic = topic.trim();
+    if topic.is_empty() {
+        return Err("topic NTFY vide".into());
+    }
+    let url = format!("{server}/{topic}/json?poll=1");
+    let client = reqwest::Client::new();
+    let res = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.status().is_success() {
+        return Err(format!("NTFY HTTP {}", res.status()));
+    }
+    let text = res.text().await.map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<NtfyMessage>(line) {
+            Ok(m) if m.event == "message" || m.event.is_empty() => out.push(m),
+            Ok(_) => {}
+            Err(e) => tracing::debug!("ntfy parse: {e} — {line}"),
+        }
+    }
+    out.sort_by(|a, b| b.time.cmp(&a.time));
+    Ok(out)
 }

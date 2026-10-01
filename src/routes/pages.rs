@@ -24,8 +24,7 @@ pub struct ShellTemplate {
     pub active_tab: String,
     pub offline: bool,
     pub himalaya_available: bool,
-    pub calendula_available: bool,
-    pub cardamum_available: bool,
+
     pub theme: String,
     pub layout: String,
     pub topbar_mode: String,
@@ -155,7 +154,13 @@ async fn home(
     State(state): State<Arc<AppState>>,
     Query(q): Query<HomeQuery>,
 ) -> impl IntoResponse {
-    let mailbox = q.mailbox.unwrap_or_else(|| "Inbox".into());
+    let prefs_snap = state.prefs.lock().await.clone();
+    let mailbox = q.mailbox.unwrap_or_else(|| {
+        prefs_snap
+            .selected_ntfy_key()
+            .unwrap_or("Inbox")
+            .to_string()
+    });
     let page = q.page.unwrap_or(1).max(1);
     let mailbox_q = urlencoding::encode(&mailbox);
     let account_q = q
@@ -172,17 +177,25 @@ async fn home(
         .filter(|s| !s.is_empty())
         .unwrap_or("")
         .replace('"', "&quot;");
-    let prefs_snap = state.prefs.lock().await.clone();
     let list_icon = crate::routes::mail::mailbox_icon(&mailbox);
+    let list_label = if prefs::Prefs::is_ntfy_key(&mailbox) {
+        prefs_snap.account_label(&mailbox)
+    } else {
+        crate::routes::mail::mailbox_label(&mailbox)
+    };
     let list_color = {
-        let acc = q
-            .account
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty() && *s != prefs::ACCOUNT_ALL)
-            .or_else(|| prefs_snap.selected_account());
-        acc.map(|a| prefs_snap.account_color(a))
-            .unwrap_or_else(|| "var(--accent)".into())
+        if prefs::Prefs::is_ntfy_key(&mailbox) {
+            prefs_snap.account_color(&mailbox)
+        } else {
+            let acc = q
+                .account
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && *s != prefs::ACCOUNT_ALL)
+                .or_else(|| prefs_snap.selected_account());
+            acc.map(|a| prefs_snap.account_color(a))
+                .unwrap_or_else(|| "var(--accent)".into())
+        }
     };
     let (theme, layout) = state.theme_layout().await;
     let ui_style = state.ui_style().await;
@@ -200,8 +213,7 @@ async fn home(
                     active_tab: "mail".into(),
                     offline: true,
                     himalaya_available: false,
-                    calendula_available: state.calendula_available,
-                    cardamum_available: state.cardamum_available,
+
                     theme,
                     layout,
                     topbar_mode: state.topbar_mode().await,
@@ -225,8 +237,7 @@ async fn home(
                 active_tab: "mail".into(),
                 offline: false,
                 himalaya_available: state.himalaya_available,
-                calendula_available: state.calendula_available,
-                cardamum_available: state.cardamum_available,
+
                 theme: theme.clone(),
                 layout: layout.clone(),
                 topbar_mode: state.topbar_mode().await,
@@ -254,7 +265,7 @@ async fn home(
             <div class="list-toolbar">
               <div class="list-title" id="list-title" style="--list-title-color: {list_color}">
                 <i data-lucide="{list_icon}" id="list-mailbox-icon"></i>
-                <span id="list-mailbox-label">{mailbox}</span>
+                <span id="list-mailbox-label">{list_label}</span>
               </div>
               <form class="mail-search" method="get" action="/search">
                 <input class="input mail-search-input" type="search" name="q"
@@ -338,8 +349,7 @@ async fn home(
             active_tab: "mail".into(),
             offline: false,
             himalaya_available: state.himalaya_available,
-            calendula_available: state.calendula_available,
-            cardamum_available: state.cardamum_available,
+
             theme,
             layout,
             topbar_mode: state.topbar_mode().await,

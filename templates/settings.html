@@ -11,6 +11,7 @@
       <a href="#sync">Sync &amp; OAuth</a>
       <a href="#plugins">Plugins</a>
       <a href="#ai">IA</a>
+      <a href="#backup">Sauvegarde</a>
     </nav>
 
     <div class="settings-grid">
@@ -19,7 +20,7 @@
         <h2>Thème et disposition</h2>
         <form method="post" action="/settings/ui" class="settings-autosave"
               hx-post="/settings/ui" hx-trigger="change delay:200ms" hx-swap="none"
-              hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event); const m=this.querySelector('[name=topbar_mode]'); if(m) document.documentElement.dataset.topbar=m.value; const th=this.querySelector('[name=theme]'); if(th) document.documentElement.dataset.theme=th.value;">
+              hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event); const m=this.querySelector('[name=topbar_mode]'); if(m) document.documentElement.dataset.topbar=m.value; const th=this.querySelector('[name=theme]'); if(th) document.documentElement.dataset.theme=th.value; const lay=this.querySelector('[name=layout]'); if(lay) document.documentElement.dataset.layout=lay.value;">
           <label class="settings-row">
             <span class="label">Thème</span>
             <select name="theme" class="select w-full">
@@ -44,17 +45,36 @@
             </select>
           </label>
           <label class="settings-row">
-            <span class="label">Taille du texte ({{ ui_font_scale }})</span>
+            <span class="label">Barre d’outils rédaction</span>
+            <select name="compose_toolbar_mode" class="select w-full">
+              <option value="icon-text" {% if compose_toolbar_mode == "icon-text" %}selected{% endif %}>Icône et texte</option>
+              <option value="icon" {% if compose_toolbar_mode == "icon" %}selected{% endif %}>Icône seule</option>
+              <option value="text" {% if compose_toolbar_mode == "text" %}selected{% endif %}>Texte seul</option>
+            </select>
+          </label>
+          <label class="settings-row">
+            <span class="label" data-ui-label="ui_font_scale">Taille du texte ({{ ui_font_scale }})</span>
             <input class="input w-full" type="range" name="ui_font_scale" min="0.8" max="1.4" step="0.05" value="{{ ui_font_scale }}" />
           </label>
           <label class="settings-row">
-            <span class="label">Coins arrondis ({{ ui_radius }} px)</span>
+            <span class="label" data-ui-label="ui_radius">Coins arrondis ({{ ui_radius }} px)</span>
             <input class="input w-full" type="range" name="ui_radius" min="0" max="28" step="1" value="{{ ui_radius }}" />
           </label>
           <label class="settings-row">
-            <span class="label">Densité / marges ({{ ui_space }})</span>
+            <span class="label" data-ui-label="ui_space">Densité / marges ({{ ui_space }})</span>
             <input class="input w-full" type="range" name="ui_space" min="0.75" max="1.4" step="0.05" value="{{ ui_space }}" />
           </label>
+          <div class="ui-preview" aria-hidden="true">
+            <span class="ui-preview-title">Aperçu</span>
+            <div class="ui-preview-row">
+              <button type="button" class="btn primary" tabindex="-1">Bouton</button>
+              <button type="button" class="btn secondary" tabindex="-1">Secondaire</button>
+              <input class="input" type="text" value="Champ texte" readonly tabindex="-1" />
+            </div>
+            <div class="ui-preview-card">
+              Carte / panneau — la rondeur et les marges suivent les curseurs.
+            </div>
+          </div>
           <div class="settings-grid" style="grid-template-columns:1fr 1fr;gap:0.75rem">
             <label class="settings-row">
               <span class="label">Colonne dossiers (px)</span>
@@ -65,17 +85,61 @@
               <input class="input w-full" type="number" name="ui_list" min="240" max="560" value="{{ ui_list }}" />
             </label>
           </div>
+          <label class="toggle-row">
+            <span>Ouvrir le navigateur au démarrage</span>
+            <input class="toggle" type="checkbox" name="open_browser_on_start" value="1" {% if open_browser_on_start %}checked{% endif %} />
+          </label>
           <p class="muted tiny">Enregistré automatiquement. Vous pouvez aussi glisser les séparateurs dans Mail.</p>
           <p class="settings-saved muted tiny" hidden>Enregistré</p>
         </form>
       </section>
 
+      <section class="settings-card" id="mail-prefs">
+        <h2>Mail &amp; affichage</h2>
+        <p class="muted text-sm mb-3">
+          Notifications, conversations et panneau latéral.
+        </p>
+        <form method="post" action="/settings/notify" class="settings-autosave"
+              hx-post="/settings/notify" hx-trigger="change delay:200ms" hx-swap="none"
+              hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
+          <label class="toggle-row">
+            <span>Notifications navigateur pour nouveaux non-lus</span>
+            <input class="toggle" type="checkbox" name="notifications" value="1" {% if notifications %}checked{% endif %} />
+          </label>
+          <label class="toggle-row">
+            <span>Demander confirmation avant suppression de messages</span>
+            <input class="toggle" type="checkbox" name="confirm_delete" value="1" {% if confirm_delete %}checked{% endif %} />
+          </label>
+          <label class="toggle-row">
+            <span>Afficher « Toutes les Inbox » en tête (mode tous les comptes)</span>
+            <input class="toggle" type="checkbox" name="merged_inbox" value="1" {% if merged_inbox %}checked{% endif %} />
+          </label>
+          <label class="toggle-row">
+            <span>Afficher les mails en conversations (groupés)</span>
+            <input class="toggle" type="checkbox" name="conversations" value="1" {% if conversations %}checked{% endif %} />
+          </label>
+          <label class="toggle-row">
+            <span>Panneau latéral (prochains RDV + contacts)</span>
+            <input class="toggle" type="checkbox" name="side_widget" value="1" {% if side_widget %}checked{% endif %} />
+          </label>
+          <label class="settings-row">
+            <span class="label" data-ui-label="side_widget_events">Nombre de RDV affichés ({{ side_widget_events }})</span>
+            <input class="input w-full" type="range" name="side_widget_events" min="1" max="12" step="1" value="{{ side_widget_events }}"
+                   oninput="const l=this.form.querySelector('[data-ui-label=side_widget_events]'); if(l) l.textContent='Nombre de RDV affichés ('+this.value+')'" />
+          </label>
+          <p class="settings-saved muted tiny" hidden>Enregistré</p>
+        </form>
+      </section>
+
       <p class="settings-group-label settings-span" id="accounts">Mail</p>
-      <section class="settings-card">
-        <h2>Compte actif</h2>
+      <section class="settings-card settings-span" id="accounts-layout"
+               x-data="accountOrderList(JSON.parse(document.getElementById('acct-order-boot').textContent))">
+        <script type="application/json" id="acct-order-boot">{{ rail_order_boot|safe }}</script>
+        <h2>Comptes — actif &amp; ordre</h2>
         <p class="muted text-sm mb-3">
           Config : <code>{{ config_path }}</code>
           {% if config_exists %}<span class="ok"> (présent)</span>{% else %}<span class="badge-warn"> absent</span>{% endif %}
+          · Glisser pour réordonner · cliquer pour choisir le compte affiché.
         </p>
 
         {% if !config_exists %}
@@ -85,36 +149,60 @@
         </div>
         {% endif %}
 
-        <form method="post" action="/settings/account" class="space-y-3 mb-4">
-          <label class="block">
-            <span class="label">Afficher</span>
-            <select name="account" class="select w-full">
-              <option value="__all__" {% if all_selected %}selected{% endif %}>Tous les comptes (ordre ci-dessous)</option>
-              <option value="" {% if !all_selected && selected_account.is_empty() %}selected{% endif %}>(défaut Himalaya)</option>
-              {% for a in accounts %}
-              <option value="{{ a.name }}" {% if !all_selected && a.name == selected_account %}selected{% endif %}>
-                {{ a.name }}{% if a.is_default %} ★{% endif %}
-              </option>
-              {% endfor %}
-            </select>
+        <form method="post" action="/settings/accounts/layout" class="space-y-3"
+              @submit="syncHidden()">
+          <label class="toggle-row">
+            <span>Fusionner les boîtes NTFY en une seule entrée</span>
+            <input class="toggle" type="checkbox" value="1"
+                   x-model="ntfyMerged" @change="rebuildNtfySlots()" />
           </label>
-          <button type="submit" class="btn">Appliquer</button>
-        </form>
 
-        <form method="post" action="/settings/account/order" class="space-y-3">
-          <label class="block">
-            <span class="label">Ordre des comptes (séparés par des virgules)</span>
-            <input class="input w-full" name="order" value="{% for a in account_order %}{{ a }}{% if !loop.last %}, {% endif %}{% endfor %}" />
-          </label>
-          <p class="muted tiny">En mode « Tous les comptes », les messages sont listés compte par compte dans cet ordre.</p>
-          <button type="submit" class="btn secondary">Enregistrer l’ordre</button>
+          <div class="acct-active-picks" role="radiogroup" aria-label="Compte actif">
+            <button type="button" class="acct-active-chip"
+                    :class="{ 'is-on': selected === '__all__' }"
+                    @click="selected = '__all__'">Tous les comptes</button>
+            <button type="button" class="acct-active-chip"
+                    :class="{ 'is-on': selected === '' }"
+                    @click="selected = ''">Défaut Himalaya</button>
+          </div>
+
+          <ul class="acct-order-list" @dragover.prevent>
+            <template x-for="(item, idx) in items" :key="item.id">
+              <li class="acct-order-item"
+                  :class="{ 'is-selected': selected === item.id, 'is-ntfy': item.kind === 'ntfy' }"
+                  draggable="true"
+                  @dragstart="onDragStart($event, idx)"
+                  @dragover.prevent="onDragOver(idx)"
+                  @drop.prevent="onDrop(idx)"
+                  @dragend="onDragEnd()"
+                  @click="selected = item.id">
+                <span class="acct-order-grip" title="Glisser" aria-hidden="true">
+                  <i data-lucide="grip-vertical"></i>
+                </span>
+                <span class="acct-order-ico" :style="{ color: item.color }">
+                  <i :data-lucide="item.icon"></i>
+                </span>
+                <span class="acct-order-main">
+                  <strong x-text="item.label"></strong>
+                  <span class="muted tiny" x-text="item.kind === 'ntfy' ? 'NTFY' : item.id"></span>
+                </span>
+                <span class="acct-order-badge" x-show="selected === item.id">actif</span>
+              </li>
+            </template>
+          </ul>
+          <p class="muted tiny" x-show="!items.length">Aucun compte à ordonner.</p>
+
+          <input type="hidden" name="account" :value="selected" />
+          <input type="hidden" name="order" :value="orderValue" />
+          <input type="hidden" name="ntfy_merged" :value="ntfyMerged ? '1' : '0'" />
+          <button type="submit" class="btn">Enregistrer l’ordre et le compte actif</button>
         </form>
       </section>
 
-      <section class="settings-card">
+      <section class="settings-card settings-span">
         <h2>Apparence des comptes</h2>
         <form method="post" action="/settings/account/colors" class="space-y-3">
-          <p class="muted tiny mb-2">Nom affiché + icône Lucide + couleur. Le nom Himalaya reste inchangé en coulisses.</p>
+          <p class="muted tiny mb-2">Nom affiché + icône Lucide + couleur (mail et NTFY). Le nom technique reste inchangé en coulisses.</p>
           <div class="color-accounts">
             {% for a in color_accounts %}
             <div class="acct-identity-row"
@@ -146,7 +234,10 @@
                      @input="color = $event.target.value" title="Couleur" />
               <input class="input" type="text" name="label" value="{{ a.label }}"
                      placeholder="{{ a.name }}" title="Nom affiché" />
-              <span class="muted tiny acct-tech-name">{{ a.name }}</span>
+              <span class="muted tiny acct-tech-name">
+                {% if a.kind == "ntfy" %}<span class="acct-kind-badge">NTFY</span>{% endif %}
+                {{ a.name }}
+              </span>
             </div>
             {% else %}
             <p class="muted tiny">Aucun compte.</p>
@@ -170,7 +261,7 @@
               {% if a.is_default %}<span class="muted tiny">défaut</span>{% endif %}
               <span class="muted tiny">{{ a.email }}</span>
             </summary>
-            <form method="post" action="/settings/account/edit" class="account-edit-form space-y-3">
+            <form method="post" action="/settings/account/edit" class="account-edit-form space-y-3" id="acct-edit-{{ loop.index }}">
               <input type="hidden" name="name" value="{{ a.name }}" />
               <div class="form-row">
                 <label class="block">
@@ -240,24 +331,24 @@
                   </select>
                 </label>
               </div>
-              <label class="flex items-center gap-2 text-sm">
-                <input type="checkbox" name="make_default" value="1" {% if a.is_default %}checked{% endif %} />
-                Compte par défaut
+              <label class="toggle-row">
+                <span>Compte par défaut</span>
+                <input class="toggle" type="checkbox" name="make_default" value="1" {% if a.is_default %}checked{% endif %} />
               </label>
-              <label class="flex items-center gap-2 text-sm" title="Pour les serveurs IMAP qui refusent UID MOVE (ex. EHESS / rosa.ehess.fr)">
-                <input type="checkbox" name="copy_move" value="1" {% if a.copy_move %}checked{% endif %} />
-                Déplacer / archiver / supprimer via COPY (pas de UID MOVE)
+              <label class="toggle-row" title="Pour les serveurs IMAP qui refusent UID MOVE (ex. EHESS / rosa.ehess.fr)">
+                <span>Déplacer / archiver / supprimer via COPY (pas de UID MOVE)</span>
+                <input class="toggle" type="checkbox" name="copy_move" value="1" {% if a.copy_move %}checked{% endif %} />
               </label>
               <p class="muted tiny">À activer si les déplacements échouent avec « command not permitted with UID ».</p>
-              <div class="flex gap-2">
-                <button type="submit" class="btn">Enregistrer {{ a.name }}</button>
-              </div>
             </form>
-            <form method="post" action="/settings/account/delete" class="mt-2"
-                  onsubmit="return confirm('Supprimer le compte {{ a.name }} ?');">
-              <input type="hidden" name="name" value="{{ a.name }}" />
-              <button type="submit" class="btn secondary">Supprimer {{ a.name }}</button>
-            </form>
+            <div class="account-actions-row">
+              <button type="submit" class="btn" form="acct-edit-{{ loop.index }}">Enregistrer</button>
+              <form method="post" action="/settings/account/delete"
+                    onsubmit="return confirm('Supprimer le compte {{ a.name }} ?');">
+                <input type="hidden" name="name" value="{{ a.name }}" />
+                <button type="submit" class="btn secondary">Supprimer le compte</button>
+              </form>
+            </div>
           </details>
           {% endfor %}
         {% endif %}
@@ -273,31 +364,6 @@
           Épinglés en tête · non-système dans « Plus » · Masquer retire des menus.
           Surveiller active le compteur / notifications (par défaut : toutes les Inbox si rien n’est coché).
         </p>
-        <form method="post" action="/settings/notify" class="settings-autosave mb-4"
-              hx-post="/settings/notify" hx-trigger="change delay:200ms" hx-swap="none"
-              hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
-          <label class="toggle-row">
-            <span>Notifications navigateur pour nouveaux non-lus</span>
-            <input class="toggle" type="checkbox" name="notifications" value="1" {% if notifications %}checked{% endif %} />
-          </label>
-          <label class="toggle-row">
-            <span>Afficher « Toutes les Inbox » en tête (mode tous les comptes)</span>
-            <input class="toggle" type="checkbox" name="merged_inbox" value="1" {% if merged_inbox %}checked{% endif %} />
-          </label>
-          <label class="toggle-row">
-            <span>Afficher les mails en conversations (groupés)</span>
-            <input class="toggle" type="checkbox" name="conversations" value="1" {% if conversations %}checked{% endif %} />
-          </label>
-          <label class="toggle-row">
-            <span>Panneau latéral (prochains RDV + contacts)</span>
-            <input class="toggle" type="checkbox" name="side_widget" value="1" {% if side_widget %}checked{% endif %} />
-          </label>
-          <label class="settings-row">
-            <span class="label">Nombre de RDV affichés</span>
-            <input class="input" type="number" name="side_widget_events" min="1" max="30" value="{{ side_widget_events }}" style="max-width:6rem" />
-          </label>
-          <p class="settings-saved muted tiny" hidden>Enregistré</p>
-        </form>
 
         {% if folder_groups.is_empty() %}
         <p class="muted">Aucun dossier listé (compte / config requis).</p>
@@ -305,7 +371,7 @@
         <div class="folder-groups">
           {% for g in folder_groups %}
           <details class="folder-account">
-            <summary>{{ g.account }} <span class="muted tiny">({{ g.folders.len() }} dossiers)</span></summary>
+            <summary>{% if g.account == "__ntfy__" %}Ntfy{% else %}{{ g.account }}{% endif %} <span class="muted tiny">({{ g.folders.len() }} dossiers)</span></summary>
             <form method="post" action="/settings/folders" class="settings-autosave folder-pref-form"
                   hx-post="/settings/folders" hx-trigger="change" hx-swap="none"
                   hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
@@ -347,16 +413,16 @@
               hx-post="/settings/move-defaults" hx-trigger="change delay:200ms" hx-swap="none"
               hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
           {% for d in move_defaults %}
-          <label class="settings-row">
-            <span class="label">{{ d.account }}</span>
+          <div class="move-default-row">
+            <span class="label" title="{{ d.account }}">{{ d.account_label }}</span>
             <input type="hidden" name="account" value="{{ d.account }}" />
-            <select name="folder" class="select w-full">
+            <select name="folder" class="select">
               <option value="">(aucun)</option>
               {% for o in d.options %}
               <option value="{{ o.name }}" {% if o.selected %}selected{% endif %}>{{ o.name }}</option>
               {% endfor %}
             </select>
-          </label>
+          </div>
           {% endfor %}
           <p class="settings-saved muted tiny" hidden>Enregistré</p>
         </form>
@@ -442,13 +508,13 @@
               {% endfor %}
             </select>
           </label>
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="write_cardamum" value="1" />
-            Écrire / écraser <code>cardamum/config.toml</code>
+          <label class="toggle-row">
+            <span>Écrire / écraser <code>cardamum/config.toml</code></span>
+            <input class="toggle" type="checkbox" name="write_cardamum" value="1" />
           </label>
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="import_local" value="1" checked />
-            Importer contacts locaux (abook) vers le cache autocomplete
+          <label class="toggle-row">
+            <span>Importer contacts locaux (abook) vers le cache autocomplete</span>
+            <input class="toggle" type="checkbox" name="import_local" value="1" checked />
           </label>
           <button type="submit" class="btn">Importer contacts</button>
         </form>
@@ -458,27 +524,27 @@
         <h3 class="settings-subhead">Mots de passe CardDAV</h3>
         {% for a in cardamum_accounts %}
         <div class="account-edit mb-2">
-          <form method="post" action="/settings/contacts/password" class="mb-2">
-            <div class="form-row" style="align-items:end">
-              <div>
-                <strong>{{ a.name }}</strong>
-                {% if a.is_default %}<span class="muted tiny">défaut</span>{% endif %}
-                {% if a.has_password %}<span class="ok tiny">mdp défini</span>{% else %}<span class="badge-warn tiny">mdp manquant</span>{% endif %}
-                <div class="muted tiny">{{ a.username }} · {{ a.uri }}</div>
-              </div>
+          <div class="form-row" style="align-items:end">
+            <div>
+              <strong>{{ a.name }}</strong>
+              {% if a.is_default %}<span class="muted tiny">défaut</span>{% endif %}
+              {% if a.has_password %}<span class="ok tiny">mdp défini</span>{% else %}<span class="badge-warn tiny">mdp manquant</span>{% endif %}
+              <div class="muted tiny">{{ a.username }} · {{ a.uri }}</div>
+            </div>
+            <form method="post" action="/settings/contacts/password" class="creds-actions-row" style="flex:1;align-items:end">
               <input type="hidden" name="name" value="{{ a.name }}" />
-              <label class="block">
+              <label class="block" style="flex:1;min-width:10rem">
                 <span class="label">Nouveau mot de passe</span>
                 <input class="input w-full" type="password" name="password" autocomplete="new-password" required />
               </label>
               <button type="submit" class="btn secondary">Enregistrer</button>
-            </div>
-          </form>
-          <form method="post" action="/settings/contacts/delete"
-                onsubmit="return confirm('Supprimer le carnet {{ a.name }} ?');">
-            <input type="hidden" name="name" value="{{ a.name }}" />
-            <button type="submit" class="btn secondary">Supprimer</button>
-          </form>
+            </form>
+            <form method="post" action="/settings/contacts/delete"
+                  onsubmit="return confirm('Supprimer le carnet {{ a.name }} ?');">
+              <input type="hidden" name="name" value="{{ a.name }}" />
+              <button type="submit" class="btn secondary">Supprimer</button>
+            </form>
+          </div>
         </div>
         {% endfor %}
         {% endif %}
@@ -505,9 +571,9 @@
               <input class="input w-full" type="password" name="password" required autocomplete="new-password" />
             </label>
           </div>
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="make_default" value="1" checked />
-            Compte contacts par défaut
+          <label class="toggle-row">
+            <span>Compte contacts par défaut</span>
+            <input class="toggle" type="checkbox" name="make_default" value="1" checked />
           </label>
           <button type="submit" class="btn">Enregistrer CardDAV</button>
         </form>
@@ -543,13 +609,13 @@
               {% endfor %}
             </select>
           </label>
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="from_mail" value="1" />
-            Proposer CalDAV depuis les comptes mail (si pas de CalDAV dans TB)
+          <label class="toggle-row">
+            <span>Proposer CalDAV depuis les comptes mail (si pas de CalDAV dans TB)</span>
+            <input class="toggle" type="checkbox" name="from_mail" value="1" />
           </label>
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="write" value="1" />
-            Écrire / écraser <code>calendula/config.toml</code>
+          <label class="toggle-row">
+            <span>Écrire / écraser <code>calendula/config.toml</code></span>
+            <input class="toggle" type="checkbox" name="write" value="1" />
           </label>
           <button type="submit" class="btn">Importer agendas / prévisualiser</button>
         </form>
@@ -559,27 +625,27 @@
         <h3 class="settings-subhead">Mots de passe CalDAV</h3>
         {% for a in calendula_accounts %}
         <div class="account-edit mb-2">
-          <form method="post" action="/settings/calendar/password" class="mb-2">
-            <div class="form-row" style="align-items:end">
-              <div>
-                <strong>{{ a.name }}</strong>
-                {% if a.is_default %}<span class="muted tiny">défaut</span>{% endif %}
-                {% if a.has_password %}<span class="ok tiny">mdp défini</span>{% else %}<span class="badge-warn tiny">mdp manquant</span>{% endif %}
-                <div class="muted tiny">{{ a.username }} · {{ a.server }}</div>
-              </div>
+          <div class="form-row" style="align-items:end">
+            <div>
+              <strong>{{ a.name }}</strong>
+              {% if a.is_default %}<span class="muted tiny">défaut</span>{% endif %}
+              {% if a.has_password %}<span class="ok tiny">mdp défini</span>{% else %}<span class="badge-warn tiny">mdp manquant</span>{% endif %}
+              <div class="muted tiny">{{ a.username }} · {{ a.server }}</div>
+            </div>
+            <form method="post" action="/settings/calendar/password" class="creds-actions-row" style="flex:1;align-items:end">
               <input type="hidden" name="name" value="{{ a.name }}" />
-              <label class="block">
+              <label class="block" style="flex:1;min-width:10rem">
                 <span class="label">Nouveau mot de passe</span>
                 <input class="input w-full" type="password" name="password" autocomplete="new-password" required />
               </label>
               <button type="submit" class="btn secondary">Enregistrer</button>
-            </div>
-          </form>
-          <form method="post" action="/settings/calendar/delete"
-                onsubmit="return confirm('Supprimer le calendrier {{ a.name }} ?');">
-            <input type="hidden" name="name" value="{{ a.name }}" />
-            <button type="submit" class="btn secondary">Supprimer</button>
-          </form>
+            </form>
+            <form method="post" action="/settings/calendar/delete"
+                  onsubmit="return confirm('Supprimer le calendrier {{ a.name }} ?');">
+              <input type="hidden" name="name" value="{{ a.name }}" />
+              <button type="submit" class="btn secondary">Supprimer</button>
+            </form>
+          </div>
         </div>
         {% endfor %}
         {% endif %}
@@ -606,9 +672,9 @@
               <input class="input w-full" type="password" name="password" required autocomplete="new-password" />
             </label>
           </div>
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="make_default" value="1" checked />
-            Compte calendrier par défaut
+          <label class="toggle-row">
+            <span>Compte calendrier par défaut</span>
+            <input class="toggle" type="checkbox" name="make_default" value="1" checked />
           </label>
           <button type="submit" class="btn">Enregistrer CalDAV</button>
         </form>
@@ -764,11 +830,48 @@
         {% endif %}
 
         <h3 class="settings-subhead">Plugin NTFY (intégré)</h3>
-        <p class="muted text-sm mb-2">Push hors navigateur pour les dossiers surveillés.</p>
-        <form method="post" action="/settings/ntfy" class="space-y-3">
+        <p class="muted text-sm mb-2">
+          Push hors navigateur + boîtes virtuelles dans la barre latérale.
+          Fusion / ordre : section <a href="#accounts">Comptes</a>. Apparence : même section.
+        </p>
+
+        {% if !ntfy_sources.is_empty() %}
+        <div class="ntfy-sources mb-4">
+          {% for s in ntfy_sources %}
+          <div class="ntfy-source-card">
+            <form method="post" action="/settings/ntfy/update" class="ntfy-source-row">
+              <input type="hidden" name="id" value="{{ s.id }}" />
+              <label class="toggle-row" style="margin:0">
+                <span class="muted tiny">Actif</span>
+                <input class="toggle" type="checkbox" name="enabled" value="1" {% if s.enabled %}checked{% endif %} />
+              </label>
+              <label class="block" style="min-width:8rem;flex:1">
+                <span class="label">Serveur</span>
+                <input class="input w-full" name="server" value="{{ s.server }}" />
+              </label>
+              <label class="block" style="min-width:8rem;flex:1">
+                <span class="label">Topic</span>
+                <input class="input w-full" name="topic" value="{{ s.topic }}" />
+              </label>
+              <div class="creds-actions-row">
+                <button type="submit" class="btn secondary">Enregistrer</button>
+              </div>
+            </form>
+            <form method="post" action="/settings/ntfy/delete"
+                  onsubmit="return confirm('Supprimer la source {{ s.topic }} ?');">
+              <input type="hidden" name="id" value="{{ s.id }}" />
+              <button type="submit" class="btn secondary">Supprimer</button>
+            </form>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        <form method="post" action="/settings/ntfy/add" class="space-y-3">
+          <h4 class="settings-subhead" style="margin-top:0">Ajouter une source</h4>
           <label class="toggle-row">
-            <span>Activer NTFY</span>
-            <input class="toggle" type="checkbox" name="enabled" value="1" {% if ntfy_enabled %}checked{% endif %} />
+            <span>Activer dès l’ajout</span>
+            <input class="toggle" type="checkbox" name="enabled" value="1" checked />
           </label>
           <label class="block">
             <span class="label">Serveur</span>
@@ -776,9 +879,9 @@
           </label>
           <label class="block">
             <span class="label">Topic</span>
-            <input class="input w-full" name="topic" value="{{ ntfy_topic }}" placeholder="himaweb-perso" />
+            <input class="input w-full" name="topic" value="" placeholder="himaweb-perso" required />
           </label>
-          <button type="submit" class="btn">Enregistrer NTFY</button>
+          <button type="submit" class="btn">Ajouter NTFY</button>
         </form>
       </section>
 
@@ -848,6 +951,32 @@
           <button type="submit" class="btn">Enregistrer IA</button>
         </form>
         {% if let Some(msg) = ai_message %}
+        <div class="offline-strip mt-3">{{ msg }}</div>
+        {% endif %}
+      </section>
+
+      <p class="settings-group-label settings-span" id="backup">Sauvegarde</p>
+      <section class="settings-card settings-span">
+        <h2>Exporter / importer la config</h2>
+        <p class="muted text-sm mb-3">
+          Archive ZIP : préférences HimaWeb, comptes Himalaya / Cardamum / Calendula, Ortie (tokens inclus).
+          <strong>Contient des secrets</strong> (mots de passe, clés API) — à stocker en lieu sûr.
+        </p>
+        <div class="btn-row" style="gap:0.75rem;flex-wrap:wrap">
+          <a class="btn" href="/settings/backup/export">
+            <i data-lucide="download"></i> Exporter
+          </a>
+        </div>
+        <form method="post" action="/settings/backup/import" enctype="multipart/form-data" class="mt-4 space-y-3">
+          <label class="block">
+            <span class="label">Importer un ZIP</span>
+            <input class="input w-full" type="file" name="backup" accept=".zip,application/zip" required />
+          </label>
+          <button type="submit" class="btn secondary">
+            <i data-lucide="upload"></i> Importer
+          </button>
+        </form>
+        {% if let Some(msg) = backup_message %}
         <div class="offline-strip mt-3">{{ msg }}</div>
         {% endif %}
       </section>

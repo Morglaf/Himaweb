@@ -27,8 +27,7 @@ struct ShellTemplate {
     pub active_tab: String,
     pub offline: bool,
     pub himalaya_available: bool,
-    pub calendula_available: bool,
-    pub cardamum_available: bool,
+
     pub theme: String,
     pub layout: String,
     pub topbar_mode: String,
@@ -203,10 +202,10 @@ async fn generate_mail(
 ) -> Result<MailDraft, String> {
     let system = match kind {
         Some("reply") => {
-            "Tu rédiges une réponse à un email. Réponds en JSON strict uniquement: {\"to\",\"subject\",\"body\"}. Pas de markdown."
+            "Tu aides à rédiger / corriger un email (réponse). Le contexte contient le brouillon actuel (À, Cc, Cci, Reply-To, Sujet, Corps). Applique la consigne (corriger, reformuler, compléter…). Réponds en JSON strict uniquement: {\"to\",\"subject\",\"body\"}. Ne vide pas un champ déjà rempli sauf demande explicite. Pas de markdown."
         }
         _ => {
-            "Tu rédiges un email. Réponds en JSON strict uniquement: {\"to\",\"subject\",\"body\"}. Pas de markdown."
+            "Tu aides à rédiger / corriger un email. Le contexte contient le brouillon actuel (À, Cc, Cci, Reply-To, Sujet, Corps). Applique la consigne (corriger, reformuler, compléter…). Réponds en JSON strict uniquement: {\"to\",\"subject\",\"body\"}. Ne vide pas un champ déjà rempli sauf demande explicite. Pas de markdown."
         }
     };
     let user = format!(
@@ -478,8 +477,7 @@ async fn render_shell(state: &AppState, inner: AiTemplate) -> axum::response::Re
         active_tab: "ai".into(),
         offline: false,
         himalaya_available: state.himalaya_available,
-        calendula_available: state.calendula_available,
-        cardamum_available: state.cardamum_available,
+
         theme,
         layout,
         topbar_mode: state.topbar_mode().await,

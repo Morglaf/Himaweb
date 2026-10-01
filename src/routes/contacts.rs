@@ -27,8 +27,7 @@ struct ShellTemplate {
     pub active_tab: String,
     pub offline: bool,
     pub himalaya_available: bool,
-    pub calendula_available: bool,
-    pub cardamum_available: bool,
+
     pub theme: String,
     pub layout: String,
     pub topbar_mode: String,
@@ -42,7 +41,6 @@ struct ShellTemplate {
 struct ContactsTemplate {
     pub contacts: Vec<ContactRow>,
     pub books: Vec<BookOpt>,
-    pub current_book: String,
     pub current_book_enc: String,
     pub query: String,
     pub query_enc: String,
@@ -89,7 +87,7 @@ async fn contacts_page(
     let inner = ContactsTemplate {
         contacts,
         books,
-        current_book: book,
+
         current_book_enc,
         query,
         query_enc,
@@ -109,8 +107,7 @@ async fn contacts_page(
         active_tab: "contacts".into(),
         offline: false,
         himalaya_available: state.himalaya_available,
-        calendula_available: state.calendula_available,
-        cardamum_available: state.cardamum_available,
+
         theme,
         layout,
         topbar_mode: state.topbar_mode().await,

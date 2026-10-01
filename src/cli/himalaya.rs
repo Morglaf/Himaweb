@@ -68,9 +68,6 @@ impl HimalayaClient {
         Self { bin, runner }
     }
 
-    pub fn bin(&self) -> &str {
-        &self.bin
-    }
 
     async fn json(&self, args: &[&str]) -> CliResult<Value> {
         self.runner.run_json(&self.bin, args).await

@@ -10,7 +10,8 @@
        @click.stop
        :class="'is-' + windowMode">
     <div class="modal-head" @dblclick="toggleMinimize()">
-      <h2 class="font-display text-xl compose-title" @click="windowMode === 'minimized' && setWindow('docked')">{{ title }}</h2>
+      <h2 class="font-display text-xl compose-title" @click="windowMode === 'minimized' && setWindow('docked')"
+          x-text="displayTitle">{{ title }}</h2>
       <div class="compose-window-actions">
         <button type="button" class="icon-btn" title="Ancrer en bas" @click="setWindow('docked')" x-show="windowMode === 'normal'">
           <i data-lucide="panel-bottom"></i>
@@ -36,35 +37,62 @@
       <script type="application/json" id="compose-boot">{{ compose_boot|safe }}</script>
       <textarea id="compose-body-seed" class="sr-only" readonly>{{ body }}</textarea>
 
-      <template x-if="ai">
-        <div class="ai-fill-box mb-3">
-          <button type="button" class="ai-fill-toggle" @click="aiOpen = !aiOpen; $nextTick(() => lucide.createIcons())" :title="aiOpen ? 'Replier l’IA' : 'Ouvrir l’IA'">
-            <i data-lucide="sparkles"></i>
-            <span x-text="aiOpen ? 'Assistant IA' : 'IA'"></span>
-            <i data-lucide="chevron-up" x-show="aiOpen"></i>
-            <i data-lucide="chevron-down" x-show="!aiOpen"></i>
-          </button>
-          <div class="ai-fill-body" x-show="aiOpen" x-cloak>
-            <label class="compose-field">
-              <span class="label">Décrire avec l’IA</span>
-              <textarea class="input w-full" rows="2" x-model="aiPrompt"
-                        placeholder="Ex. : réponds poliment et propose un créneau mardi matin"></textarea>
-            </label>
-            <button type="button" class="btn secondary mt-2" @click="fillAi()" :disabled="aiBusy"
-                    x-text="aiBusy ? 'Génération…' : 'Remplir le message'"></button>
-            <p class="muted tiny mt-1" x-show="aiError" x-text="aiError"></p>
-          </div>
-        </div>
-      </template>
-
       <form method="post" action="/compose/send" class="compose-form" enctype="multipart/form-data"
             @submit="onSubmit($event)">
         <input type="hidden" name="account" :value="account" />
         <input type="hidden" name="html" :value="bodyMode === 'html' ? '1' : '0'" />
         <input type="hidden" name="body_html" :value="bodyHtml" />
 
-        <div class="compose-from-row">
-          <span class="label">Envoyer depuis</span>
+        <template x-if="ai">
+          <div class="compose-ai-row">
+            <input class="input compose-ai-input" type="text" x-model="aiPrompt"
+                   placeholder="prompt…"
+                   @keydown.enter.prevent="fillAi()" />
+            <button type="button" class="icon-btn compose-ai-run" @click="fillAi()" :disabled="aiBusy"
+                    :title="aiBusy ? 'Génération…' : 'Générer avec l’IA'">
+              <i data-lucide="sparkles"></i>
+            </button>
+            <p class="muted tiny compose-ai-error" x-show="aiError" x-text="aiError"></p>
+          </div>
+        </template>
+
+        <div class="compose-toolbar" :data-mode="toolbarMode">
+          <button type="button" class="compose-tool" :class="showCc && 'is-active'"
+                  @click="showCc = !showCc; $nextTick(() => lucide.createIcons())"
+                  title="Copie à">
+            <i data-lucide="users"></i>
+            <span class="compose-tool-label">Copie à</span>
+          </button>
+          <button type="button" class="compose-tool" :class="showBcc && 'is-active'"
+                  @click="showBcc = !showBcc; $nextTick(() => lucide.createIcons())"
+                  title="Copie cachée à">
+            <i data-lucide="user-round-cog"></i>
+            <span class="compose-tool-label">Copie cachée à</span>
+          </button>
+          <button type="button" class="compose-tool" :class="showReplyTo && 'is-active'"
+                  @click="showReplyTo = !showReplyTo; $nextTick(() => lucide.createIcons())"
+                  title="Répondre à">
+            <i data-lucide="reply"></i>
+            <span class="compose-tool-label">Répondre à</span>
+          </button>
+          <button type="button" class="compose-tool"
+                  @click="setBodyMode(bodyMode === 'html' ? 'plain' : 'html')"
+                  :title="bodyMode === 'html' ? 'Passer en texte brut' : 'Passer en HTML'">
+            <i :data-lucide="bodyMode === 'html' ? 'file-code' : 'file-text'"></i>
+            <span class="compose-tool-label" x-text="bodyMode === 'html' ? 'HTML' : 'Texte brut'"></span>
+          </button>
+          <button type="button" class="compose-tool"
+                  @click="$refs.attachInput && $refs.attachInput.click()"
+                  title="Pièce jointe">
+            <i data-lucide="paperclip"></i>
+            <span class="compose-tool-label">Pièce jointe</span>
+          </button>
+          <input class="sr-only" type="file" name="attachments" multiple x-ref="attachInput"
+                 @change="onFilesChange($event)" id="compose-attach-input" />
+        </div>
+
+        <div class="compose-inline-row">
+          <span class="label">De :</span>
           <div class="from-dropdown" @click.outside="fromOpen = false">
             <button type="button" class="from-trigger" @click="fromOpen = !fromOpen; $nextTick(() => lucide.createIcons())">
               <span class="acct-ico" :style="'color:' + (selectedAccount && selectedAccount.color ? selectedAccount.color : 'var(--accent)')">
@@ -89,9 +117,9 @@
           </div>
         </div>
 
-        <label class="compose-field">
+        <div class="compose-inline-row">
           <span class="label">À</span>
-          <div class="suggest-wrap">
+          <div class="suggest-wrap grow">
             <input class="input w-full" type="text" name="to" x-model="to" @input.debounce.200ms="suggest('to')"
                    autocomplete="off" required />
             <ul class="suggest" x-show="suggestions.to.length > 0" x-cloak>
@@ -100,69 +128,67 @@
               </template>
             </ul>
           </div>
-        </label>
-
-        <div class="btn-row">
-          <button type="button" class="linkish" @click="showCc = !showCc">Cc / Cci</button>
         </div>
 
-        <div x-show="showCc || cc || bcc" x-cloak class="compose-cc-block">
-          <label class="compose-field">
-            <span class="label">Cc</span>
-            <div class="suggest-wrap">
-              <input class="input w-full" type="text" name="cc" x-model="cc" @input.debounce.200ms="suggest('cc')"
-                     autocomplete="off" />
-              <ul class="suggest" x-show="suggestions.cc.length > 0" x-cloak>
-                <template x-for="item in suggestions.cc" :key="item.email">
-                  <li @mousedown.prevent="pick('cc', item)" x-text="item.label"></li>
-                </template>
-              </ul>
-            </div>
-          </label>
-          <label class="compose-field">
-            <span class="label">Cci</span>
-            <div class="suggest-wrap">
-              <input class="input w-full" type="text" name="bcc" x-model="bcc" @input.debounce.200ms="suggest('bcc')"
-                     autocomplete="off" />
-              <ul class="suggest" x-show="suggestions.bcc.length > 0" x-cloak>
-                <template x-for="item in suggestions.bcc" :key="item.email">
-                  <li @mousedown.prevent="pick('bcc', item)" x-text="item.label"></li>
-                </template>
-              </ul>
-            </div>
-          </label>
+        <div x-show="showCc || cc" x-cloak class="compose-inline-row">
+          <span class="label">Cc</span>
+          <div class="suggest-wrap grow">
+            <input class="input w-full" type="text" name="cc" x-model="cc" @input.debounce.200ms="suggest('cc')"
+                   autocomplete="off" />
+            <ul class="suggest" x-show="suggestions.cc.length > 0" x-cloak>
+              <template x-for="item in suggestions.cc" :key="item.email">
+                <li @mousedown.prevent="pick('cc', item)" x-text="item.label"></li>
+              </template>
+            </ul>
+          </div>
         </div>
 
-        <label class="compose-field">
+        <div x-show="showBcc || bcc" x-cloak class="compose-inline-row">
+          <span class="label">Cci</span>
+          <div class="suggest-wrap grow">
+            <input class="input w-full" type="text" name="bcc" x-model="bcc" @input.debounce.200ms="suggest('bcc')"
+                   autocomplete="off" />
+            <ul class="suggest" x-show="suggestions.bcc.length > 0" x-cloak>
+              <template x-for="item in suggestions.bcc" :key="item.email">
+                <li @mousedown.prevent="pick('bcc', item)" x-text="item.label"></li>
+              </template>
+            </ul>
+          </div>
+        </div>
+
+        <div x-show="showReplyTo || replyTo" x-cloak class="compose-inline-row">
+          <span class="label">Répondre à</span>
+          <div class="suggest-wrap grow">
+            <input class="input w-full" type="text" name="reply_to" x-model="replyTo"
+                   autocomplete="off" placeholder="adresse@exemple.com" />
+          </div>
+        </div>
+
+        <div class="compose-inline-row">
           <span class="label">Sujet</span>
-          <input class="input w-full" type="text" name="subject" x-model="subject" />
-        </label>
+          <input class="input w-full grow" type="text" name="subject" x-model="subject" />
+        </div>
 
         <div class="compose-field">
-          <div class="compose-body-head">
-            <span class="label">Message</span>
-            <div class="body-mode-toggle" role="group" aria-label="Format du message">
-              <button type="button" class="mode-btn" :class="bodyMode === 'plain' && 'is-active'" @click="setBodyMode('plain')">Texte brut</button>
-              <button type="button" class="mode-btn" :class="bodyMode === 'html' && 'is-active'" @click="setBodyMode('html')">HTML</button>
-            </div>
-          </div>
           <textarea class="input w-full compose-plain" name="body" rows="10" x-model="body"
-                    x-show="bodyMode === 'plain'" x-cloak></textarea>
+                    x-show="bodyMode === 'plain'" x-cloak placeholder="Message…"></textarea>
           <div x-show="bodyMode === 'html'" x-cloak class="compose-quill-wrap">
             <div id="compose-quill" class="compose-quill"></div>
           </div>
         </div>
 
-        <label class="compose-field">
-          <span class="label">Pièces jointes</span>
-          <input class="input w-full" type="file" name="attachments" multiple
-                 @change="onFilesChange($event)" />
-          <ul class="compose-attach-list muted tiny" x-show="attachNames.length" x-cloak>
-            <template x-for="n in attachNames" :key="n">
-              <li><i data-lucide="paperclip"></i> <span x-text="n"></span></li>
-            </template>
-          </ul>
-        </label>
+        <ul class="compose-attach-chips" x-show="attachNames.length" x-cloak>
+          <template x-for="(n, idx) in attachNames" :key="n + '-' + idx">
+            <li class="compose-attach-chip">
+              <i data-lucide="paperclip"></i>
+              <span x-text="n"></span>
+              <button type="button" class="compose-attach-remove" title="Retirer"
+                      @click="removeAttach(idx)">
+                <i data-lucide="x"></i>
+              </button>
+            </li>
+          </template>
+        </ul>
 
         <div class="btn-row compose-actions">
           <button type="submit" class="btn" name="action" value="send">Envoyer</button>

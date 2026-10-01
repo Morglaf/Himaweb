@@ -9,8 +9,6 @@ use crate::cli::himalaya::{Envelope, Mailbox, MessageView};
 pub enum CacheError {
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    #[error("{0}")]
-    Message(String),
 }
 
 pub struct Cache {
@@ -95,17 +93,6 @@ impl Cache {
         Ok(())
     }
 
-    pub fn get_meta(&self, key: &str) -> Result<Option<String>, CacheError> {
-        let v = self
-            .conn
-            .query_row(
-                "SELECT value FROM meta WHERE key = ?1",
-                params![key],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(v)
-    }
 
     pub fn save_mailboxes(&self, boxes: &[Mailbox]) -> Result<(), CacheError> {
         let now = chrono::Utc::now().to_rfc3339();
@@ -345,33 +332,6 @@ impl Cache {
         Ok(rows.filter_map(Result::ok).collect())
     }
 
-    pub fn replace_calendar_events(
-        &self,
-        calendar_id: &str,
-        events: &[(String, String, String, String, String)],
-    ) -> Result<(), CacheError> {
-        let tx = self.conn.unchecked_transaction()?;
-        tx.execute(
-            "DELETE FROM cal_events WHERE calendar_id = ?1",
-            params![calendar_id],
-        )?;
-        {
-            let mut stmt = tx.prepare(
-                "INSERT INTO cal_events(calendar_id, id, summary, start_raw, end_raw, description)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(calendar_id, id) DO UPDATE SET
-                   summary = excluded.summary,
-                   start_raw = excluded.start_raw,
-                   end_raw = excluded.end_raw,
-                   description = excluded.description",
-            )?;
-            for (id, summary, start, end, desc) in events {
-                stmt.execute(params![calendar_id, id, summary, start, end, desc])?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
 
     /// Remplace uniquement les événements du mois indiqué (préserve les autres mois en cache).
     pub fn replace_calendar_events_in_month(

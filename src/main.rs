@@ -7,6 +7,7 @@ mod account_colors;
 mod cache;
 mod calendar_import;
 mod cli;
+mod config_backup;
 mod config_fix;
 mod contacts_import;
 mod form_util;
@@ -166,6 +167,11 @@ async fn main() {
 
     tracing::info!("static assets: embarqués dans le binaire");
 
+    let open_browser = {
+        let prefs = state.prefs.lock().await;
+        prefs.open_browser_on_start
+    };
+
     let app = routes::router()
         .route("/static/app.css", get(serve_app_css))
         .route("/static/app.js", get(serve_app_js))
@@ -176,7 +182,11 @@ async fn main() {
     let url = format!("http://{addr}");
     tracing::info!("HimaWeb écoute sur {url}");
     tray::spawn(url.clone());
-    let _ = open::that(&url);
+    if open_browser {
+        let _ = open::that(&url);
+    } else {
+        tracing::info!("ouverture navigateur désactivée (préférence)");
+    }
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await

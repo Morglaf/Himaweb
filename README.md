@@ -209,14 +209,36 @@ install.ps1     # installateur Windows (GitHub Releases)
 
 ## Publier une release
 
-Sur un commit prêt :
+Après de grosses modifs (sur `master`, avec `gh` connecté) :
 
-```sh
-git tag v0.1.0
-git push origin v0.1.0
+```powershell
+# Tout committer d’abord, puis bump patch (0.1.0 → 0.1.1) + tag + push :
+.\scripts\release.ps1
+
+# Ou inclure les fichiers encore non commités dans le commit de release :
+.\scripts\release.ps1 -IncludeChanges
+
+# Minor / major / version exacte :
+.\scripts\release.ps1 -Bump minor
+.\scripts\release.ps1 -Version 0.2.0
+
+# Attendre la fin de la CI :
+.\scripts\release.ps1 -Wait
+
+# Simulation :
+.\scripts\release.ps1 -DryRun
 ```
 
-Le workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) construit les binaires (Linux x64/arm64, macOS x64/arm64, Windows x64) et les attache à la release GitHub. `install.sh` / `install.ps1` pointent vers `…/releases/latest/download/…`.
+Équivalent manuel :
+
+```sh
+# 1. bump version dans Cargo.toml, commit
+git tag v0.1.1
+git push origin master
+git push origin v0.1.1
+```
+
+Le workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) construit les binaires (Linux x64/arm64, macOS x64/arm64, Windows x64) et les attache à la release GitHub. `install.sh` / `install.ps1` pointent vers `…/releases/latest/download/…` — **attendez que la CI soit verte** avant de réinstaller.
 
 ## Roadmap
 

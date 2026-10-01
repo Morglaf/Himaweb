@@ -42,7 +42,7 @@
           <button class="icon-btn" type="submit" title="Marquer non lu"><i data-lucide="mail"></i></button>
           {% endif %}
         </form>
-        <form class="inline" hx-post="/partials/message/delete" hx-confirm="Supprimer ce message ?" hx-target="#message-pane" hx-swap="innerHTML">
+        <form class="inline" hx-post="/partials/message/delete" hx-target="#message-pane" hx-swap="innerHTML">
           <input type="hidden" name="mailbox" value="{{ mailbox }}" />
           <input type="hidden" name="id" value="{{ m.id }}" />
           <input type="hidden" name="account" value="{{ account }}" />

@@ -69,6 +69,7 @@ pub struct SearchHit {
     pub mailbox_enc: String,
     pub mailbox_label: String,
     pub color: String,
+    pub message_id: String,
 }
 
 const DEFAULT_FOLDERS: &[&str] = &["Inbox", "Sent"];
@@ -249,8 +250,7 @@ async fn search_page(
             active_tab: "search".into(),
             offline: false,
             himalaya_available: state.himalaya_available,
-            calendula_available: state.calendula_available,
-            cardamum_available: state.cardamum_available,
+
             theme,
             layout,
             topbar_mode: state.topbar_mode().await,
@@ -308,6 +308,7 @@ fn hit_from_envelope(
         mailbox_enc: urlencoding::encode(mailbox).into_owned(),
         mailbox_label: mailbox_label(mailbox),
         color: color.to_string(),
+        message_id: e.message_id.clone(),
     }
 }
 

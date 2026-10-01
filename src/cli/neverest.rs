@@ -11,9 +11,6 @@ impl NeverestClient {
         Self { bin, runner }
     }
 
-    pub fn bin(&self) -> &str {
-        &self.bin
-    }
 
     /// Lance une synchronisation (tente `sync` puis `synchronize`).
     pub async fn sync(&self, account: Option<&str>) -> CliResult<String> {

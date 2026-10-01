@@ -20,6 +20,7 @@
 <button type="button" class="envelope {% if e.unread %}unread{% endif %}"
         draggable="true"
         data-id="{{ e.id }}" data-account="{{ e.account }}" data-mailbox="{{ e.mailbox }}"
+        data-message-id="{{ e.message_id }}"
         style="{% if !e.color.is_empty() %}border-left: 3px solid {{ e.color }};{% endif %}"
         hx-get="/partials/message?mailbox={{ e.mailbox_enc }}&id={{ e.id }}{% if !e.account.is_empty() %}&account={{ e.account_enc }}{% endif %}"
         hx-target="#message-pane"

@@ -8,12 +8,9 @@ use crate::prefs;
 
 #[derive(Debug, Clone)]
 pub struct ThunderbirdAddressBook {
-    pub id: String,
     pub name: String,
-    pub filename: String,
     pub carddav_url: String,
     pub username: String,
-    pub dir_type: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -52,18 +49,10 @@ pub fn parse_address_books(prefs_path: &Path) -> Result<Vec<ThunderbirdAddressBo
             continue;
         }
         let prefix = format!("ldap_2.servers.{id}");
-        let dir_type = prefs
-            .get(&format!("{prefix}.dirType"))
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
         let name = prefs
             .get(&format!("{prefix}.description"))
             .cloned()
             .unwrap_or_else(|| id.clone());
-        let filename = prefs
-            .get(&format!("{prefix}.filename"))
-            .cloned()
-            .unwrap_or_default();
         let carddav_url = prefs
             .get(&format!("{prefix}.carddav.url"))
             .cloned()
@@ -73,12 +62,9 @@ pub fn parse_address_books(prefs_path: &Path) -> Result<Vec<ThunderbirdAddressBo
             .cloned()
             .unwrap_or_default();
         out.push(ThunderbirdAddressBook {
-            id,
             name,
-            filename,
             carddav_url,
             username,
-            dir_type,
         });
     }
     Ok(out)

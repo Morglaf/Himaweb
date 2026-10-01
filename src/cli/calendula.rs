@@ -29,7 +29,6 @@ pub struct CalendarEvent {
 #[derive(Debug, Clone)]
 pub struct CalendulaAccount {
     pub name: String,
-    pub is_default: bool,
 }
 
 impl CalendulaClient {
@@ -59,10 +58,6 @@ impl CalendulaClient {
                     .and_then(|x| x.as_str())
                     .unwrap_or("default")
                     .to_string(),
-                is_default: item
-                    .get("default")
-                    .and_then(|x| x.as_bool())
-                    .unwrap_or(false),
             })
             .collect()
     }
@@ -249,30 +244,6 @@ impl CalendulaClient {
             .collect()
     }
 
-    pub async fn read_event(&self, calendar_ref: &str, event_id: &str) -> CliResult<String> {
-        let (account, cal_id) = split_cal_ref(calendar_ref);
-        let mut args = Vec::new();
-        if let Some(a) = account.as_deref() {
-            args.push("--account".into());
-            args.push(a.to_string());
-        }
-        args.extend([
-            "event".into(),
-            "read".into(),
-            "-k".into(),
-            cal_id,
-            event_id.to_string(),
-        ]);
-        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let v = self.runner.run_json(&self.bin, &refs).await?;
-        Ok(v
-            .get("contents")
-            .or_else(|| v.get("content"))
-            .or_else(|| v.get("ical"))
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string())
-    }
 
     pub async fn create_event(&self, calendar_ref: &str, ical: &[u8]) -> CliResult<String> {
         let (account, cal_id) = split_cal_ref(calendar_ref);

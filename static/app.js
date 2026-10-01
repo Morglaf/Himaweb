@@ -65,9 +65,13 @@ function composeForm() {
     aiOpen: false,
     kind: 'compose',
     showCc: false,
+    showBcc: false,
+    showReplyTo: false,
+    toolbarMode: 'icon-text',
     to: '',
     cc: '',
     bcc: '',
+    replyTo: '',
     subject: '',
     body: '',
     bodyHtml: '',
@@ -80,11 +84,17 @@ function composeForm() {
     aiError: '',
     draftBusy: false,
     attachNames: [],
+    attachFiles: [],
     windowMode: 'normal',
+    baseTitle: 'Nouveau message',
     quill: null,
     suggestions: { to: [], cc: [], bcc: [] },
     get selectedAccount() {
       return this.accounts.find((a) => a.name === this.account) || this.accounts[0] || null;
+    },
+    get displayTitle() {
+      const s = (this.subject || '').trim();
+      return s || this.baseTitle;
     },
     boot() {
       try {
@@ -104,13 +114,21 @@ function composeForm() {
           this.cardamum = !!opts.cardamum;
           this.ai = !!opts.ai;
           this.kind = opts.kind || 'compose';
+          this.baseTitle = opts.title || 'Nouveau message';
+          this.toolbarMode =
+            opts.toolbarMode === 'icon' || opts.toolbarMode === 'text' || opts.toolbarMode === 'icon-text'
+              ? opts.toolbarMode
+              : 'icon-text';
           this.to = opts.to || '';
           this.cc = opts.cc || '';
           this.bcc = opts.bcc || '';
+          this.replyTo = opts.replyTo || '';
           this.subject = opts.subject || '';
           this.accounts = opts.accounts || [];
           this.account = opts.account || (this.accounts[0] && this.accounts[0].name) || '';
-          this.showCc = !!(this.cc || this.bcc);
+          this.showCc = !!this.cc;
+          this.showBcc = !!this.bcc;
+          this.showReplyTo = !!this.replyTo;
         }
       } catch (_) {}
       const seed = document.getElementById('compose-body-seed');
@@ -136,15 +154,41 @@ function composeForm() {
         this.$nextTick(() => {
           this.destroyQuill();
           this.initQuill();
+          if (window.lucide) lucide.createIcons();
         });
       } else {
         this.syncPlainFromQuill();
         this.bodyMode = 'plain';
         this.destroyQuill();
+        this.$nextTick(() => {
+          if (window.lucide) lucide.createIcons();
+        });
       }
       try {
         sessionStorage.setItem('himaweb-compose-body-mode', this.bodyMode);
       } catch (_) {}
+    },
+    currentBodyText() {
+      if (this.bodyMode === 'html') {
+        if (this.quill) {
+          return (this.quill.getText() || '').replace(/\n$/, '').trim();
+        }
+        const tmp = document.createElement('div');
+        tmp.innerHTML = this.bodyHtml || '';
+        return ((tmp.innerText || tmp.textContent || '') + '').trim();
+      }
+      return (this.body || '').trim();
+    },
+    draftContext() {
+      const lines = [];
+      if (this.to) lines.push('À: ' + this.to);
+      if (this.cc) lines.push('Cc: ' + this.cc);
+      if (this.bcc) lines.push('Cci: ' + this.bcc);
+      if (this.replyTo) lines.push('Reply-To: ' + this.replyTo);
+      if (this.subject) lines.push('Sujet: ' + this.subject);
+      const body = this.currentBodyText();
+      if (body) lines.push('Corps:\n' + body);
+      return lines.join('\n\n') || '(brouillon vide)';
     },
     syncHtmlFromPlain() {
       const plain = this.body || '';
@@ -237,8 +281,29 @@ function composeForm() {
       }
     },
     onFilesChange(ev) {
-      const files = (ev.target && ev.target.files) || [];
-      this.attachNames = [...files].map((f) => f.name);
+      const incoming = [...((ev.target && ev.target.files) || [])];
+      for (const f of incoming) {
+        const key = `${f.name}\0${f.size}\0${f.lastModified}`;
+        const exists = this.attachFiles.some(
+          (x) => `${x.name}\0${x.size}\0${x.lastModified}` === key
+        );
+        if (!exists) this.attachFiles.push(f);
+      }
+      this.syncAttachInput();
+    },
+    removeAttach(idx) {
+      if (idx < 0 || idx >= this.attachFiles.length) return;
+      this.attachFiles.splice(idx, 1);
+      this.syncAttachInput();
+    },
+    syncAttachInput() {
+      this.attachNames = this.attachFiles.map((f) => f.name);
+      const input = this.$refs.attachInput;
+      if (input) {
+        const dt = new DataTransfer();
+        this.attachFiles.forEach((f) => dt.items.add(f));
+        input.files = dt.files;
+      }
       this.$nextTick(() => {
         if (window.lucide) lucide.createIcons();
       });
@@ -297,7 +362,7 @@ function composeForm() {
       if (!this.ai || this.aiBusy) return;
       const prompt = (this.aiPrompt || '').trim();
       if (!prompt) {
-        this.aiError = 'Décrivez ce que vous voulez écrire.';
+        this.aiError = 'Saisissez un prompt…';
         return;
       }
       this.aiBusy = true;
@@ -309,7 +374,7 @@ function composeForm() {
           body: JSON.stringify({
             prompt,
             kind: this.kind,
-            context: [this.subject, this.body].filter(Boolean).join('\n\n'),
+            context: this.draftContext(),
           }),
         });
         const data = await res.json();
@@ -483,6 +548,81 @@ async function loadLucideIconNames() {
   return window.__lucideIconNames;
 }
 
+function accountOrderList(boot) {
+  const data = boot && typeof boot === 'object' ? boot : {};
+  return {
+    items: Array.isArray(data.items) ? data.items.slice() : [],
+    selected: data.selected ?? '__all__',
+    ntfyMerged: !!data.ntfyMerged,
+    ntfySources: Array.isArray(data.ntfySources) ? data.ntfySources : [],
+    ntfyMergedItem: data.ntfyMergedItem || {
+      id: '__ntfy__',
+      label: 'Ntfy',
+      icon: 'bell',
+      color: '#0ea5e9',
+      kind: 'ntfy',
+    },
+    dragFrom: null,
+    get orderValue() {
+      return this.items.map((i) => i.id).join(', ');
+    },
+    syncHidden() {},
+    rebuildNtfySlots() {
+      const mail = this.items.filter((i) => i.kind !== 'ntfy');
+      const ntfy = this.ntfyMerged
+        ? this.ntfySources.length
+          ? [this.ntfyMergedItem]
+          : []
+        : this.ntfySources.slice();
+      // Conserve la position relative : ntfy à la fin sauf s’ils étaient déjà intercalés —
+      // on réinjecte après le premier bloc mail pour rester simple et prévisible.
+      this.items = mail.concat(ntfy);
+      if (this.selected && String(this.selected).startsWith('__ntfy__')) {
+        if (this.ntfyMerged) this.selected = '__ntfy__';
+        else if (!this.items.some((i) => i.id === this.selected)) {
+          this.selected = this.items.find((i) => i.kind === 'ntfy')?.id || '__all__';
+        }
+      }
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+      });
+    },
+    onDragStart(ev, idx) {
+      this.dragFrom = idx;
+      ev.dataTransfer.effectAllowed = 'move';
+      try {
+        ev.dataTransfer.setData('text/plain', String(idx));
+      } catch (_) {}
+      ev.currentTarget.classList.add('is-dragging');
+    },
+    onDragOver(idx) {
+      if (this.dragFrom === null || this.dragFrom === idx) return;
+      const next = this.items.slice();
+      const [moved] = next.splice(this.dragFrom, 1);
+      next.splice(idx, 0, moved);
+      this.items = next;
+      this.dragFrom = idx;
+    },
+    onDrop(idx) {
+      this.dragFrom = null;
+      document.querySelectorAll('.acct-order-item.is-dragging').forEach((el) => {
+        el.classList.remove('is-dragging');
+      });
+    },
+    onDragEnd() {
+      this.dragFrom = null;
+      document.querySelectorAll('.acct-order-item.is-dragging').forEach((el) => {
+        el.classList.remove('is-dragging');
+      });
+    },
+    init() {
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+      });
+    },
+  };
+}
+
 function accountAppearance(opts) {
   opts = opts || {};
   return {
@@ -599,6 +739,7 @@ document.addEventListener('alpine:init', () => {
   if (window.Alpine) {
     Alpine.data('composeForm', composeForm);
     Alpine.data('accountAppearance', accountAppearance);
+    Alpine.data('accountOrderList', accountOrderList);
     Alpine.data('quickEventModal', quickEventModal);
     Alpine.data('tbImportForm', tbImportForm);
   }
@@ -610,10 +751,14 @@ window.HimaWeb = {
   _folderClicksBound: false,
   _folderTreeBound: false,
   _resizeBound: false,
+  _confirmDelete: true,
+  _mailUndoStack: [],
+  _mailUndoMax: 20,
 
   settingsSaved(form, evt) {
     if (!form) return;
     if (evt && evt.detail && evt.detail.successful === false) return;
+    this.applyUiFromForm(form);
     const el = form.querySelector('.settings-saved');
     if (!el) return;
     el.hidden = false;
@@ -623,12 +768,279 @@ window.HimaWeb = {
     }, 1600);
   },
 
+  applyUiFromForm(form) {
+    if (!form) return;
+    const root = document.documentElement;
+    const num = (name, fallback) => {
+      const el = form.querySelector(`[name="${name}"]`);
+      if (!el || el.value === '' || el.value == null) return fallback;
+      const n = Number(el.value);
+      return Number.isFinite(n) ? n : fallback;
+    };
+    const font = num('ui_font_scale', 1);
+    const radius = num('ui_radius', 2);
+    const space = num('ui_space', 1);
+    const rail = num('ui_rail', 260);
+    const list = num('ui_list', 380);
+    root.style.setProperty('--font-scale', font.toFixed(2));
+    root.style.setProperty('--radius', `${Math.round(radius)}px`);
+    root.style.setProperty('--ui-space', space.toFixed(2));
+    root.style.setProperty('--rail', `${Math.round(rail)}px`);
+    root.style.setProperty('--list', `${Math.round(list)}px`);
+
+    const setLabel = (name, text) => {
+      const lab = form.querySelector(`[data-ui-label="${name}"]`);
+      if (lab) lab.textContent = text;
+    };
+    setLabel('ui_font_scale', `Taille du texte (${font.toFixed(2)})`);
+    setLabel('ui_radius', `Coins arrondis (${Math.round(radius)} px)`);
+    setLabel('ui_space', `Densité / marges (${space.toFixed(2)})`);
+  },
+
+  bindUiPreview() {
+    if (this._uiPreviewBound) return;
+    this._uiPreviewBound = true;
+    document.addEventListener('input', (ev) => {
+      const t = ev.target;
+      if (!t || !t.name) return;
+      const form = t.closest('form.settings-autosave');
+      if (!form) return;
+      const action = form.getAttribute('hx-post') || form.getAttribute('action') || '';
+      if (!action.includes('/settings/ui')) return;
+      if (
+        ![
+          'ui_font_scale',
+          'ui_radius',
+          'ui_space',
+          'ui_rail',
+          'ui_list',
+        ].includes(t.name)
+      ) {
+        return;
+      }
+      this.applyUiFromForm(form);
+    });
+  },
+
+  async loadPrefs() {
+    try {
+      const res = await fetch('/api/prefs', { headers: { Accept: 'application/json' } });
+      const data = await res.json();
+      if (typeof data.confirm_delete === 'boolean') {
+        this._confirmDelete = data.confirm_delete;
+      }
+    } catch (_) {}
+  },
+
+  async setConfirmDelete(enabled) {
+    this._confirmDelete = !!enabled;
+    try {
+      const body = new URLSearchParams();
+      if (enabled) body.set('confirm_delete', '1');
+      await fetch('/settings/confirm-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+    } catch (_) {}
+  },
+
+  confirmDelete(message) {
+    return new Promise((resolve) => {
+      if (!this._confirmDelete) {
+        resolve(true);
+        return;
+      }
+      let backdrop = document.getElementById('himaweb-confirm');
+      if (backdrop) backdrop.remove();
+      backdrop = document.createElement('div');
+      backdrop.id = 'himaweb-confirm';
+      backdrop.className = 'confirm-backdrop';
+      backdrop.innerHTML = `
+        <div class="modal-panel confirm-panel" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+          <h2 id="confirm-title" class="font-display text-xl">Confirmation</h2>
+          <p class="confirm-message"></p>
+          <label class="toggle-row confirm-dont-ask">
+            <span>Ne plus demander</span>
+            <input type="checkbox" class="toggle" id="confirm-dont-ask" />
+          </label>
+          <div class="btn-row confirm-actions">
+            <button type="button" class="btn ghost" data-confirm="no">Annuler</button>
+            <button type="button" class="btn danger" data-confirm="yes">Supprimer</button>
+          </div>
+        </div>`;
+      backdrop.querySelector('.confirm-message').textContent = message;
+      const finish = async (ok) => {
+        const dont = backdrop.querySelector('#confirm-dont-ask');
+        if (ok && dont && dont.checked) {
+          await this.setConfirmDelete(false);
+        }
+        backdrop.remove();
+        resolve(ok);
+      };
+      backdrop.addEventListener('click', (ev) => {
+        if (ev.target === backdrop) finish(false);
+      });
+      backdrop.querySelector('[data-confirm="no"]').onclick = () => finish(false);
+      backdrop.querySelector('[data-confirm="yes"]').onclick = () => finish(true);
+      document.addEventListener(
+        'keydown',
+        function onKey(ev) {
+          if (ev.key === 'Escape') {
+            document.removeEventListener('keydown', onKey);
+            finish(false);
+          } else if (ev.key === 'Enter') {
+            document.removeEventListener('keydown', onKey);
+            finish(true);
+          }
+        },
+        { once: true }
+      );
+      document.body.appendChild(backdrop);
+      if (window.lucide) lucide.createIcons();
+      const yes = backdrop.querySelector('[data-confirm="yes"]');
+      if (yes) yes.focus();
+    });
+  },
+
+  pushMailUndo(entry) {
+    if (!entry || !entry.items || !entry.items.length) return;
+    const usable = entry.items.filter(
+      (it) => it.messageId && it.fromMailbox && it.toMailbox && !it.permanent
+    );
+    if (!usable.length) return;
+    this._mailUndoStack.push({ type: entry.type || 'delete', items: usable });
+    while (this._mailUndoStack.length > this._mailUndoMax) {
+      this._mailUndoStack.shift();
+    }
+    this.showUndoToast(usable.length);
+  },
+
+  showUndoToast(n) {
+    let toast = document.getElementById('mail-undo-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'mail-undo-toast';
+      toast.className = 'mail-undo-toast';
+      document.body.appendChild(toast);
+    }
+    const label = n === 1 ? '1 message' : `${n} messages`;
+    toast.innerHTML = `<span>${label} — Ctrl+Z pour annuler</span>
+      <button type="button" class="linkish" id="mail-undo-btn">Annuler</button>`;
+    const btn = document.getElementById('mail-undo-btn');
+    if (btn) btn.onclick = () => this.undoLastMailOp();
+    clearTimeout(this._undoToastTimer);
+    this._undoToastTimer = setTimeout(() => {
+      if (toast) toast.remove();
+    }, 8000);
+  },
+
+  reloadEnvelopeList() {
+    const listEl = document.getElementById('envelope-list');
+    if (!listEl || !window.htmx) return;
+    const mb =
+      (document.getElementById('current-mailbox') &&
+        document.getElementById('current-mailbox').value) ||
+      'Inbox';
+    const ac =
+      (document.getElementById('current-account') &&
+        document.getElementById('current-account').value) ||
+      '';
+    const sortEl = document.getElementById('mail-sort');
+    const sort = (sortEl && sortEl.value) || 'date_desc';
+    let url =
+      '/partials/envelopes?mailbox=' +
+      encodeURIComponent(mb) +
+      '&sort=' +
+      encodeURIComponent(sort) +
+      '&page=1';
+    if (ac) url += '&account=' + encodeURIComponent(ac);
+    window.htmx.ajax('GET', url, { target: '#envelope-list', swap: 'innerHTML' });
+  },
+
+  async undoLastMailOp() {
+    const entry = this._mailUndoStack.pop();
+    const toast = document.getElementById('mail-undo-toast');
+    if (toast) toast.remove();
+    if (!entry || !entry.items || !entry.items.length) return;
+    try {
+      const res = await fetch('/api/mail/undo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          items: entry.items.map((it) => ({
+            account: it.account || '',
+            message_id: it.messageId,
+            from_mailbox: it.fromMailbox,
+            to_mailbox: it.toMailbox,
+          })),
+        }),
+      });
+      const data = await res.json();
+      if (data && data.errors && data.errors.length) {
+        console.warn('undo errors', data.errors);
+        alert(data.errors.join('\n'));
+      }
+      if (data && data.restored > 0) {
+        // Laisser IMAP propager le move avant de recharger la liste
+        await new Promise((r) => setTimeout(r, 400));
+        this.reloadEnvelopeList();
+        this.reloadSidebar();
+        this.pollUnread();
+        const pane = document.getElementById('message-pane');
+        if (pane) {
+          pane.innerHTML =
+            '<div class="empty-read"><i data-lucide="mail-open"></i><p>Sélectionnez un message</p></div>';
+          if (window.lucide) lucide.createIcons();
+        }
+      }
+    } catch (e) {
+      console.error(e);
+      alert('Échec de l’annulation');
+    }
+  },
+
+  bindDeleteFormConfirm() {
+    if (this._deleteFormBound) return;
+    this._deleteFormBound = true;
+    document.addEventListener(
+      'submit',
+      async (ev) => {
+        const form = ev.target;
+        if (!form || !form.matches) return;
+        if (!form.matches('form[hx-post="/partials/message/delete"]')) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const ok = await this.confirmDelete('Supprimer ce message ?');
+        if (!ok) return;
+        const fd = new FormData(form);
+        const id = String(fd.get('id') || '');
+        const mailbox = String(fd.get('mailbox') || 'Inbox');
+        const account = String(fd.get('account') || '');
+        if (!id) return;
+        const env = document.querySelector(
+          `.envelope[data-id="${CSS.escape(id)}"]${account ? `[data-account="${CSS.escape(account)}"]` : ''}`
+        );
+        this.deleteMailsApi([
+          {
+            id,
+            mailbox,
+            account,
+            messageId: (env && env.dataset.messageId) || '',
+          },
+        ]);
+      },
+      true
+    );
+  },
+
   markEnvelopeRead(id, account) {
     const acc = account || '';
     let changed = false;
     document.querySelectorAll('.envelope.unread').forEach((el) => {
       if (el.dataset.id !== String(id)) return;
-      if ((el.dataset.account || '') !== acc) return;
+      // Si account est fourni, filtrer ; sinon matcher l’id seul (NTFY, etc.)
+      if (acc && (el.dataset.account || '') !== acc) return;
       el.classList.remove('unread');
       changed = true;
       el.querySelectorAll('.from strong').forEach((s) => {
@@ -646,7 +1058,7 @@ window.HimaWeb = {
     let changed = false;
     document.querySelectorAll('.envelope').forEach((el) => {
       if (el.dataset.id !== String(id)) return;
-      if ((el.dataset.account || '') !== acc) return;
+      if (acc && (el.dataset.account || '') !== acc) return;
       const wasUnread = el.classList.contains('unread');
       if (seen) {
         if (!wasUnread) return;
@@ -1177,10 +1589,29 @@ window.HimaWeb = {
     }
   },
 
-  onMessageMoved({ id, mailbox, account }) {
+  onMessageMoved({ id, mailbox, account, to }) {
+    const acc = account || '';
+    const env = document.querySelector(
+      `.envelope[data-id="${CSS.escape(String(id))}"]${acc ? `[data-account="${CSS.escape(acc)}"]` : ''}`
+    );
+    const messageId = (env && env.dataset.messageId) || '';
+    if (messageId && to && mailbox) {
+      this.pushMailUndo({
+        type: 'move',
+        items: [
+          {
+            account: acc,
+            messageId,
+            fromMailbox: mailbox,
+            toMailbox: to,
+            permanent: false,
+          },
+        ],
+      });
+    }
     this.onMessagesDeleted({
-      items: [{ id, mailbox, account: account || '' }],
-      last: { id, mailbox, account: account || '' },
+      items: [{ id, mailbox, account: acc }],
+      last: { id, mailbox, account: acc },
     });
   },
 
@@ -1218,6 +1649,7 @@ window.HimaWeb = {
         id: env.dataset.id,
         account: env.dataset.account || '',
         mailbox: env.dataset.mailbox || mbDefault,
+        messageId: env.dataset.messageId || '',
       };
       let items = [item];
       const selected = this.selectedMailItems();
@@ -1286,6 +1718,7 @@ window.HimaWeb = {
             id: it.id,
             mailbox: it.mailbox,
             account: it.account || null,
+            message_id: it.messageId || null,
           })),
           to_mailbox: toMailbox,
           to_account: toAccount || null,
@@ -1294,6 +1727,16 @@ window.HimaWeb = {
       const data = await res.json();
       const moved = (data && data.moved) || [];
       if (moved.length) {
+        this.pushMailUndo({
+          type: 'move',
+          items: moved.map((m) => ({
+            account: m.account || '',
+            messageId: m.message_id || '',
+            fromMailbox: m.mailbox,
+            toMailbox: m.to_mailbox || toMailbox,
+            permanent: false,
+          })),
+        });
         this.onMessagesDeleted({
           items: moved.map((m) => ({
             id: m.id,
@@ -1463,8 +1906,7 @@ window.HimaWeb = {
       'Inbox';
     return list
       .filter((el) => el.classList.contains('is-checked') || el.classList.contains('is-selected'))
-      .filter((el, i, arr) => {
-        // Prefer is-checked set; if only one is-selected and no multi, still include
+      .filter((el) => {
         if (this._mailSelected && this._mailSelected.size > 0) {
           const key = `${el.dataset.account || ''}\0${el.dataset.id}`;
           return this._mailSelected.has(key);
@@ -1475,17 +1917,19 @@ window.HimaWeb = {
         id: el.dataset.id,
         account: el.dataset.account || '',
         mailbox: el.dataset.mailbox || mbDefault,
+        messageId: el.dataset.messageId || '',
       }));
   },
 
-  deleteSelectedMails() {
+  async deleteSelectedMails() {
     const items = this.selectedMailItems();
     if (!items.length) return;
     const label =
       items.length === 1
         ? 'Supprimer ce message ?'
         : `Supprimer ${items.length} messages ?`;
-    if (!window.confirm(label)) return;
+    const ok = await this.confirmDelete(label);
+    if (!ok) return;
     this.deleteMailsApi(items);
   },
 
@@ -1500,12 +1944,23 @@ window.HimaWeb = {
             id: it.id,
             mailbox: it.mailbox,
             account: it.account || null,
+            message_id: it.messageId || null,
           })),
         }),
       });
       const data = await res.json();
       const deleted = (data && data.deleted) || [];
       if (deleted.length) {
+        this.pushMailUndo({
+          type: 'delete',
+          items: deleted.map((m) => ({
+            account: m.account || '',
+            messageId: m.message_id || '',
+            fromMailbox: m.mailbox,
+            toMailbox: m.to_mailbox || '',
+            permanent: !!m.permanent,
+          })),
+        });
         this.onMessagesDeleted({
           items: deleted.map((m) => ({
             id: m.id,
@@ -1603,18 +2058,15 @@ window.HimaWeb = {
         this.deleteSelectedMails();
         return;
       }
-      const form = document.querySelector('#message-pane form[hx-post="/partials/message/delete"]');
-      if (!form) {
-        // Pas de message ouvert : supprimer la sélection simple
-        if (this._mailSelected && this._mailSelected.size === 1) {
-          this.deleteSelectedMails();
-        }
+      if (this._mailSelected && this._mailSelected.size === 1) {
+        this.deleteSelectedMails();
         return;
       }
-      const btn = form.querySelector('button[type="submit"]');
-      if (btn) btn.click();
-      else if (window.htmx) window.htmx.trigger(form, 'submit');
-      else form.requestSubmit();
+      const form = document.querySelector('#message-pane form[hx-post="/partials/message/delete"]');
+      if (form) {
+        form.requestSubmit();
+        return;
+      }
     };
 
     const openAction = (sel) => {
@@ -1641,7 +2093,25 @@ window.HimaWeb = {
         return;
       }
 
-      if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      if ((ev.ctrlKey || ev.metaKey) && !ev.altKey) {
+        if (key === 'a' || key === 'A') {
+          if (!list.length) return;
+          ev.preventDefault();
+          this._mailSelected = new Set(list.map((el) => envKey(el)));
+          this._mailAnchor = 0;
+          paintSelection(list);
+          return;
+        }
+        if (key === 'z' || key === 'Z') {
+          if (!this._mailUndoStack || !this._mailUndoStack.length) return;
+          ev.preventDefault();
+          this.undoLastMailOp();
+          return;
+        }
+        return;
+      }
+
+      if (ev.altKey) return;
 
       if (key === 'ArrowDown' || key === 'j') {
         if (!list.length) return;
@@ -1843,7 +2313,8 @@ window.HimaWeb = {
           .split(',')
           .map((s) => s.trim())
           .filter(Boolean);
-        const payload = JSON.stringify({ id, account, mailbox, threadIds });
+        const messageId = env.dataset.messageId || '';
+        const payload = JSON.stringify({ id, account, mailbox, threadIds, messageId });
         const delLabel =
           threadIds.length > 1
             ? `Supprimer la conversation (${threadIds.length})`
@@ -1971,13 +2442,21 @@ window.HimaWeb = {
         ids.length > 1
           ? `Supprimer cette conversation (${ids.length} messages) ?`
           : 'Supprimer ce message ?';
-      if (!window.confirm(label)) return;
-      const items = ids.map((tid) => ({
-        id: tid,
-        mailbox: mb,
-        account: acc,
-      }));
-      this.deleteMailsApi(items);
+      this.confirmDelete(label).then((ok) => {
+        if (!ok) return;
+        const items = ids.map((tid) => {
+          const el = document.querySelector(
+            `.envelope[data-id="${CSS.escape(tid)}"][data-account="${CSS.escape(acc)}"]`
+          ) || document.querySelector(`.envelope[data-id="${CSS.escape(tid)}"]`);
+          return {
+            id: tid,
+            mailbox: mb,
+            account: acc,
+            messageId: (el && el.dataset.messageId) || p.messageId || '',
+          };
+        });
+        this.deleteMailsApi(items);
+      });
       return;
     }
     if (action === 'cal-edit') {
@@ -2111,6 +2590,9 @@ document.addEventListener('DOMContentLoaded', () => {
   window.HimaWeb.bindMailKeys();
   window.HimaWeb.bindContextMenus();
   window.HimaWeb.bindMailDragDrop();
+  window.HimaWeb.bindDeleteFormConfirm();
+  window.HimaWeb.bindUiPreview();
+  window.HimaWeb.loadPrefs();
   window.HimaWeb.startUnreadPolling();
   window.HimaWeb.applyRailCompactFromStorage();
   try {

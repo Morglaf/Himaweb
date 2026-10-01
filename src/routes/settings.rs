@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
 use askama::Template;
-use axum::extract::{Query, State};
-use axum::response::{Html, IntoResponse, Redirect};
+use axum::extract::{Multipart, Query, State};
+use axum::http::{header, HeaderValue, StatusCode};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use axum::{Form, Router};
+use axum::{Form, Json, Router};
 use serde::Deserialize;
+use serde_json::json;
 
 use crate::accounts_config::{self, AccountEdit};
 use crate::calendar_import::{self, CalendulaAccountEdit};
@@ -22,6 +24,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/settings/move-defaults", post(save_move_defaults))
         .route("/settings/account", post(save_account))
         .route("/settings/account/order", post(save_account_order))
+        .route("/settings/accounts/layout", post(save_accounts_layout))
         .route("/settings/account/colors", post(save_account_colors))
         .route("/settings/account/edit", post(edit_account))
         .route("/settings/account/delete", post(delete_mail_account))
@@ -45,8 +48,15 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/settings/plugins/install", post(plugins_install))
         .route("/settings/plugins/remove", post(plugins_remove))
         .route("/settings/ntfy", post(save_ntfy))
+        .route("/settings/ntfy/add", post(add_ntfy_source))
+        .route("/settings/ntfy/update", post(update_ntfy_source))
+        .route("/settings/ntfy/delete", post(delete_ntfy_source))
         .route("/settings/ai", post(save_ai))
         .route("/settings/ai/models", post(list_ai_models))
+        .route("/settings/backup/export", get(backup_export))
+        .route("/settings/backup/import", post(backup_import))
+        .route("/settings/confirm-delete", post(save_confirm_delete))
+        .route("/api/prefs", get(api_prefs))
 }
 
 #[derive(Template)]
@@ -56,8 +66,7 @@ struct ShellTemplate {
     pub active_tab: String,
     pub offline: bool,
     pub himalaya_available: bool,
-    pub calendula_available: bool,
-    pub cardamum_available: bool,
+
     pub theme: String,
     pub layout: String,
     pub topbar_mode: String,
@@ -72,6 +81,7 @@ struct SettingsTemplate {
     pub theme: String,
     pub layout: String,
     pub topbar_mode: String,
+    pub compose_toolbar_mode: String,
     pub ui_font_scale: f32,
     pub ui_radius: u16,
     pub ui_space: f32,
@@ -83,15 +93,11 @@ struct SettingsTemplate {
     pub calendula_exists: bool,
     pub cardamum_path: String,
     pub cardamum_exists: bool,
-    pub accounts: Vec<AccountRow>,
     pub editable: Vec<EditableAccountRow>,
     pub cardamum_accounts: Vec<CardamumAccountEdit>,
     pub calendula_accounts: Vec<CalendulaAccountEdit>,
-    pub account_order: Vec<String>,
     pub color_accounts: Vec<ColorAccountRow>,
     pub move_defaults: Vec<MoveDefaultRow>,
-    pub selected_account: String,
-    pub all_selected: bool,
     pub folder_groups: Vec<FolderPrefGroup>,
     pub thunderbird_profiles: Vec<String>,
     pub import_preview: Option<String>,
@@ -101,36 +107,37 @@ struct SettingsTemplate {
     pub contacts_preview: Option<String>,
     pub contacts_message: Option<String>,
     pub notifications: bool,
+    pub confirm_delete: bool,
     pub merged_inbox: bool,
     pub conversations: bool,
     pub side_widget: bool,
     pub side_widget_events: u16,
-    pub himalaya_available: bool,
     pub calendula_available: bool,
     pub cardamum_available: bool,
     pub ortie_available: bool,
     pub neverest_available: bool,
     pub mirador_available: bool,
     pub mirador_enabled: bool,
+    pub open_browser_on_start: bool,
     pub ortie_message: Option<String>,
     pub neverest_message: Option<String>,
     pub mirador_message: Option<String>,
     pub plugins_dir: String,
     pub plugins: Vec<PluginRow>,
     pub plugins_message: Option<String>,
-    pub ntfy_enabled: bool,
     pub ntfy_server: String,
-    pub ntfy_topic: String,
+    pub ntfy_sources: Vec<NtfySourceRow>,
+    pub rail_order_boot: String,
     pub ai_enabled: bool,
     pub ai_provider: String,
     pub ai_endpoint: String,
     pub ai_model: String,
     pub ai_remote_endpoint: String,
-    pub ai_api_key: String,
     pub ai_api_key_set: bool,
     pub ai_gemini_model: String,
     pub ai_message: Option<String>,
     pub cal_color_accounts: Vec<ColorAccountRow>,
+    pub backup_message: Option<String>,
 }
 
 pub struct PluginRow {
@@ -141,6 +148,7 @@ pub struct PluginRow {
 
 pub struct MoveDefaultRow {
     pub account: String,
+    pub account_label: String,
     pub options: Vec<MoveFolderOpt>,
 }
 
@@ -149,17 +157,19 @@ pub struct MoveFolderOpt {
     pub selected: bool,
 }
 
-pub struct AccountRow {
-    pub name: String,
-    pub backends: String,
-    pub is_default: bool,
-}
-
 pub struct ColorAccountRow {
     pub name: String,
     pub label: String,
     pub icon: String,
     pub color: String,
+    pub kind: String,
+}
+
+pub struct NtfySourceRow {
+    pub id: String,
+    pub server: String,
+    pub topic: String,
+    pub enabled: bool,
 }
 
 pub struct FolderPrefRow {
@@ -188,9 +198,6 @@ pub struct EditableAccountRow {
     pub is_default: bool,
     pub has_imap_password: bool,
     pub has_smtp_password: bool,
-    pub trash_alias: String,
-    pub sent_alias: String,
-    pub drafts_alias: String,
     pub mailboxes: Vec<MailboxAliasChoice>,
     /// Pref HimaWeb : pas de UID MOVE (COPY + purge)
     pub copy_move: bool,
@@ -234,9 +241,6 @@ impl EditableAccountRow {
             is_default: a.is_default,
             has_imap_password: a.has_imap_password,
             has_smtp_password: a.has_smtp_password,
-            trash_alias: a.trash_alias,
-            sent_alias: a.sent_alias,
-            drafts_alias: a.drafts_alias,
             mailboxes,
             copy_move,
         }
@@ -255,6 +259,7 @@ struct Flash {
     mirador_message: Option<String>,
     plugins_message: Option<String>,
     ai_message: Option<String>,
+    backup_message: Option<String>,
 }
 
 impl Flash {
@@ -271,6 +276,7 @@ impl Flash {
             mirador_message: None,
             plugins_message: None,
             ai_message: None,
+            backup_message: None,
         }
     }
 }
@@ -293,32 +299,83 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
     let cardamum_path = prefs::cardamum_config_path().display().to_string();
     let cardamum_exists = prefs::cardamum_config_exists();
 
-    let accounts = if state.himalaya_available && config_exists {
+    let known: Vec<String> = if state.himalaya_available && config_exists {
         let _permit = state.cli_limit.acquire().await.ok();
         match state.himalaya.list_accounts().await {
-            Ok(list) => list
-                .into_iter()
-                .map(|a| AccountRow {
-                    name: a.name,
-                    backends: a.backends,
-                    is_default: a.is_default,
-                })
-                .collect(),
+            Ok(list) => list.into_iter().map(|a| a.name).collect(),
             Err(_) => vec![],
         }
     } else {
         vec![]
     };
-
-    let known: Vec<String> = accounts.iter().map(|a| a.name.clone()).collect();
     let account_order = prefs_snap.ordered_accounts(&known);
-    let color_accounts: Vec<ColorAccountRow> = account_order
+    let rail = prefs_snap.rail_order(&known);
+    let color_accounts: Vec<ColorAccountRow> = rail
         .iter()
         .map(|n| ColorAccountRow {
             color: prefs_snap.account_color(n),
             label: prefs_snap.account_label(n),
             icon: prefs_snap.account_icon(n),
             name: n.clone(),
+            kind: if prefs::Prefs::is_ntfy_key(n) {
+                "ntfy".into()
+            } else {
+                "mail".into()
+            },
+        })
+        .collect();
+
+    let rail_order_boot = {
+        let items: Vec<serde_json::Value> = rail
+            .iter()
+            .map(|n| {
+                serde_json::json!({
+                    "id": n,
+                    "label": prefs_snap.account_label(n),
+                    "icon": prefs_snap.account_icon(n),
+                    "color": prefs_snap.account_color(n),
+                    "kind": if prefs::Prefs::is_ntfy_key(n) { "ntfy" } else { "mail" },
+                })
+            })
+            .collect();
+        let sel = if all_selected {
+            prefs::ACCOUNT_ALL.to_string()
+        } else {
+            selected.clone()
+        };
+        serde_json::json!({
+            "items": items,
+            "selected": sel,
+            "ntfyMerged": prefs_snap.ntfy_merged,
+            "ntfySources": prefs_snap.ntfy_sources.iter().filter(|s| s.enabled).map(|s| {
+                let key = prefs::Prefs::ntfy_source_key(&s.id);
+                serde_json::json!({
+                    "id": key,
+                    "label": prefs_snap.account_label(&key),
+                    "icon": prefs_snap.account_icon(&key),
+                    "color": prefs_snap.account_color(&key),
+                    "kind": "ntfy",
+                })
+            }).collect::<Vec<_>>(),
+            "ntfyMergedItem": {
+                "id": prefs::NTFY_MERGED,
+                "label": prefs_snap.account_label(prefs::NTFY_MERGED),
+                "icon": prefs_snap.account_icon(prefs::NTFY_MERGED),
+                "color": prefs_snap.account_color(prefs::NTFY_MERGED),
+                "kind": "ntfy",
+            },
+        })
+        .to_string()
+    };
+
+    let ntfy_sources: Vec<NtfySourceRow> = prefs_snap
+        .ntfy_sources
+        .iter()
+        .map(|s| NtfySourceRow {
+            id: s.id.clone(),
+            server: s.server.clone(),
+            topic: s.topic.clone(),
+            enabled: s.enabled,
         })
         .collect();
 
@@ -379,6 +436,28 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
                 }
             }
         }
+        // Entrées NTFY virtuelles (surveiller / total / épingler / masquer)
+        let ntfy_folders: Vec<FolderPrefRow> = prefs_snap
+            .ntfy_order_keys()
+            .into_iter()
+            .map(|mailbox_key| {
+                let key = Prefs::ntfy_folder_key(&mailbox_key);
+                FolderPrefRow {
+                    pinned: prefs_snap.is_pinned(&key),
+                    hidden: prefs_snap.is_hidden(&key),
+                    watched: prefs_snap.is_watched(&key, &mailbox_key),
+                    count_in_total: prefs_snap.contributes_to_unread_total(&key, &mailbox_key),
+                    label: prefs_snap.account_label(&mailbox_key),
+                    key,
+                }
+            })
+            .collect();
+        if !ntfy_folders.is_empty() {
+            groups.push(FolderPrefGroup {
+                account: prefs::NTFY_MERGED.to_string(),
+                folders: ntfy_folders,
+            });
+        }
         groups
     };
 
@@ -403,6 +482,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
                 .collect::<Vec<_>>();
             move_defaults.push(MoveDefaultRow {
                 account: acc.clone(),
+                account_label: prefs_snap.account_label(acc),
                 options,
             });
         }
@@ -420,6 +500,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
             label: prefs_snap.cal_account_label(&a.name),
             icon: prefs_snap.cal_account_icon(&a.name),
             name: a.name.clone(),
+            kind: "cal".into(),
         })
         .collect();
 
@@ -438,6 +519,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         theme: theme.clone(),
         layout: layout.clone(),
         topbar_mode: prefs_snap.topbar_mode.clone(),
+        compose_toolbar_mode: prefs_snap.compose_toolbar_mode.clone(),
         ui_font_scale: prefs_snap.ui_font_scale,
         ui_radius: prefs_snap.ui_radius,
         ui_space: prefs_snap.ui_space,
@@ -449,15 +531,11 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         calendula_exists,
         cardamum_path,
         cardamum_exists,
-        accounts,
         editable,
         cardamum_accounts,
         calendula_accounts,
-        account_order,
         color_accounts,
         move_defaults,
-        selected_account: selected,
-        all_selected,
         folder_groups,
         thunderbird_profiles,
         import_preview: flash.import_preview,
@@ -467,17 +545,18 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         contacts_preview: flash.contacts_preview,
         contacts_message: flash.contacts_message,
         notifications: prefs_snap.notifications,
+        confirm_delete: prefs_snap.confirm_delete,
         merged_inbox: prefs_snap.merged_inbox,
         conversations: prefs_snap.conversations,
         side_widget: prefs_snap.side_widget,
-        side_widget_events: prefs_snap.side_widget_events.max(1),
-        himalaya_available: state.himalaya_available,
+        side_widget_events: prefs_snap.side_widget_events.clamp(1, 12),
         calendula_available: state.calendula_available,
         cardamum_available: state.cardamum_available,
         ortie_available: state.ortie_available,
         neverest_available: state.neverest_available,
         mirador_available: state.mirador_available,
         mirador_enabled: prefs_snap.mirador_enabled,
+        open_browser_on_start: prefs_snap.open_browser_on_start,
         ortie_message: flash.ortie_message,
         neverest_message: flash.neverest_message,
         mirador_message: flash.mirador_message,
@@ -493,19 +572,19 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
             })
             .collect(),
         plugins_message: flash.plugins_message,
-        ntfy_enabled: prefs_snap.ntfy_enabled,
         ntfy_server: prefs_snap.ntfy_server.clone(),
-        ntfy_topic: prefs_snap.ntfy_topic.clone(),
+        ntfy_sources,
+        rail_order_boot,
         ai_enabled: prefs_snap.ai_enabled,
         ai_provider: prefs_snap.ai_provider.clone(),
         ai_endpoint: prefs_snap.ai_endpoint.clone(),
         ai_model: ai_model_display,
         ai_remote_endpoint: prefs_snap.ai_remote_endpoint.clone(),
-        ai_api_key: String::new(),
         ai_api_key_set: !prefs_snap.ai_api_key.is_empty(),
         ai_gemini_model,
         ai_message: flash.ai_message,
         cal_color_accounts,
+        backup_message: flash.backup_message,
     };
 
     let content = match inner.render() {
@@ -518,8 +597,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         active_tab: "settings".into(),
         offline: false,
         himalaya_available: state.himalaya_available,
-        calendula_available: state.calendula_available,
-        cardamum_available: state.cardamum_available,
+
         theme,
         layout,
         topbar_mode: prefs_snap.topbar_mode.clone(),
@@ -538,11 +616,13 @@ pub struct UiForm {
     pub theme: String,
     pub layout: String,
     pub topbar_mode: Option<String>,
+    pub compose_toolbar_mode: Option<String>,
     pub ui_font_scale: Option<f32>,
     pub ui_radius: Option<u16>,
     pub ui_space: Option<f32>,
     pub ui_rail: Option<u16>,
     pub ui_list: Option<u16>,
+    pub open_browser_on_start: Option<String>,
 }
 
 async fn save_ui(
@@ -557,6 +637,9 @@ async fn save_ui(
         prefs.layout = form.layout;
         if let Some(mode) = form.topbar_mode {
             prefs.topbar_mode = mode;
+        }
+        if let Some(mode) = form.compose_toolbar_mode {
+            prefs.compose_toolbar_mode = mode;
         }
         if let Some(v) = form.ui_font_scale {
             prefs.ui_font_scale = v;
@@ -573,6 +656,8 @@ async fn save_ui(
         if let Some(v) = form.ui_list {
             prefs.ui_list = v;
         }
+        prefs.open_browser_on_start = form.open_browser_on_start.as_deref() == Some("1")
+            || form.open_browser_on_start.as_deref() == Some("on");
         *prefs = prefs.clone().normalize();
         let _ = prefs.save();
     }
@@ -672,6 +757,43 @@ async fn save_account_order(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty() && s != ACCOUNT_ALL)
             .collect();
+        *prefs = prefs.clone().normalize();
+        let _ = prefs.save();
+    }
+    Redirect::to("/settings#accounts").into_response()
+}
+
+#[derive(Deserialize)]
+pub struct AccountsLayoutForm {
+    pub account: Option<String>,
+    pub order: Option<String>,
+    pub ntfy_merged: Option<String>,
+}
+
+async fn save_accounts_layout(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<AccountsLayoutForm>,
+) -> impl IntoResponse {
+    {
+        let mut prefs = state.prefs.lock().await;
+        if let Some(a) = form.account {
+            let a = a.trim();
+            prefs.account = if a.is_empty() {
+                None
+            } else {
+                Some(a.to_string())
+            };
+        }
+        if let Some(order) = form.order {
+            prefs.account_order = order
+                .split(|c| c == ',' || c == '\n' || c == ';')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty() && s != ACCOUNT_ALL)
+                .collect();
+        }
+        prefs.ntfy_merged = form.ntfy_merged.as_deref() == Some("1")
+            || form.ntfy_merged.as_deref() == Some("on")
+            || form.ntfy_merged.as_deref() == Some("true");
         *prefs = prefs.clone().normalize();
         let _ = prefs.save();
     }
@@ -882,6 +1004,7 @@ pub struct NotifyForm {
     pub conversations: Option<String>,
     pub side_widget: Option<String>,
     pub side_widget_events: Option<u16>,
+    pub confirm_delete: Option<String>,
 }
 
 async fn save_notify(
@@ -900,8 +1023,11 @@ async fn save_notify(
             || form.conversations.as_deref() == Some("on");
         prefs.side_widget =
             form.side_widget.as_deref() == Some("1") || form.side_widget.as_deref() == Some("on");
+        // Checkbox absente = décochée (formulaire autosave envoie tous les champs visibles)
+        prefs.confirm_delete = form.confirm_delete.as_deref() == Some("1")
+            || form.confirm_delete.as_deref() == Some("on");
         if let Some(n) = form.side_widget_events {
-            prefs.side_widget_events = n.clamp(1, 30);
+            prefs.side_widget_events = n.clamp(1, 12);
         }
         let _ = prefs.save();
     }
@@ -1504,15 +1630,158 @@ async fn save_ntfy(
     let mut flash = Flash::empty();
     {
         let mut p = state.prefs.lock().await;
-        p.ntfy_enabled = form.enabled.as_deref() == Some("1");
-        p.ntfy_server = form.server.trim().to_string();
-        if p.ntfy_server.is_empty() {
-            p.ntfy_server = "https://ntfy.sh".into();
+        // Legacy mono-form : met à jour / crée la première source
+        let enabled = form.enabled.as_deref() == Some("1");
+        let server = {
+            let s = form.server.trim().trim_end_matches('/').to_string();
+            if s.is_empty() {
+                "https://ntfy.sh".into()
+            } else {
+                s
+            }
+        };
+        let topic = form.topic.trim().to_string();
+        if topic.is_empty() {
+            if !enabled {
+                for s in &mut p.ntfy_sources {
+                    s.enabled = false;
+                }
+            }
+        } else if let Some(first) = p.ntfy_sources.first_mut() {
+            first.server = server;
+            first.topic = topic;
+            first.enabled = enabled;
+        } else {
+            let id = crate::prefs::make_ntfy_id_pub(&topic);
+            p.ntfy_sources.push(crate::prefs::NtfySource {
+                id,
+                server,
+                topic,
+                enabled,
+            });
         }
-        p.ntfy_topic = form.topic.trim().to_string();
+        *p = p.clone().normalize();
         let _ = p.save();
     }
     flash.plugins_message = Some("Préférences NTFY enregistrées.".into());
+    render_settings(state, flash).await
+}
+
+#[derive(Deserialize)]
+pub struct NtfyAddForm {
+    pub server: String,
+    pub topic: String,
+    pub enabled: Option<String>,
+}
+
+async fn add_ntfy_source(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<NtfyAddForm>,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    let topic = form.topic.trim().to_string();
+    if topic.is_empty() {
+        flash.plugins_message = Some("Topic NTFY requis.".into());
+        return render_settings(state, flash).await;
+    }
+    let server = {
+        let s = form.server.trim().trim_end_matches('/').to_string();
+        if s.is_empty() {
+            "https://ntfy.sh".into()
+        } else {
+            s
+        }
+    };
+    {
+        let mut p = state.prefs.lock().await;
+        let mut id = crate::prefs::make_ntfy_id_pub(&topic);
+        let existing: std::collections::HashSet<_> =
+            p.ntfy_sources.iter().map(|s| s.id.clone()).collect();
+        let mut n = 2u32;
+        let base = id.clone();
+        while existing.contains(&id) {
+            id = format!("{base}-{n}");
+            n += 1;
+        }
+        p.ntfy_sources.push(crate::prefs::NtfySource {
+            id,
+            server,
+            topic,
+            enabled: form.enabled.as_deref() != Some("0"),
+        });
+        *p = p.clone().normalize();
+        let _ = p.save();
+    }
+    flash.plugins_message = Some("Source NTFY ajoutée.".into());
+    render_settings(state, flash).await
+}
+
+#[derive(Deserialize)]
+pub struct NtfyUpdateForm {
+    pub id: String,
+    pub server: String,
+    pub topic: String,
+    pub enabled: Option<String>,
+}
+
+async fn update_ntfy_source(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<NtfyUpdateForm>,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    let id = form.id.trim().to_string();
+    let topic = form.topic.trim().to_string();
+    if id.is_empty() || topic.is_empty() {
+        flash.plugins_message = Some("Source NTFY invalide.".into());
+        return render_settings(state, flash).await;
+    }
+    let server = {
+        let s = form.server.trim().trim_end_matches('/').to_string();
+        if s.is_empty() {
+            "https://ntfy.sh".into()
+        } else {
+            s
+        }
+    };
+    {
+        let mut p = state.prefs.lock().await;
+        if let Some(s) = p.ntfy_sources.iter_mut().find(|s| s.id == id) {
+            s.server = server;
+            s.topic = topic;
+            s.enabled = form.enabled.as_deref() == Some("1")
+                || form.enabled.as_deref() == Some("on");
+        }
+        *p = p.clone().normalize();
+        let _ = p.save();
+    }
+    flash.plugins_message = Some("Source NTFY mise à jour.".into());
+    render_settings(state, flash).await
+}
+
+#[derive(Deserialize)]
+pub struct NtfyDeleteForm {
+    pub id: String,
+}
+
+async fn delete_ntfy_source(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<NtfyDeleteForm>,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    {
+        let mut p = state.prefs.lock().await;
+        let id = form.id.trim();
+        p.ntfy_sources.retain(|s| s.id != id);
+        // Nettoyer apparence / ordre
+        let key = prefs::Prefs::ntfy_source_key(id);
+        p.account_labels.remove(&key);
+        p.account_colors.remove(&key);
+        p.account_icons.remove(&key);
+        p.account_order.retain(|a| a != &key);
+        *p = p.clone().normalize();
+        let _ = p.save();
+    }
+    flash.plugins_message = Some("Source NTFY retirée.".into());
     render_settings(state, flash).await
 }
 
@@ -1699,6 +1968,101 @@ async fn save_cal_colors(
         let _ = p.save();
     }
     flash.calendar_message = Some("Apparence des agendas enregistrée.".into());
+    render_settings(state, flash).await
+}
+
+async fn api_prefs(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let prefs = state.prefs.lock().await;
+    Json(json!({
+        "confirm_delete": prefs.confirm_delete,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct ConfirmDeleteForm {
+    pub confirm_delete: Option<String>,
+}
+
+async fn save_confirm_delete(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<ConfirmDeleteForm>,
+) -> impl IntoResponse {
+    {
+        let mut prefs = state.prefs.lock().await;
+        prefs.confirm_delete = form.confirm_delete.as_deref() == Some("1")
+            || form.confirm_delete.as_deref() == Some("on")
+            || form.confirm_delete.as_deref() == Some("true");
+        let _ = prefs.save();
+    }
+    StatusCode::NO_CONTENT
+}
+
+async fn backup_export() -> Response {
+    match crate::config_backup::build_export_zip() {
+        Ok(bytes) => {
+            let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+            let filename = format!("himaweb-backup-{stamp}.zip");
+            let mut res = bytes.into_response();
+            let headers = res.headers_mut();
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/zip"),
+            );
+            if let Ok(cd) = HeaderValue::from_str(&format!(
+                "attachment; filename=\"{filename}\""
+            )) {
+                headers.insert(header::CONTENT_DISPOSITION, cd);
+            }
+            res
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Export échoué: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+async fn backup_import(
+    State(state): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    let mut zip_bytes: Option<Vec<u8>> = None;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "backup" || name == "file" {
+            match field.bytes().await {
+                Ok(b) if !b.is_empty() => zip_bytes = Some(b.to_vec()),
+                Ok(_) => {}
+                Err(e) => {
+                    flash.backup_message = Some(format!("Lecture fichier: {e}"));
+                    return render_settings(state, flash).await;
+                }
+            }
+        }
+    }
+
+    let Some(bytes) = zip_bytes else {
+        flash.backup_message = Some("Aucun fichier ZIP fourni.".into());
+        return render_settings(state, flash).await;
+    };
+
+    match crate::config_backup::apply_import_zip(&bytes) {
+        Ok(msg) => {
+            // Recharge prefs en mémoire
+            let loaded = Prefs::load();
+            {
+                let mut prefs = state.prefs.lock().await;
+                *prefs = loaded;
+            }
+            flash.backup_message = Some(msg);
+        }
+        Err(e) => {
+            flash.backup_message = Some(format!("Import échoué: {e}"));
+        }
+    }
     render_settings(state, flash).await
 }
 

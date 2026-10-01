@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 
 use serde::de::{self, Deserializer, Visitor};
-use serde::Deserialize;
 use std::fmt;
 
 /// Collecte toutes les valeurs par clé (répétitions HTML correctement gérées).
@@ -79,15 +78,3 @@ where
     deserializer.deserialize_any(StringOrSeq)
 }
 
-/// Pour dériver facilement sur un champ de form.
-#[derive(Debug, Default, Clone)]
-pub struct StringList(pub Vec<String>);
-
-impl<'de> Deserialize<'de> for StringList {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserialize_string_or_seq(deserializer).map(StringList)
-    }
-}

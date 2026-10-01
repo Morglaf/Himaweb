@@ -3,11 +3,10 @@ use std::path::{Path, PathBuf};
 use regex::Regex;
 
 use crate::prefs;
-use crate::thunderbird::{self, ThunderbirdAccount};
+use crate::thunderbird::ThunderbirdAccount;
 
 #[derive(Debug, Clone)]
 pub struct ThunderbirdCalendar {
-    pub id: String,
     pub name: String,
     pub cal_type: String,
     pub uri: String,
@@ -44,7 +43,6 @@ pub fn parse_calendars(prefs_path: &Path) -> Result<Vec<ThunderbirdCalendar>, St
     for id in ids {
         let prefix = format!("calendar.registry.{id}");
         out.push(ThunderbirdCalendar {
-            id: id.clone(),
             name: prefs_map
                 .get(&format!("{prefix}.name"))
                 .cloned()
@@ -319,9 +317,6 @@ fn get_nested_str(t: &toml_edit::Table, path: &[&str]) -> Option<String> {
     None
 }
 
-pub fn discover_tb_profile_prefs() -> Vec<PathBuf> {
-    thunderbird::discover_profiles()
-}
 
 fn sanitize(s: &str) -> String {
     s.chars()

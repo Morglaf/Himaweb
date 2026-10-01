@@ -11,9 +11,6 @@ impl MiradorClient {
         Self { bin, runner }
     }
 
-    pub fn bin(&self) -> &str {
-        &self.bin
-    }
 
     /// Vérifie que Mirador répond (status / version / watch --help via list).
     pub async fn status(&self) -> CliResult<String> {
@@ -35,16 +32,4 @@ impl MiradorClient {
         }))
     }
 
-    /// Déclenche un watch ponctuel / diagnose (selon CLI).
-    pub async fn watch_once(&self, mailbox: Option<&str>) -> CliResult<String> {
-        let mut args = vec!["watch".to_string()];
-        if let Some(m) = mailbox.filter(|s| !s.is_empty()) {
-            args.push(m.to_string());
-        }
-        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        match self.runner.run_raw(&self.bin, &refs).await {
-            Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).trim().to_string()),
-            Err(e) => Err(e),
-        }
-    }
 }
