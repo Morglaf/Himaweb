@@ -146,6 +146,9 @@ pub struct Prefs {
     /// Adresse domicile (contexte calendrier / trajet)
     #[serde(default)]
     pub home_address: String,
+    /// Fournisseur cartes : `google` | `osm` | `apple`
+    #[serde(default = "default_maps_provider")]
+    pub maps_provider: String,
     /// Préprompt calendrier (complète le global)
     #[serde(default)]
     pub ai_calendar_preprompt: String,
@@ -202,6 +205,10 @@ fn default_ai_ollama_think() -> String {
     "default".into()
 }
 
+fn default_maps_provider() -> String {
+    "google".into()
+}
+
 fn default_side_events() -> u16 {
     6
 }
@@ -256,6 +263,7 @@ impl Default for Prefs {
             account_ai_preprompt: Default::default(),
             ai_log_enabled: false,
             home_address: String::new(),
+            maps_provider: default_maps_provider(),
             ai_calendar_preprompt: String::new(),
             cal_account_colors: Default::default(),
             cal_account_labels: Default::default(),

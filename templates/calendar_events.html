@@ -1,6 +1,3 @@
-{% if let Some(e) = error %}
-<div class="error-banner mb-2">{{ e }}</div>
-{% endif %}
 {% for ev in events %}
 <article class="cal-event cal-ev-click"
          role="button"
@@ -12,10 +9,25 @@
     <h3>{% if !ev.time.is_empty() %}<span class="cal-ev-time">{{ ev.time }}</span> {% endif %}{{ ev.summary }}</h3>
   </div>
   <div class="muted text-sm">{{ ev.when }}</div>
+  {% if !ev.location.is_empty() %}
+  <div class="cal-ev-location" @click.stop>
+    <i data-lucide="map-pin"></i>
+    <span>{{ ev.location }}</span>
+    {% if !ev.maps_url.is_empty() %}
+    <a class="icon-btn cal-ev-maps" href="{{ ev.maps_url }}" target="_blank" rel="noopener"
+       title="Temps de trajet / itinéraire" @click.stop>
+      <i data-lucide="route"></i>
+    </a>
+    {% endif %}
+  </div>
+  {% endif %}
   {% if !ev.description.is_empty() %}
   <p class="mt-1 text-sm">{{ ev.description }}</p>
   {% endif %}
 </article>
 {% else %}
+{% if let Some(e) = error %}
+<div class="error-banner mb-2">{{ e }}</div>
+{% endif %}
 <p class="muted">Aucun événement.</p>
 {% endfor %}

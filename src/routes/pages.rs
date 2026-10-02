@@ -49,12 +49,19 @@ async fn health() -> impl IntoResponse {
 struct SideWidgetTemplate {
     events: Vec<SideEventRow>,
     calendars: Vec<SideCalOpt>,
+    todos: Vec<crate::routes::calendar::TodoRow>,
     default_date: String,
+    default_calendar: String,
+    ai_enabled: bool,
+    home_address_js: String,
+    maps_provider: String,
 }
 
 struct SideEventRow {
     summary: String,
     when: String,
+    location: String,
+    maps_url: String,
 }
 
 struct SideCalOpt {
@@ -105,7 +112,8 @@ fn format_event_when(start: &str) -> String {
 }
 
 async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let limit = state.prefs.lock().await.side_widget_events.max(1) as usize;
+    let prefs = state.prefs.lock().await.clone();
+    let limit = prefs.side_widget_events.max(1) as usize;
     // Toujours servir le cache tout de suite : le rafraîchissement Calendula
     // (deux mois × tous les agendas) ne doit pas bloquer le premier rendu.
     if state.calendula_available {
@@ -123,12 +131,21 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             .load_upcoming_events(limit)
             .unwrap_or_default()
             .into_iter()
-            .map(|(_id, summary, start, _cal)| SideEventRow {
-                summary,
-                when: format_event_when(&start),
+            .map(|(_id, summary, start, _cal, location)| {
+                let maps_url = crate::routes::calendar::build_maps_url(
+                    &prefs.maps_provider,
+                    &prefs.home_address,
+                    &location,
+                );
+                SideEventRow {
+                    summary,
+                    when: format_event_when(&start),
+                    location,
+                    maps_url,
+                }
             })
             .collect::<Vec<_>>();
-        let calendars = cache
+        let calendars: Vec<SideCalOpt> = cache
             .load_calendars()
             .unwrap_or_default()
             .into_iter()
@@ -136,11 +153,38 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             .collect();
         (events, calendars)
     };
+    let cal_rows: Vec<crate::routes::calendar::CalRow> = calendars
+        .iter()
+        .map(|c| crate::routes::calendar::CalRow {
+            id: c.id.clone(),
+            name: c.name.clone(),
+        })
+        .collect();
+    let todos = if state.calendula_available && !cal_rows.is_empty() {
+        let mut list =
+            crate::routes::calendar::load_todos(&state, &cal_rows, "__all__").await;
+        // Sidebar : tâches ouvertes d'abord, max ~8
+        list.retain(|t| !t.completed);
+        list.truncate(8);
+        list
+    } else {
+        vec![]
+    };
     let default_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let default_calendar = calendars
+        .first()
+        .map(|c| c.id.clone())
+        .unwrap_or_default();
     match (SideWidgetTemplate {
         events,
         calendars,
+        todos,
         default_date,
+        default_calendar,
+        ai_enabled: prefs.ai_enabled,
+        home_address_js: serde_json::to_string(&prefs.home_address)
+            .unwrap_or_else(|_| "\"\"".into()),
+        maps_provider: prefs.maps_provider.clone(),
     })
     .render()
     {
@@ -204,7 +248,7 @@ async fn home(
         }
     };
     let ai_summary_btn = if prefs_snap.ai_enabled {
-        r#"<button type="button" class="icon-btn" title="Résumer la boîte (IA)"
+        r#"<button type="button" class="icon-btn" id="inbox-ai-summary-btn" title="Résumer la boîte (IA)"
                         onclick="window.HimaWeb && HimaWeb.openInboxSummary()">
                   <i data-lucide="sparkles"></i>
                 </button>"#

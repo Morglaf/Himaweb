@@ -66,12 +66,30 @@ impl Cache {
                 start_raw TEXT NOT NULL,
                 end_raw TEXT NOT NULL DEFAULT '',
                 description TEXT NOT NULL DEFAULT '',
+                location TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (calendar_id, id)
             );
             CREATE INDEX IF NOT EXISTS idx_cal_events_start ON cal_events(start_raw);
             "#,
         )?;
         self.migrate_envelopes()?;
+        self.migrate_cal_events()?;
+        Ok(())
+    }
+
+    fn migrate_cal_events(&self) -> Result<(), CacheError> {
+        let cols: Vec<String> = {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(cal_events)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            rows.filter_map(Result::ok).collect()
+        };
+        if !cols.iter().any(|c| c == "location") {
+            self.conn
+                .execute(
+                    "ALTER TABLE cal_events ADD COLUMN location TEXT NOT NULL DEFAULT ''",
+                    [],
+                )?;
+        }
         Ok(())
     }
 
@@ -389,41 +407,39 @@ impl Cache {
 
 
     /// Remplace uniquement les événements du mois indiqué (préserve les autres mois en cache).
+    /// Tuple: (id, summary, start, end, description, location)
     pub fn replace_calendar_events_in_month(
         &self,
         calendar_id: &str,
         year: i32,
         month: u32,
-        events: &[(String, String, String, String, String)],
+        events: &[(String, String, String, String, String, String)],
     ) -> Result<(), CacheError> {
         let prefix_compact = format!("{year:04}{month:02}");
         let prefix_dash = format!("{year:04}-{month:02}");
         let like_c = format!("{prefix_compact}%");
         let like_d = format!("{prefix_dash}%");
         let tx = self.conn.unchecked_transaction()?;
-        // Événements réellement datés dans ce mois
         tx.execute(
             "DELETE FROM cal_events WHERE calendar_id = ?1
              AND (start_raw LIKE ?2 OR start_raw LIKE ?3)",
             params![calendar_id, like_c, like_d],
         )?;
-        // Aussi retirer les ids qu'on va réinsérer (récurrents dont DTSTART
-        // reste hors mois — sinon UNIQUE (calendar_id,id) fait rollback toute la tx).
         {
             let mut del = tx.prepare(
                 "DELETE FROM cal_events WHERE calendar_id = ?1 AND id = ?2",
             )?;
-            for (id, _, _, _, _) in events {
+            for (id, _, _, _, _, _) in events {
                 del.execute(params![calendar_id, id])?;
             }
         }
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO cal_events(calendar_id, id, summary, start_raw, end_raw, description)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO cal_events(calendar_id, id, summary, start_raw, end_raw, description, location)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
-            for (id, summary, start, end, desc) in events {
-                stmt.execute(params![calendar_id, id, summary, start, end, desc])?;
+            for (id, summary, start, end, desc, loc) in events {
+                stmt.execute(params![calendar_id, id, summary, start, end, desc, loc])?;
             }
         }
         tx.commit()?;
@@ -431,12 +447,13 @@ impl Cache {
     }
 
     /// Events dont start_raw commence par YYYYMM (compact) ou YYYY-MM
+    /// Retourne (calendar_id, id, summary, start, end, description, location)
     pub fn load_events_in_month(
         &self,
         calendar_ids: &[String],
         year: i32,
         month: u32,
-    ) -> Result<Vec<(String, String, String, String, String, String)>, CacheError> {
+    ) -> Result<Vec<(String, String, String, String, String, String, String)>, CacheError> {
         if calendar_ids.is_empty() {
             return Ok(vec![]);
         }
@@ -445,7 +462,7 @@ impl Cache {
         let mut out = Vec::new();
         for cid in calendar_ids {
             let mut stmt = self.conn.prepare(
-                "SELECT calendar_id, id, summary, start_raw, end_raw, description
+                "SELECT calendar_id, id, summary, start_raw, end_raw, description, location
                  FROM cal_events
                  WHERE calendar_id = ?1
                    AND (start_raw LIKE ?2 OR start_raw LIKE ?3)
@@ -461,6 +478,7 @@ impl Cache {
                     r.get(3)?,
                     r.get(4)?,
                     r.get(5)?,
+                    r.get::<_, String>(6).unwrap_or_default(),
                 ))
             })?;
             out.extend(rows.filter_map(Result::ok));
@@ -472,13 +490,13 @@ impl Cache {
     pub fn load_upcoming_events(
         &self,
         limit: usize,
-    ) -> Result<Vec<(String, String, String, String)>, CacheError> {
+    ) -> Result<Vec<(String, String, String, String, String)>, CacheError> {
         let now = chrono::Local::now().format("%Y-%m-%d").to_string();
         let now_compact = chrono::Local::now().format("%Y%m%d").to_string();
         // Pas de LIMIT avant filtre : sinon les vieux événements (anniversaires…)
         // saturent la fenêtre et masquent le mois suivant.
         let mut stmt = self.conn.prepare(
-            "SELECT id, summary, start_raw, calendar_id FROM cal_events
+            "SELECT id, summary, start_raw, calendar_id, location FROM cal_events
              ORDER BY start_raw ASC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -487,6 +505,7 @@ impl Cache {
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
+                r.get::<_, String>(4).unwrap_or_default(),
             ))
         })?;
         let mut out = Vec::new();

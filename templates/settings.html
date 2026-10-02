@@ -985,6 +985,14 @@
             <span class="muted tiny">Contexte calendrier IA et trajets.</span>
           </label>
           <label class="block">
+            <span class="label">Cartes (trajet)</span>
+            <select name="maps_provider" class="select w-full">
+              <option value="google" {% if maps_provider == "google" %}selected{% endif %}>Google Maps</option>
+              <option value="osm" {% if maps_provider == "osm" %}selected{% endif %}>OpenStreetMap</option>
+              <option value="apple" {% if maps_provider == "apple" %}selected{% endif %}>Apple Plans</option>
+            </select>
+          </label>
+          <label class="block">
             <span class="label">Préprompt calendrier</span>
             <textarea class="input w-full" name="calendar_preprompt" rows="2"
                       placeholder="Ex. : préfère les RDV le matin, fuseau Europe/Paris…">{{ ai_calendar_preprompt }}</textarea>

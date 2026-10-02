@@ -17,6 +17,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/calendar/create", post(create_event))
         .route("/calendar/update", post(update_event))
         .route("/calendar/delete", post(delete_event))
+        .route("/calendar/todo/create", post(create_todo))
+        .route("/calendar/todo/toggle", post(toggle_todo))
+        .route("/calendar/todo/delete", post(delete_todo))
 }
 
 #[derive(Deserialize)]
@@ -74,6 +77,18 @@ struct CalendarTemplate {
     pub ai_enabled: bool,
     pub default_date: String,
     pub default_calendar: String,
+    pub home_address_js: String,
+    pub maps_provider: String,
+    pub todos: Vec<TodoRow>,
+}
+
+pub struct TodoRow {
+    pub id: String,
+    pub calendar_id: String,
+    pub summary: String,
+    pub due: String,
+    pub due_label: String,
+    pub completed: bool,
 }
 
 pub struct CalRow {
@@ -127,6 +142,8 @@ pub struct EventRow {
     pub description: String,
     pub location: String,
     pub rrule: String,
+    /// URL trajet (vide si pas de lieu)
+    pub maps_url: String,
     /// JSON compact pour data-ev (échappé HTML-safe)
     pub ev_json: String,
 }
@@ -184,6 +201,12 @@ async fn calendar_page(
         .unwrap_or("")
         .to_string();
 
+    let prefs = state.prefs.lock().await.clone();
+    let events: Vec<EventRow> = events
+        .into_iter()
+        .map(|e| with_maps(e, &prefs.maps_provider, &prefs.home_address))
+        .collect();
+
     let days = if view == "month" {
         build_month_grid(year, month, day, &events)
     } else {
@@ -210,7 +233,11 @@ async fn calendar_page(
         _ => day_events,
     };
 
-    let prefs = state.prefs.lock().await.clone();
+    let todos = if state.calendula_available {
+        load_todos(&state, &calendars, &current_id).await
+    } else {
+        vec![]
+    };
     let current_id_enc = urlencoding::encode(&current_id).into_owned();
     let default_date = format!("{year:04}-{month:02}-{day:02}");
     let default_calendar = if current_id != "__all__" && !current_id.is_empty() {
@@ -247,6 +274,9 @@ async fn calendar_page(
         ai_enabled: prefs.ai_enabled,
         default_date,
         default_calendar,
+        home_address_js: serde_json::to_string(&prefs.home_address).unwrap_or_else(|_| "\"\"".into()),
+        maps_provider: prefs.maps_provider.clone(),
+        todos,
     };
 
     let content = match inner.render() {
@@ -451,8 +481,17 @@ async fn load_calendar_data(
             if !cached_ev.is_empty() {
                 let events: Vec<EventRow> = cached_ev
                     .into_iter()
-                    .map(|(cid, id, summary, start, end, desc)| {
-                        with_ev_json(to_event_row(id, cid, summary, start, end, desc))
+                    .map(|(cid, id, summary, start, end, desc, loc)| {
+                        with_ev_json(to_event_row(
+                            id,
+                            cid,
+                            summary,
+                            start,
+                            end,
+                            desc,
+                            loc,
+                            String::new(),
+                        ))
                     })
                     .collect();
                 return (
@@ -501,8 +540,17 @@ async fn load_calendar_data(
                         .load_events_in_month(&ids, year, month)
                         .unwrap_or_default()
                         .into_iter()
-                        .map(|(c, i, s, start, e, d)| {
-                            with_ev_json(to_event_row(i, c, s, start, e, d))
+                        .map(|(c, i, s, start, e, d, loc)| {
+                            with_ev_json(to_event_row(
+                                i,
+                                c,
+                                s,
+                                start,
+                                e,
+                                d,
+                                loc,
+                                String::new(),
+                            ))
                         })
                         .collect()
                 };
@@ -540,15 +588,16 @@ async fn fetch_and_cache_month(
     let from = format!("{year:04}-{month:02}-01");
     let to = format!("{year:04}-{month:02}-{:02}", days_in_month(year, month));
     let pool = if background {
-        &state.cli_bg_limit
+        state.cli_bg_limit.clone()
     } else {
-        &state.cli_limit
+        state.cli_limit.clone()
     };
-    let _permit = pool.acquire().await.map_err(|e| e.to_string())?;
-
-    let list = client.list_calendars().await.map_err(|e| {
-        format!("{e} — vérifiez l’URL CalDAV (home complète) et le mot de passe dans Paramètres.")
-    })?;
+    let list = {
+        let _permit = pool.acquire().await.map_err(|e| e.to_string())?;
+        client.list_calendars().await.map_err(|e| {
+            format!("{e} — vérifiez l’URL CalDAV (home complète) et le mot de passe dans Paramètres.")
+        })?
+    };
     if list.is_empty() {
         return Err(
             "Aucun calendrier renvoyé. Ajoutez un compte CalDAV avec une URL complète.".into(),
@@ -586,9 +635,52 @@ async fn fetch_and_cache_month(
     let mut all_events = Vec::new();
     let mut errs = Vec::new();
     for c in targets {
-        match client.list_events(&c.id, Some(&from), Some(&to)).await {
+        let list_res = {
+            let _permit = pool.acquire().await.map_err(|e| e.to_string())?;
+            client.list_events(&c.id, Some(&from), Some(&to)).await
+        };
+        match list_res {
             Ok(list) => {
-                let rows: Vec<(String, String, String, String, String)> = list
+                let mut enriched = list;
+                // Enrichir LOCATION / DESCRIPTION / RRULE via event read (parallèle),
+                // uniquement sur le chemin interactif (pas le warm background).
+                if !background && !enriched.is_empty() {
+                    let mut join = tokio::task::JoinSet::new();
+                    for ev in &enriched {
+                        if !ev.location.is_empty() && !ev.description.is_empty() {
+                            continue;
+                        }
+                        let client = client.clone();
+                        let cal = c.id.clone();
+                        let id = ev.id.clone();
+                        let pool = pool.clone();
+                        join.spawn(async move {
+                            let _p = pool.acquire().await.ok();
+                            let fields = client.enrich_event_from_ical(&cal, &id).await.ok();
+                            (id, fields)
+                        });
+                    }
+                    let mut by_id = std::collections::BTreeMap::new();
+                    while let Some(res) = join.join_next().await {
+                        if let Ok((id, Some((desc, loc, rr)))) = res {
+                            by_id.insert(id, (desc, loc, rr));
+                        }
+                    }
+                    for ev in &mut enriched {
+                        if let Some((desc, loc, rr)) = by_id.remove(&ev.id) {
+                            if ev.description.is_empty() && !desc.is_empty() {
+                                ev.description = desc;
+                            }
+                            if ev.location.is_empty() && !loc.is_empty() {
+                                ev.location = loc;
+                            }
+                            if ev.rrule.is_empty() && !rr.is_empty() {
+                                ev.rrule = rr;
+                            }
+                        }
+                    }
+                }
+                let rows: Vec<(String, String, String, String, String, String)> = enriched
                     .iter()
                     .map(|e| {
                         (
@@ -597,6 +689,7 @@ async fn fetch_and_cache_month(
                             e.date.clone(),
                             e.end.clone(),
                             e.description.clone(),
+                            e.location.clone(),
                         )
                     })
                     .collect();
@@ -604,7 +697,7 @@ async fn fetch_and_cache_month(
                     let cache = state.cache.lock().await;
                     let _ = cache.replace_calendar_events_in_month(&c.id, year, month, &rows);
                 }
-                all_events.extend(list.into_iter().map(|e| {
+                all_events.extend(enriched.into_iter().map(|e| {
                     with_ev_json(to_event_row(
                         e.id,
                         c.id.clone(),
@@ -612,6 +705,8 @@ async fn fetch_and_cache_month(
                         e.date,
                         e.end,
                         e.description,
+                        e.location,
+                        normalize_rrule_display(&e.rrule),
                     ))
                 }));
             }
@@ -656,6 +751,8 @@ fn to_event_row(
     date: String,
     end: String,
     description: String,
+    location: String,
+    rrule: String,
 ) -> EventRow {
     let when = format_event_when(&date);
     let time = format_event_time(&date);
@@ -689,8 +786,9 @@ fn to_event_row(
         when,
         time,
         description,
-        location: String::new(),
-        rrule: String::new(),
+        location,
+        rrule,
+        maps_url: String::new(),
         ev_json: String::new(),
     }
 }
@@ -710,6 +808,74 @@ fn with_ev_json(mut e: EventRow) -> EventRow {
     })
     .to_string();
     e
+}
+
+fn with_maps(mut e: EventRow, provider: &str, home: &str) -> EventRow {
+    e.maps_url = build_maps_url(provider, home, &e.location);
+    e
+}
+
+pub(crate) fn build_maps_url(provider: &str, home: &str, location: &str) -> String {
+    let dest = location.trim();
+    if dest.is_empty() {
+        return String::new();
+    }
+    let d = urlencoding::encode(dest);
+    let o = home.trim();
+    match provider {
+        "osm" => {
+            if o.is_empty() {
+                format!("https://www.openstreetmap.org/search?query={d}")
+            } else {
+                format!(
+                    "https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route={};{}",
+                    urlencoding::encode(o),
+                    d
+                )
+            }
+        }
+        "apple" => {
+            if o.is_empty() {
+                format!("https://maps.apple.com/?daddr={d}")
+            } else {
+                format!(
+                    "https://maps.apple.com/?saddr={}&daddr={d}",
+                    urlencoding::encode(o)
+                )
+            }
+        }
+        _ => {
+            if o.is_empty() {
+                format!("https://www.google.com/maps/dir/?api=1&destination={d}")
+            } else {
+                format!(
+                    "https://www.google.com/maps/dir/?api=1&origin={}&destination={d}",
+                    urlencoding::encode(o)
+                )
+            }
+        }
+    }
+}
+
+fn normalize_rrule_display(raw: &str) -> String {
+    let t = raw.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    let upper = t.to_ascii_uppercase().replace("RRULE:", "");
+    if upper.contains("FREQ=DAILY") {
+        return "daily".into();
+    }
+    if upper.contains("FREQ=WEEKLY") {
+        return "weekly".into();
+    }
+    if upper.contains("FREQ=MONTHLY") {
+        return "monthly".into();
+    }
+    if upper.contains("FREQ=YEARLY") {
+        return "yearly".into();
+    }
+    "none".into()
 }
 
 fn iso_date(raw: &str) -> String {
@@ -1141,4 +1307,230 @@ fn cal_redirect(
         url.push_str(&format!("&day={d}"));
     }
     url
+}
+
+pub(crate) async fn load_todos(
+    state: &AppState,
+    calendars: &[CalRow],
+    current_id: &str,
+) -> Vec<TodoRow> {
+    let Some(client) = &state.calendula else {
+        return vec![];
+    };
+    let targets: Vec<&CalRow> = if current_id == "__all__" || current_id.is_empty() {
+        calendars.iter().collect()
+    } else {
+        calendars.iter().filter(|c| c.id == current_id).collect()
+    };
+    let mut join = tokio::task::JoinSet::new();
+    for c in targets {
+        let client = client.clone();
+        let cal = c.id.clone();
+        let pool = state.cli_limit.clone();
+        join.spawn(async move {
+            let _p = pool.acquire().await.ok();
+            client.list_todos(&cal, None, None).await.ok()
+        });
+    }
+    let mut out = Vec::new();
+    while let Some(res) = join.join_next().await {
+        if let Ok(Some(list)) = res {
+            for t in list {
+                let completed = t.percent_complete >= 100
+                    || t.status.eq_ignore_ascii_case("COMPLETED");
+                // UID pour update : souvent id = "xxx.ics"
+                out.push(TodoRow {
+                    id: t.id,
+                    calendar_id: t.calendar_id,
+                    summary: t.summary,
+                    due: t.due.clone(),
+                    due_label: format_todo_due(&t.due),
+                    completed,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| {
+        a.completed
+            .cmp(&b.completed)
+            .then_with(|| a.due.cmp(&b.due))
+            .then_with(|| a.summary.cmp(&b.summary))
+    });
+    out
+}
+
+fn format_todo_due(due: &str) -> String {
+    let t = due.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    if t.len() >= 8 && t.as_bytes().get(4) != Some(&b'-') {
+        let d = &t[..8.min(t.len())];
+        if d.chars().all(|c| c.is_ascii_digit()) && d.len() == 8 {
+            return format!("{}/{}/{}", &d[6..8], &d[4..6], &d[0..4]);
+        }
+    }
+    if t.len() >= 10 && t.as_bytes().get(4) == Some(&b'-') {
+        let parts: Vec<_> = t[..10].split('-').collect();
+        if parts.len() == 3 {
+            return format!("{}/{}/{}", parts[2], parts[1], parts[0]);
+        }
+    }
+    t.to_string()
+}
+
+fn todo_uid_from_id(id: &str) -> String {
+    id.trim()
+        .trim_end_matches(".ics")
+        .trim()
+        .to_string()
+}
+
+#[derive(Deserialize)]
+pub struct CreateTodoForm {
+    pub calendar: String,
+    pub summary: String,
+    pub due: Option<String>,
+    pub stay: Option<String>,
+}
+
+async fn create_todo(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<CreateTodoForm>,
+) -> impl IntoResponse {
+    let stay =
+        form.stay.as_deref() == Some("1") || form.stay.as_deref() == Some("true");
+    let cal = form.calendar.trim();
+    if cal.is_empty() || cal == "__all__" {
+        if stay {
+            return Html(
+                r#"<script>alert('Choisissez un calendrier');</script>"#.to_string(),
+            )
+            .into_response();
+        }
+        return Redirect::to("/calendar?msg=Choisissez%20un%20calendrier").into_response();
+    }
+    let Some(client) = &state.calendula else {
+        return Redirect::to("/calendar?msg=Calendula%20absent").into_response();
+    };
+    let ical = crate::cli::calendula::CalendulaClient::build_vtodo(
+        form.summary.trim(),
+        form.due.as_deref().unwrap_or(""),
+        false,
+    );
+    let _permit = state.cli_limit.acquire().await.ok();
+    match client.create_todo(cal, ical.as_bytes()).await {
+        Ok(_) => {
+            if stay {
+                return Html(
+                    r##"<script>if(window.HimaWeb){window.HimaWeb.onQuickEventCreated();}</script>"##
+                        .to_string(),
+                )
+                .into_response();
+            }
+            Redirect::to(&format!(
+                "/calendar?calendar={}&msg=Tâche%20créée",
+                urlencoding::encode(cal)
+            ))
+            .into_response()
+        }
+        Err(e) => {
+            let err_s = e.to_string();
+            let msg = urlencoding::encode(&err_s);
+            Redirect::to(&format!("/calendar?msg={msg}")).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ToggleTodoForm {
+    pub calendar: String,
+    pub id: String,
+    pub summary: String,
+    pub due: Option<String>,
+    pub completed: Option<String>,
+    pub stay: Option<String>,
+}
+
+async fn toggle_todo(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<ToggleTodoForm>,
+) -> impl IntoResponse {
+    let stay =
+        form.stay.as_deref() == Some("1") || form.stay.as_deref() == Some("true");
+    let cal = form.calendar.trim();
+    let Some(client) = &state.calendula else {
+        return Redirect::to("/calendar?msg=Calendula%20absent").into_response();
+    };
+    let currently_done = form.completed.as_deref() == Some("1");
+    let uid = todo_uid_from_id(&form.id);
+    let ical = crate::cli::calendula::CalendulaClient::build_vtodo_with_uid(
+        &uid,
+        form.summary.trim(),
+        form.due.as_deref().unwrap_or(""),
+        !currently_done,
+    );
+    let _permit = state.cli_limit.acquire().await.ok();
+    match client.update_todo(cal, &form.id, ical.as_bytes()).await {
+        Ok(()) => {
+            if stay {
+                return Html(
+                    r##"<script>if(window.HimaWeb){window.HimaWeb.onQuickEventCreated();}</script>"##
+                        .to_string(),
+                )
+                .into_response();
+            }
+            Redirect::to(&format!(
+                "/calendar?calendar={}&msg=Tâche%20mise%20à%20jour",
+                urlencoding::encode(cal)
+            ))
+            .into_response()
+        }
+        Err(e) => {
+            let err_s = e.to_string();
+            let msg = urlencoding::encode(&err_s);
+            Redirect::to(&format!("/calendar?msg={msg}")).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct DeleteTodoForm {
+    pub calendar: String,
+    pub id: String,
+    pub stay: Option<String>,
+}
+
+async fn delete_todo(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<DeleteTodoForm>,
+) -> impl IntoResponse {
+    let stay =
+        form.stay.as_deref() == Some("1") || form.stay.as_deref() == Some("true");
+    let cal = form.calendar.trim();
+    let Some(client) = &state.calendula else {
+        return Redirect::to("/calendar?msg=Calendula%20absent").into_response();
+    };
+    let _permit = state.cli_limit.acquire().await.ok();
+    match client.delete_todo(cal, &form.id).await {
+        Ok(()) => {
+            if stay {
+                return Html(
+                    r##"<script>if(window.HimaWeb){window.HimaWeb.onQuickEventCreated();}</script>"##
+                        .to_string(),
+                )
+                .into_response();
+            }
+            Redirect::to(&format!(
+                "/calendar?calendar={}&msg=Tâche%20supprimée",
+                urlencoding::encode(cal)
+            ))
+            .into_response()
+        }
+        Err(e) => {
+            let err_s = e.to_string();
+            let msg = urlencoding::encode(&err_s);
+            Redirect::to(&format!("/calendar?msg={msg}")).into_response()
+        }
+    }
 }

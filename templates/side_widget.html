@@ -1,4 +1,11 @@
-<div class="side-widget-inner" x-data="quickEventModal">
+<div class="side-widget-inner" x-data="eventModal({
+  stay: true,
+  ai: {{ ai_enabled }},
+  defaultDate: '{{ default_date }}',
+  defaultCalendar: '{{ default_calendar }}',
+  homeAddress: {{ home_address_js|safe }},
+  mapsProvider: '{{ maps_provider }}'
+})">
   <div class="side-widget-head">
     <span>Aperçu</span>
     <button type="button" class="icon-btn" title="Replier" onclick="window.HimaWeb && HimaWeb.toggleSideWidget(false)">
@@ -18,13 +25,71 @@
       <li>
         <span class="side-ev-title">{{ e.summary }}</span>
         <span class="muted tiny">{{ e.when }}</span>
+        {% if !e.location.is_empty() %}
+        <span class="side-ev-loc muted tiny">
+          <i data-lucide="map-pin"></i> {{ e.location }}
+          {% if !e.maps_url.is_empty() %}
+          <a class="icon-btn" href="{{ e.maps_url }}" target="_blank" rel="noopener" title="Itinéraire"
+             onclick="event.stopPropagation()">
+            <i data-lucide="route"></i>
+          </a>
+          {% endif %}
+        </span>
+        {% endif %}
       </li>
       {% endfor %}
     </ul>
     {% endif %}
-    <button type="button" class="btn secondary sm side-cta" @click="openModal()" {% if calendars.is_empty() %}disabled{% endif %}>
+    <button type="button" class="btn secondary sm side-cta" @click="openCreate()" {% if calendars.is_empty() %}disabled{% endif %}>
       Créer un RDV
     </button>
+  </section>
+
+  <section class="side-block">
+    <div class="side-block-title">
+      <i data-lucide="check-square"></i> Tâches
+    </div>
+    {% if todos.is_empty() %}
+    <p class="muted tiny">Aucune tâche</p>
+    {% else %}
+    <ul class="todo-list side-todo-list">
+      {% for t in todos %}
+      <li class="todo-row {% if t.completed %}is-done{% endif %}">
+        <form method="post" action="/calendar/todo/toggle"
+              hx-post="/calendar/todo/toggle" hx-target="#htmx-sink" hx-swap="innerHTML">
+          <input type="hidden" name="stay" value="1" />
+          <input type="hidden" name="calendar" value="{{ t.calendar_id }}" />
+          <input type="hidden" name="id" value="{{ t.id }}" />
+          <input type="hidden" name="summary" value="{{ t.summary }}" />
+          <input type="hidden" name="due" value="{{ t.due }}" />
+          <input type="hidden" name="completed" value="{% if t.completed %}1{% else %}0{% endif %}" />
+          <button type="submit" class="todo-check" title="{% if t.completed %}Rouvrir{% else %}Terminer{% endif %}">
+            <i data-lucide="{% if t.completed %}check-square{% else %}square{% endif %}"></i>
+          </button>
+        </form>
+        <div class="todo-main">
+          <span class="todo-summary">{{ t.summary }}</span>
+          {% if !t.due_label.is_empty() %}<span class="muted tiny">{{ t.due_label }}</span>{% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <details class="todo-create mt-2">
+      <summary class="btn secondary sm">Nouvelle tâche</summary>
+      <form method="post" action="/calendar/todo/create" class="space-y-2 mt-2"
+            hx-post="/calendar/todo/create" hx-target="#htmx-sink" hx-swap="innerHTML">
+        <input type="hidden" name="stay" value="1" />
+        <select name="calendar" class="select w-full" required>
+          {% for c in calendars %}
+          <option value="{{ c.id }}" {% if c.id == default_calendar %}selected{% endif %}>{{ c.name }}</option>
+          {% endfor %}
+        </select>
+        <input class="input w-full" name="summary" required placeholder="Titre…" />
+        <input class="input w-full" type="date" name="due" />
+        <button type="submit" class="btn sm">Créer</button>
+      </form>
+    </details>
   </section>
 
   <section class="side-block">
@@ -39,11 +104,36 @@
   </section>
 
   <div class="modal-backdrop" x-show="visible" x-cloak @keydown.escape.window="closeModal()" @click.self="closeModal()">
-    <div class="modal-panel" role="dialog" aria-modal="true" @click.stop style="width:min(28rem,96vw)">
+    <div class="modal-panel" role="dialog" aria-modal="true" @click.stop>
       <div class="modal-head">
         <h2 class="font-display text-xl">Nouvel événement</h2>
         <button type="button" class="icon-btn" @click="closeModal()" title="Fermer"><i data-lucide="x"></i></button>
       </div>
+
+      <template x-if="ai">
+        <div class="ai-fill-box mb-3">
+          <button type="button" class="ai-fill-toggle" :class="{ 'ai-busy-pulse': aiBusy }"
+                  @click="aiOpen = !aiOpen; $nextTick(() => lucide.createIcons())"
+                  :title="aiOpen ? 'Replier l’IA' : 'Ouvrir l’IA'">
+            <i data-lucide="sparkles"></i>
+            <span x-text="aiOpen ? 'Assistant IA' : 'IA'"></span>
+            <i data-lucide="chevron-up" x-show="aiOpen"></i>
+            <i data-lucide="chevron-down" x-show="!aiOpen"></i>
+          </button>
+          <div class="ai-fill-body" x-show="aiOpen" x-cloak>
+            <label class="block">
+              <span class="label">Décrire avec l’IA</span>
+              <textarea class="input w-full" rows="2" x-model="aiPrompt"
+                        placeholder="Ex. : réunion équipe mardi 10h–11h"></textarea>
+            </label>
+            <button type="button" class="btn secondary mt-2" @click="fillAi()" :disabled="aiBusy"
+                    :class="{ 'ai-busy-pulse': aiBusy }"
+                    x-text="aiBusy ? 'Génération…' : 'Remplir les champs'"></button>
+            <p class="muted tiny mt-1" x-show="aiError" x-text="aiError"></p>
+          </div>
+        </div>
+      </template>
+
       <form method="post" action="/calendar/create" class="space-y-3"
             hx-post="/calendar/create"
             hx-target="#htmx-sink"
@@ -54,7 +144,7 @@
         <input type="hidden" name="view" value="month" />
         <label class="block">
           <span class="label">Calendrier</span>
-          <select name="calendar" class="select w-full" required>
+          <select name="calendar" class="select w-full" x-model="calendar" required>
             {% for c in calendars %}
             <option value="{{ c.id }}">{{ c.name }}</option>
             {% endfor %}
@@ -62,28 +152,52 @@
         </label>
         <label class="block">
           <span class="label">Titre</span>
-          <input class="input w-full" name="summary" required placeholder="Réunion…" />
+          <input class="input w-full" name="summary" x-model="summary" required placeholder="Réunion…" />
         </label>
         <div class="form-row">
           <label class="block">
             <span class="label">Date début</span>
-            <input class="input w-full" type="date" name="start_date" value="{{ default_date }}" required />
+            <input class="input w-full" type="date" name="start_date" x-model="startDate" required />
           </label>
           <label class="block">
-            <span class="label">Heure</span>
-            <input class="input w-full" type="time" name="start_time" value="10:00" required />
+            <span class="label">Heure début</span>
+            <input class="input w-full" type="time" name="start_time" x-model="startTime" required />
           </label>
         </div>
         <div class="form-row">
           <label class="block">
             <span class="label">Date fin</span>
-            <input class="input w-full" type="date" name="end_date" value="{{ default_date }}" />
+            <input class="input w-full" type="date" name="end_date" x-model="endDate" />
           </label>
           <label class="block">
             <span class="label">Heure fin</span>
-            <input class="input w-full" type="time" name="end_time" value="11:00" />
+            <input class="input w-full" type="time" name="end_time" x-model="endTime" />
           </label>
         </div>
+        <label class="block">
+          <span class="label">Lieu</span>
+          <div class="cal-location-row">
+            <input class="input w-full" name="location" x-model="location" placeholder="Adresse ou lieu…" />
+            <a class="icon-btn" x-show="mapsLink()" x-cloak :href="mapsLink()" target="_blank" rel="noopener"
+               title="Itinéraire / temps de trajet">
+              <i data-lucide="route"></i>
+            </a>
+          </div>
+        </label>
+        <label class="block">
+          <span class="label">Récurrence</span>
+          <select name="rrule" class="select w-full" x-model="rrule">
+            <option value="none">Aucune</option>
+            <option value="daily">Quotidienne</option>
+            <option value="weekly">Hebdomadaire</option>
+            <option value="monthly">Mensuelle</option>
+            <option value="yearly">Annuelle</option>
+          </select>
+        </label>
+        <label class="block">
+          <span class="label">Description</span>
+          <textarea class="input w-full" name="description" rows="2" x-model="description"></textarea>
+        </label>
         <div class="btn-row mt-2">
           <button type="submit" class="btn" :disabled="busy">Créer</button>
           <button type="button" class="btn ghost" @click="closeModal()">Annuler</button>

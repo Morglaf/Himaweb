@@ -3,6 +3,8 @@
            ai: {{ ai_enabled }},
            defaultDate: '{{ default_date }}',
            defaultCalendar: '{{ default_calendar }}',
+           homeAddress: {{ home_address_js|safe }},
+           mapsProvider: '{{ maps_provider }}',
            year: {{ year }},
            month: {{ month }},
            day: {{ day }},
@@ -143,20 +145,68 @@
     {% include "calendar_events.html" %}
   </div>
   {% endif %}
+
+  <div class="cal-todos mt-6">
+    <h2 class="font-display text-xl mb-3">Tâches</h2>
+    {% if todos.is_empty() %}
+    <p class="muted tiny">Aucune tâche (CalDAV VTODO).</p>
+    {% else %}
+    <ul class="todo-list">
+      {% for t in todos %}
+      <li class="todo-row {% if t.completed %}is-done{% endif %}">
+        <form method="post" action="/calendar/todo/toggle" class="todo-toggle-form">
+          <input type="hidden" name="calendar" value="{{ t.calendar_id }}" />
+          <input type="hidden" name="id" value="{{ t.id }}" />
+          <input type="hidden" name="summary" value="{{ t.summary }}" />
+          <input type="hidden" name="due" value="{{ t.due }}" />
+          <input type="hidden" name="completed" value="{% if t.completed %}1{% else %}0{% endif %}" />
+          <button type="submit" class="todo-check" title="{% if t.completed %}Rouvrir{% else %}Terminer{% endif %}">
+            <i data-lucide="{% if t.completed %}check-square{% else %}square{% endif %}"></i>
+          </button>
+        </form>
+        <div class="todo-main">
+          <span class="todo-summary">{{ t.summary }}</span>
+          {% if !t.due_label.is_empty() %}<span class="muted tiny">{{ t.due_label }}</span>{% endif %}
+        </div>
+        <form method="post" action="/calendar/todo/delete"
+              onsubmit="return confirm('Supprimer cette tâche ?');">
+          <input type="hidden" name="calendar" value="{{ t.calendar_id }}" />
+          <input type="hidden" name="id" value="{{ t.id }}" />
+          <button type="submit" class="icon-btn" title="Supprimer"><i data-lucide="trash-2"></i></button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <details class="todo-create mt-3">
+      <summary class="btn secondary sm">Nouvelle tâche</summary>
+      <form method="post" action="/calendar/todo/create" class="space-y-2 mt-2">
+        <select name="calendar" class="select w-full" required>
+          {% for c in calendars %}
+          <option value="{{ c.id }}" {% if c.id == default_calendar %}selected{% endif %}>{{ c.name }}</option>
+          {% endfor %}
+        </select>
+        <input class="input w-full" name="summary" required placeholder="Titre de la tâche…" />
+        <input class="input w-full" type="date" name="due" />
+        <button type="submit" class="btn">Créer</button>
+      </form>
+    </details>
+  </div>
   {% endif %}
   {% endif %}
 
   <!-- Modal événement -->
-  <div class="modal-backdrop" x-show="open" x-cloak @keydown.escape.window="close()" @click.self="close()">
+  <div class="modal-backdrop" x-show="visible" x-cloak @keydown.escape.window="closeModal()" @click.self="closeModal()">
     <div class="modal-panel" role="dialog" aria-modal="true" @click.stop>
       <div class="modal-head">
         <h2 class="font-display text-xl" x-text="mode === 'edit' ? 'Modifier l’événement' : 'Nouvel événement'"></h2>
-        <button type="button" class="icon-btn" @click="close()" title="Fermer"><i data-lucide="x"></i></button>
+        <button type="button" class="icon-btn" @click="closeModal()" title="Fermer"><i data-lucide="x"></i></button>
       </div>
 
       <template x-if="ai">
         <div class="ai-fill-box mb-3">
-          <button type="button" class="ai-fill-toggle" @click="aiOpen = !aiOpen; $nextTick(() => lucide.createIcons())" :title="aiOpen ? 'Replier l’IA' : 'Ouvrir l’IA'">
+          <button type="button" class="ai-fill-toggle" :class="{ 'ai-busy-pulse': aiBusy }"
+                  @click="aiOpen = !aiOpen; $nextTick(() => lucide.createIcons())" :title="aiOpen ? 'Replier l’IA' : 'Ouvrir l’IA'">
             <i data-lucide="sparkles"></i>
             <span x-text="aiOpen ? 'Assistant IA' : 'IA'"></span>
             <i data-lucide="chevron-up" x-show="aiOpen"></i>
@@ -169,6 +219,7 @@
                         placeholder="Ex. : réunion équipe mardi 10h–11h, salle A, chaque semaine"></textarea>
             </label>
             <button type="button" class="btn secondary mt-2" @click="fillAi()" :disabled="aiBusy"
+                    :class="{ 'ai-busy-pulse': aiBusy }"
                     x-text="aiBusy ? 'Génération…' : 'Remplir les champs'"></button>
             <p class="muted tiny mt-1" x-show="aiError" x-text="aiError"></p>
           </div>
@@ -216,7 +267,13 @@
         </div>
         <label class="block">
           <span class="label">Lieu</span>
-          <input class="input w-full" name="location" x-model="location" />
+          <div class="cal-location-row">
+            <input class="input w-full" name="location" x-model="location" placeholder="Adresse ou lieu…" />
+            <a class="icon-btn" x-show="mapsLink()" x-cloak :href="mapsLink()" target="_blank" rel="noopener"
+               title="Itinéraire / temps de trajet">
+              <i data-lucide="route"></i>
+            </a>
+          </div>
         </label>
         <label class="block">
           <span class="label">Récurrence</span>
@@ -234,7 +291,7 @@
         </label>
         <div class="flex gap-2 mt-2">
           <button type="submit" class="btn" x-text="mode === 'edit' ? 'Enregistrer' : 'Créer'"></button>
-          <button type="button" class="btn ghost" @click="close()">Annuler</button>
+          <button type="button" class="btn ghost" @click="closeModal()">Annuler</button>
           <template x-if="mode === 'edit' && id">
             <button type="button" class="btn secondary danger-text" @click="confirmDelete()">Supprimer</button>
           </template>

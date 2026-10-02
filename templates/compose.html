@@ -49,6 +49,7 @@
                    placeholder="prompt…"
                    @keydown.enter.prevent="fillAi()" />
             <button type="button" class="icon-btn compose-ai-run" @click="fillAi()" :disabled="aiBusy"
+                    :class="{ 'ai-busy-pulse': aiBusy }"
                     :title="aiBusy ? 'Génération…' : 'Générer avec l’IA'">
               <i data-lucide="sparkles"></i>
             </button>

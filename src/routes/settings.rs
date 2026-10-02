@@ -141,6 +141,7 @@ struct SettingsTemplate {
     pub ai_ollama_preprompt: String,
     pub ai_log_enabled: bool,
     pub home_address: String,
+    pub maps_provider: String,
     pub ai_calendar_preprompt: String,
     pub ai_message: Option<String>,
     pub cal_color_accounts: Vec<ColorAccountRow>,
@@ -620,6 +621,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         ai_ollama_preprompt: prefs_snap.ai_ollama_preprompt.clone(),
         ai_log_enabled: prefs_snap.ai_log_enabled,
         home_address: prefs_snap.home_address.clone(),
+        maps_provider: prefs_snap.maps_provider.clone(),
         ai_calendar_preprompt: prefs_snap.ai_calendar_preprompt.clone(),
         ai_message: flash.ai_message,
         cal_color_accounts,
@@ -1851,6 +1853,7 @@ pub struct AiSettingsForm {
     pub ollama_preprompt: Option<String>,
     pub ai_log_enabled: Option<String>,
     pub home_address: Option<String>,
+    pub maps_provider: Option<String>,
     pub calendar_preprompt: Option<String>,
 }
 
@@ -1938,6 +1941,16 @@ async fn save_ai(
             .to_string();
         p.ai_log_enabled = form.ai_log_enabled.as_deref() == Some("1");
         p.home_address = form.home_address.unwrap_or_default().trim().to_string();
+        let mp = form
+            .maps_provider
+            .as_deref()
+            .unwrap_or("google")
+            .trim()
+            .to_ascii_lowercase();
+        p.maps_provider = match mp.as_str() {
+            "osm" | "apple" => mp,
+            _ => "google".into(),
+        };
         p.ai_calendar_preprompt = form
             .calendar_preprompt
             .unwrap_or_default()

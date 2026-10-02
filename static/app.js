@@ -733,19 +733,47 @@ function composeForm() {
   };
 }
 
+function mapsDirectionsUrl(provider, home, destination) {
+  const dest = (destination || '').trim();
+  if (!dest) return '';
+  const enc = encodeURIComponent(dest);
+  const from = (home || '').trim();
+  const fromEnc = from ? encodeURIComponent(from) : '';
+  switch ((provider || 'google').toLowerCase()) {
+    case 'osm':
+      return fromEnc
+        ? `https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route=${fromEnc}%3B${enc}`
+        : `https://www.openstreetmap.org/search?query=${enc}`;
+    case 'apple':
+      return fromEnc
+        ? `https://maps.apple.com/?saddr=${fromEnc}&daddr=${enc}&dirflg=d`
+        : `https://maps.apple.com/?q=${enc}`;
+    case 'google':
+    default:
+      return fromEnc
+        ? `https://www.google.com/maps/dir/?api=1&origin=${fromEnc}&destination=${enc}`
+        : `https://www.google.com/maps/search/?api=1&query=${enc}`;
+  }
+}
+
 function eventModal(opts) {
   opts = opts || {};
   const firstCal = opts.defaultCalendar && opts.defaultCalendar !== '__all__'
     ? opts.defaultCalendar
     : '';
   return {
-    open: false,
+    // Ne pas nommer `open`/`close` : collision Alpine avec window.open / window.close
+    visible: false,
     mode: 'create',
+    stay: !!opts.stay,
+    busy: false,
     ai: !!opts.ai,
     aiOpen: false,
     aiPrompt: '',
     aiBusy: false,
     aiError: '',
+    homeAddress: opts.homeAddress || '',
+    mapsProvider: opts.mapsProvider || 'google',
     year: opts.year,
     month: opts.month,
     day: opts.day,
@@ -760,12 +788,16 @@ function eventModal(opts) {
     location: '',
     description: '',
     rrule: 'none',
-    openCreate() {
+    mapsLink() {
+      return mapsDirectionsUrl(this.mapsProvider, this.homeAddress, this.location);
+    },
+    openCreate(presetDate) {
       this.mode = 'create';
       this.id = '';
       this.summary = '';
-      this.startDate = opts.defaultDate || '';
-      this.endDate = opts.defaultDate || '';
+      const d = presetDate || opts.defaultDate || '';
+      this.startDate = d;
+      this.endDate = d;
       this.startTime = '10:00';
       this.endTime = '11:00';
       this.location = '';
@@ -774,7 +806,7 @@ function eventModal(opts) {
       this.aiPrompt = '';
       this.aiError = '';
       if (firstCal) this.calendar = firstCal;
-      this.open = true;
+      this.visible = true;
       this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
     },
     openEdit(ds) {
@@ -816,11 +848,12 @@ function eventModal(opts) {
       this.rrule = obj.rrule || 'none';
       this.aiPrompt = '';
       this.aiError = '';
-      this.open = true;
+      this.visible = true;
       this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
     },
-    close() {
-      this.open = false;
+    closeModal() {
+      this.visible = false;
+      this.busy = false;
     },
     confirmDelete() {
       if (!this.id) return;
@@ -1219,15 +1252,17 @@ document.addEventListener('alpine:init', () => {
 
 function inboxSummaryModal() {
   return {
-    open: false,
+    visible: false,
     busy: false,
     error: '',
     items: [],
     async load() {
-      this.open = true;
+      this.visible = true;
       this.busy = true;
       this.error = '';
       this.items = [];
+      const trigger = document.getElementById('inbox-ai-summary-btn');
+      if (trigger) trigger.classList.add('ai-busy-pulse');
       this.$nextTick(() => {
         if (window.lucide) lucide.createIcons();
       });
@@ -1255,13 +1290,16 @@ function inboxSummaryModal() {
         this.error = e.message || String(e);
       } finally {
         this.busy = false;
+        if (trigger) trigger.classList.remove('ai-busy-pulse');
         this.$nextTick(() => {
           if (window.lucide) lucide.createIcons();
         });
       }
     },
-    close() {
-      this.open = false;
+    closeModal() {
+      this.visible = false;
+      const trigger = document.getElementById('inbox-ai-summary-btn');
+      if (trigger) trigger.classList.remove('ai-busy-pulse');
     },
     reply(it) {
       if (!window.HimaWeb) return;
@@ -1270,7 +1308,7 @@ function inboxSummaryModal() {
         mailbox: it.mailbox || 'Inbox',
         account: it.account || '',
       });
-      this.close();
+      this.closeModal();
     },
     async archiveRead(it) {
       if (!window.HimaWeb) return;
@@ -1311,16 +1349,21 @@ window.HimaWeb = {
       host = document.createElement('div');
       host.id = 'inbox-summary-host';
       document.body.appendChild(host);
+    } else if (host.parentElement !== document.body) {
+      // Sortir du layout mail (overflow / stacking context) pour la modal fixed
+      document.body.appendChild(host);
     }
-    if (!host.querySelector('[data-inbox-summary]')) {
+    let root = host.querySelector('[data-inbox-summary]');
+    if (!root) {
       host.innerHTML = `
-<div data-inbox-summary class="modal-backdrop inbox-summary-backdrop" x-data="inboxSummaryModal()"
-     x-show="open" x-cloak @keydown.escape.window="close()"
-     style="display:none" x-bind:style="open ? 'display:flex' : 'display:none'">
-  <div class="modal-panel inbox-summary-panel" @click.outside="close()">
+<div data-inbox-summary class="modal-backdrop inbox-summary-backdrop" x-data="inboxSummaryModal"
+     x-show="visible" x-cloak
+     @keydown.escape.window="closeModal()"
+     @click.self="closeModal()">
+  <div class="modal-panel inbox-summary-panel" @click.stop>
     <div class="flex items-center justify-between mb-3">
       <h2 class="font-display text-xl">Résumé inbox</h2>
-      <button type="button" class="icon-btn" @click="close()" title="Fermer"><i data-lucide="x"></i></button>
+      <button type="button" class="icon-btn" @click="closeModal()" title="Fermer"><i data-lucide="x"></i></button>
     </div>
     <p class="muted tiny mb-3" x-show="busy">Analyse en cours…</p>
     <p class="offline-strip mb-3" x-show="error" x-text="error"></p>
@@ -1343,19 +1386,24 @@ window.HimaWeb = {
     <p class="muted tiny" x-show="!busy && !error && items.length === 0">Aucun message à résumer.</p>
   </div>
 </div>`;
-      if (window.Alpine && window.Alpine.initTree) {
-        window.Alpine.initTree(host);
+      if (window.Alpine && typeof Alpine.initTree === 'function') {
+        Alpine.initTree(host);
       }
+      root = host.querySelector('[data-inbox-summary]');
     }
-    const root = host.querySelector('[data-inbox-summary]');
-    if (root && root._x_dataStack && root._x_dataStack[0]) {
-      root._x_dataStack[0].load();
-    } else if (root && window.Alpine) {
-      // Alpine 3 : accéder via $data après init
-      const data = window.Alpine.$data(root);
-      if (data && data.load) data.load();
+    // Différer l’ouverture : le clic d’ouverture ne doit pas être pris pour un click.outside
+    const start = () => {
+      const data =
+        (root && root._x_dataStack && root._x_dataStack[0]) ||
+        (root && window.Alpine && Alpine.$data(root));
+      if (data && typeof data.load === 'function') data.load();
+      if (window.lucide) lucide.createIcons();
+    };
+    if (window.Alpine && typeof Alpine.nextTick === 'function') {
+      Alpine.nextTick(start);
+    } else {
+      setTimeout(start, 0);
     }
-    if (window.lucide) lucide.createIcons();
   },
 
   openAttPreview(el) {
@@ -1777,7 +1825,8 @@ window.HimaWeb = {
     const root = document.querySelector('.side-widget-inner');
     if (root && root._x_dataStack && root._x_dataStack[0]) {
       try {
-        root._x_dataStack[0].closeModal();
+        const d = root._x_dataStack[0];
+        if (typeof d.closeModal === 'function') d.closeModal();
       } catch (_) {}
     }
     const body = document.querySelector('#side-widget .side-widget-body');

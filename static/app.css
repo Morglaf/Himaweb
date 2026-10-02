@@ -1442,6 +1442,34 @@ html[data-topbar="text"] .tab > i { display: none; }
   flex-basis: 100%;
   margin: 0;
 }
+
+/* Bouton IA : respiration lumineuse pendant le travail */
+.ai-busy-pulse,
+.compose-ai-run.ai-busy-pulse,
+.ai-fill-toggle.ai-busy-pulse {
+  color: var(--accent);
+  animation: ai-breathe 1.4s ease-in-out infinite;
+}
+.ai-busy-pulse i,
+.compose-ai-run.ai-busy-pulse i {
+  animation: ai-sparkle-spin 2.2s linear infinite;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 70%, transparent));
+}
+@keyframes ai-breathe {
+  0%, 100% {
+    opacity: 0.65;
+    filter: drop-shadow(0 0 2px color-mix(in srgb, var(--accent) 35%, transparent));
+  }
+  50% {
+    opacity: 1;
+    filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent) 85%, transparent));
+  }
+}
+@keyframes ai-sparkle-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 .compose-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -2387,6 +2415,65 @@ input.toggle:checked::after {
 }
 .cal-week-ev .cal-ev-title { display: block; }
 .cal-event .cal-ev-time { color: var(--accent); margin-right: 0.35rem; }
+
+.cal-ev-location,
+.side-ev-loc {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+}
+.cal-ev-location i,
+.side-ev-loc i { width: 0.9rem; height: 0.9rem; flex-shrink: 0; }
+.cal-location-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.cal-location-row .input { flex: 1; min-width: 0; }
+
+.todo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.todo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--radius);
+}
+.todo-row:hover { background: var(--surface-2); }
+.todo-row.is-done .todo-summary {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+.todo-check {
+  background: none;
+  border: 0;
+  padding: 0.1rem;
+  cursor: pointer;
+  color: var(--muted);
+  display: inline-flex;
+}
+.todo-check:hover { color: var(--accent); }
+.todo-check i { width: 1.1rem; height: 1.1rem; }
+.todo-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.todo-summary { font-size: 0.9rem; }
+.todo-create summary { cursor: pointer; list-style: none; }
+.todo-create summary::-webkit-details-marker { display: none; }
+.side-todo-list .todo-row { padding: 0.25rem 0; }
 
 @keyframes fade {
   from { opacity: 0; transform: translateY(4px); }
