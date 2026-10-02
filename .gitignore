@@ -10,6 +10,7 @@ Thumbs.db
 .env.*
 README.local.md
 *.local.md
+README.winget.md
 
 # Données / secrets utilisateur (ne jamais committer)
 prefs.json
@@ -26,3 +27,6 @@ prefs.json
 *.pfx
 tokens/
 **/token-*
+
+# Sortie Inno Setup
+dist/

@@ -203,6 +203,14 @@ async fn home(
                 .unwrap_or_else(|| "var(--accent)".into())
         }
     };
+    let ai_summary_btn = if prefs_snap.ai_enabled {
+        r#"<button type="button" class="icon-btn" title="Résumer la boîte (IA)"
+                        onclick="window.HimaWeb && HimaWeb.openInboxSummary()">
+                  <i data-lucide="sparkles"></i>
+                </button>"#
+    } else {
+        ""
+    };
     let (theme, layout) = state.theme_layout().await;
     let ui_style = state.ui_style().await;
 
@@ -302,6 +310,7 @@ async fn home(
                   <input type="hidden" name="mailbox" id="current-mailbox" value="{mailbox}" />
                   <input type="hidden" name="account" id="current-account" value="{account_val}" />
                 </div>
+                {ai_summary_btn}
                 <button class="icon-btn" title="Rafraîchir"
                         hx-get="/partials/envelopes?mailbox={mailbox_q}&page={page}{account_q}"
                         hx-target="#envelope-list" hx-swap="innerHTML"
@@ -340,6 +349,7 @@ async fn home(
           </section>
           {{SIDE_WIDGET}}
         </div>
+        <div id="inbox-summary-host"></div>
         "##
     );
 

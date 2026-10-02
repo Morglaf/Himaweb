@@ -53,6 +53,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/settings/ntfy/delete", post(delete_ntfy_source))
         .route("/settings/ai", post(save_ai))
         .route("/settings/ai/models", post(list_ai_models))
+        .route("/settings/ai/log/clear", post(clear_ai_log))
         .route("/settings/backup/export", get(backup_export))
         .route("/settings/backup/import", post(backup_import))
         .route("/settings/confirm-delete", post(save_confirm_delete))
@@ -138,6 +139,9 @@ struct SettingsTemplate {
     pub ai_ollama_think: String,
     pub ai_ollama_temperature: String,
     pub ai_ollama_preprompt: String,
+    pub ai_log_enabled: bool,
+    pub home_address: String,
+    pub ai_calendar_preprompt: String,
     pub ai_message: Option<String>,
     pub cal_color_accounts: Vec<ColorAccountRow>,
     pub backup_message: Option<String>,
@@ -166,6 +170,7 @@ pub struct ColorAccountRow {
     pub icon: String,
     pub color: String,
     pub kind: String,
+    pub ai_preprompt: String,
 }
 
 pub struct NtfySourceRow {
@@ -325,6 +330,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
             } else {
                 "mail".into()
             },
+            ai_preprompt: prefs_snap.account_ai_preprompt_for(n),
         })
         .collect();
 
@@ -524,6 +530,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
             icon: prefs_snap.cal_account_icon(&a.name),
             name: a.name.clone(),
             kind: "cal".into(),
+            ai_preprompt: String::new(),
         })
         .collect();
 
@@ -611,6 +618,9 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
             .map(|t| format!("{t}"))
             .unwrap_or_default(),
         ai_ollama_preprompt: prefs_snap.ai_ollama_preprompt.clone(),
+        ai_log_enabled: prefs_snap.ai_log_enabled,
+        home_address: prefs_snap.home_address.clone(),
+        ai_calendar_preprompt: prefs_snap.ai_calendar_preprompt.clone(),
         ai_message: flash.ai_message,
         cal_color_accounts,
         backup_message: flash.backup_message,
@@ -838,6 +848,7 @@ async fn save_account_colors(
     let colors = crate::form_util::form_values(&map, "color");
     let labels = crate::form_util::form_values(&map, "label");
     let icons = crate::form_util::form_values(&map, "icon");
+    let ai_preprompts = crate::form_util::form_values(&map, "ai_preprompt");
     {
         let mut prefs = state.prefs.lock().await;
         let n = names.len();
@@ -867,6 +878,18 @@ async fn save_account_colors(
                     prefs.account_icons.remove(name);
                 } else if crate::form_util::is_safe_icon_name(ic) {
                     prefs.account_icons.insert(name.to_string(), ic.to_string());
+                }
+            }
+            if !prefs::Prefs::is_ntfy_key(name) {
+                if let Some(pp) = ai_preprompts.get(i) {
+                    let t = pp.trim();
+                    if t.is_empty() {
+                        prefs.account_ai_preprompt.remove(name);
+                    } else {
+                        prefs
+                            .account_ai_preprompt
+                            .insert(name.to_string(), t.to_string());
+                    }
                 }
             }
         }
@@ -1826,6 +1849,9 @@ pub struct AiSettingsForm {
     pub ollama_think: Option<String>,
     pub ollama_temperature: Option<String>,
     pub ollama_preprompt: Option<String>,
+    pub ai_log_enabled: Option<String>,
+    pub home_address: Option<String>,
+    pub calendar_preprompt: Option<String>,
 }
 
 async fn save_ai(
@@ -1903,12 +1929,20 @@ async fn save_ai(
                 .filter(|s| !s.is_empty())
                 .and_then(|s| s.parse::<f32>().ok())
                 .map(|t| t.clamp(0.0, 2.0));
-            p.ai_ollama_preprompt = form
-                .ollama_preprompt
-                .unwrap_or_default()
-                .trim()
-                .to_string();
         }
+        // Commun Ollama / Gemini
+        p.ai_ollama_preprompt = form
+            .ollama_preprompt
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        p.ai_log_enabled = form.ai_log_enabled.as_deref() == Some("1");
+        p.home_address = form.home_address.unwrap_or_default().trim().to_string();
+        p.ai_calendar_preprompt = form
+            .calendar_preprompt
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         let _ = p.save();
     }
     flash.ai_message = Some("Préférences IA enregistrées.".into());
@@ -1918,6 +1952,20 @@ async fn save_ai(
 #[derive(Deserialize)]
 pub struct AiModelsForm {
     pub api_key: Option<String>,
+}
+
+async fn clear_ai_log(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    match prefs::Prefs::ai_log_path() {
+        Ok(path) => {
+            let _ = std::fs::remove_file(&path);
+            flash.ai_message = Some(format!("Journal IA effacé ({})", path.display()));
+        }
+        Err(e) => {
+            flash.ai_message = Some(format!("Impossible d’effacer le journal: {e}"));
+        }
+    }
+    render_settings(state, flash).await
 }
 
 async fn list_ai_models(

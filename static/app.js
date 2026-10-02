@@ -456,9 +456,66 @@ function composeForm() {
       if (this.bcc) lines.push('Cci: ' + this.bcc);
       if (this.replyTo) lines.push('Reply-To: ' + this.replyTo);
       if (this.subject) lines.push('Sujet: ' + this.subject);
-      const body = this.currentBodyText();
-      if (body) lines.push('Corps:\n' + body);
-      return lines.join('\n\n') || '(brouillon vide)';
+      const { draftBody, previous } = this.splitDraftAndPrevious();
+      if (draftBody) lines.push('Corps:\n' + draftBody);
+      return {
+        context: lines.join('\n\n') || '(brouillon vide)',
+        previous: previous || '',
+      };
+    },
+    splitDraftAndPrevious() {
+      const full = this.currentBodyText();
+      if (!full) return { draftBody: '', previous: '' };
+      // Sépare le brouillon utilisateur du message cité (reply)
+      const markers = [
+        /\nOn .+ wrote:\n/,
+        /\nLe .+ a écrit\s*:\n/i,
+        /\n-{2,}\s*Original Message\s*-{2,}\n/i,
+        /\n_{2,}\nFrom:\s/i,
+        /\n> /,
+      ];
+      let cut = -1;
+      for (const re of markers) {
+        const m = full.search(re);
+        if (m >= 0 && (cut < 0 || m < cut)) cut = m;
+      }
+      if (cut > 0) {
+        return {
+          draftBody: full.slice(0, cut).trim(),
+          previous: full.slice(cut).trim(),
+        };
+      }
+      if (this.kind === 'reply' && full.includes('\n>')) {
+        const idx = full.indexOf('\n>');
+        if (idx > 0) {
+          return {
+            draftBody: full.slice(0, idx).trim(),
+            previous: full.slice(idx).trim(),
+          };
+        }
+      }
+      return { draftBody: full, previous: '' };
+    },
+    localNowLabel() {
+      try {
+        const d = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+        return (
+          d.getFullYear() +
+          '-' +
+          pad(d.getMonth() + 1) +
+          '-' +
+          pad(d.getDate()) +
+          ' ' +
+          pad(d.getHours()) +
+          ':' +
+          pad(d.getMinutes()) +
+          (tz ? ' (' + tz + ')' : '')
+        );
+      } catch (_) {
+        return new Date().toISOString();
+      }
     },
     syncHtmlFromPlain() {
       const plain = this.body || '';
@@ -643,13 +700,17 @@ function composeForm() {
       this.aiBusy = true;
       this.aiError = '';
       try {
+        const ctx = this.draftContext();
         const res = await fetch('/ai/api/mail', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             prompt,
             kind: this.kind,
-            context: this.draftContext(),
+            account: this.account || '',
+            now: this.localNowLabel(),
+            context: ctx.context,
+            previous: ctx.previous,
           }),
         });
         const data = await res.json();
@@ -776,10 +837,41 @@ function eventModal(opts) {
       this.aiBusy = true;
       this.aiError = '';
       try {
+        const now = (() => {
+          try {
+            const d = new Date();
+            const pad = (n) => String(n).padStart(2, '0');
+            const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+            return (
+              d.getFullYear() +
+              '-' +
+              pad(d.getMonth() + 1) +
+              '-' +
+              pad(d.getDate()) +
+              ' ' +
+              pad(d.getHours()) +
+              ':' +
+              pad(d.getMinutes()) +
+              (tz ? ' (' + tz + ')' : '')
+            );
+          } catch (_) {
+            return new Date().toISOString();
+          }
+        })();
+        const selected =
+          (this.startDate || '') +
+          (this.startTime ? ' ' + this.startTime : '') +
+          (this.endDate || this.endTime
+            ? ' → ' + (this.endDate || this.startDate || '') + (this.endTime ? ' ' + this.endTime : '')
+            : '');
         const res = await fetch('/ai/api/event', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt }),
+          body: JSON.stringify({
+            prompt,
+            now,
+            selected_date: selected.trim(),
+          }),
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
@@ -1121,11 +1213,150 @@ document.addEventListener('alpine:init', () => {
     Alpine.data('quickEventModal', quickEventModal);
     Alpine.data('tbImportForm', tbImportForm);
     Alpine.data('messageView', messageView);
+    Alpine.data('inboxSummaryModal', inboxSummaryModal);
   }
 });
 
+function inboxSummaryModal() {
+  return {
+    open: false,
+    busy: false,
+    error: '',
+    items: [],
+    async load() {
+      this.open = true;
+      this.busy = true;
+      this.error = '';
+      this.items = [];
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+      });
+      try {
+        const mailbox =
+          (document.getElementById('current-mailbox') || {}).value || 'Inbox';
+        const account = (document.getElementById('current-account') || {}).value || '';
+        const rows = [...document.querySelectorAll('#envelope-list .envelope')].slice(0, 15);
+        const items = rows.map((el) => ({
+          id: el.dataset.id || '',
+          account: el.dataset.account || account,
+          mailbox: el.dataset.mailbox || mailbox,
+          from: (el.querySelector('.from') || {}).textContent || '',
+          subject: (el.querySelector('.subject-text') || {}).textContent || '',
+        }));
+        const res = await fetch('/ai/api/inbox-summary', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mailbox, account, items, limit: 15 }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        this.items = data.items || [];
+      } catch (e) {
+        this.error = e.message || String(e);
+      } finally {
+        this.busy = false;
+        this.$nextTick(() => {
+          if (window.lucide) lucide.createIcons();
+        });
+      }
+    },
+    close() {
+      this.open = false;
+    },
+    reply(it) {
+      if (!window.HimaWeb) return;
+      window.HimaWeb.runContextAction('reply', {
+        id: it.id,
+        mailbox: it.mailbox || 'Inbox',
+        account: it.account || '',
+      });
+      this.close();
+    },
+    async archiveRead(it) {
+      if (!window.HimaWeb) return;
+      const mb = it.mailbox || 'Inbox';
+      const acc = it.account || '';
+      window.HimaWeb.runContextAction('flag', {
+        id: it.id,
+        mailbox: mb,
+        account: acc,
+        seen: '1',
+      });
+      const items = [{ id: it.id, mailbox: mb, account: acc, messageId: '' }];
+      try {
+        await window.HimaWeb.moveMailsToFolder(items, 'Archive', acc);
+      } catch (_) {
+        /* Archive peut ne pas exister — lu suffit */
+      }
+      this.items = this.items.filter((x) => x.id !== it.id);
+    },
+    remove(it) {
+      if (!window.HimaWeb) return;
+      window.HimaWeb.runContextAction('delete', {
+        id: it.id,
+        mailbox: it.mailbox || 'Inbox',
+        account: it.account || '',
+      });
+      this.items = this.items.filter((x) => x.id !== it.id);
+    },
+  };
+}
+
 window.HimaWeb = {
   messageView,
+
+  openInboxSummary() {
+    let host = document.getElementById('inbox-summary-host');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'inbox-summary-host';
+      document.body.appendChild(host);
+    }
+    if (!host.querySelector('[data-inbox-summary]')) {
+      host.innerHTML = `
+<div data-inbox-summary class="modal-backdrop inbox-summary-backdrop" x-data="inboxSummaryModal()"
+     x-show="open" x-cloak @keydown.escape.window="close()"
+     style="display:none" x-bind:style="open ? 'display:flex' : 'display:none'">
+  <div class="modal-panel inbox-summary-panel" @click.outside="close()">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="font-display text-xl">Résumé inbox</h2>
+      <button type="button" class="icon-btn" @click="close()" title="Fermer"><i data-lucide="x"></i></button>
+    </div>
+    <p class="muted tiny mb-3" x-show="busy">Analyse en cours…</p>
+    <p class="offline-strip mb-3" x-show="error" x-text="error"></p>
+    <ul class="inbox-summary-list" x-show="!busy && !error">
+      <template x-for="it in items" :key="it.id">
+        <li class="inbox-summary-row">
+          <div class="inbox-summary-meta">
+            <strong class="inbox-summary-from" x-text="it.from || '—'"></strong>
+            <span class="muted tiny" x-text="it.subject || ''"></span>
+            <p class="inbox-summary-text" x-text="it.summary || ''"></p>
+          </div>
+          <div class="inbox-summary-actions">
+            <button type="button" class="icon-btn" title="Répondre" @click="reply(it)"><i data-lucide="reply"></i></button>
+            <button type="button" class="icon-btn" title="Archiver + lu" @click="archiveRead(it)"><i data-lucide="archive"></i></button>
+            <button type="button" class="icon-btn" title="Supprimer" @click="remove(it)"><i data-lucide="trash-2"></i></button>
+          </div>
+        </li>
+      </template>
+    </ul>
+    <p class="muted tiny" x-show="!busy && !error && items.length === 0">Aucun message à résumer.</p>
+  </div>
+</div>`;
+      if (window.Alpine && window.Alpine.initTree) {
+        window.Alpine.initTree(host);
+      }
+    }
+    const root = host.querySelector('[data-inbox-summary]');
+    if (root && root._x_dataStack && root._x_dataStack[0]) {
+      root._x_dataStack[0].load();
+    } else if (root && window.Alpine) {
+      // Alpine 3 : accéder via $data après init
+      const data = window.Alpine.$data(root);
+      if (data && data.load) data.load();
+    }
+    if (window.lucide) lucide.createIcons();
+  },
 
   openAttPreview(el) {
     if (!el) return;

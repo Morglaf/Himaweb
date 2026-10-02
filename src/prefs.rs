@@ -134,9 +134,21 @@ pub struct Prefs {
     /// Ollama : température (None = défaut modèle)
     #[serde(default)]
     pub ai_ollama_temperature: Option<f32>,
-    /// Ollama : préprompt utilisateur (préfixé au system métier)
+    /// Préprompt global (style / persona) — appliqué à tous les providers
     #[serde(default)]
     pub ai_ollama_preprompt: String,
+    /// Préprompt IA par compte mail (propriétaire + style)
+    #[serde(default)]
+    pub account_ai_preprompt: std::collections::BTreeMap<String, String>,
+    /// Journal request/response IA (opt-in)
+    #[serde(default)]
+    pub ai_log_enabled: bool,
+    /// Adresse domicile (contexte calendrier / trajet)
+    #[serde(default)]
+    pub home_address: String,
+    /// Préprompt calendrier (complète le global)
+    #[serde(default)]
+    pub ai_calendar_preprompt: String,
     /// Apparence comptes Calendula (comme mail)
     #[serde(default)]
     pub cal_account_colors: std::collections::BTreeMap<String, String>,
@@ -241,6 +253,10 @@ impl Default for Prefs {
             ai_ollama_think: default_ai_ollama_think(),
             ai_ollama_temperature: None,
             ai_ollama_preprompt: String::new(),
+            account_ai_preprompt: Default::default(),
+            ai_log_enabled: false,
+            home_address: String::new(),
+            ai_calendar_preprompt: String::new(),
             cal_account_colors: Default::default(),
             cal_account_labels: Default::default(),
             cal_account_icons: Default::default(),
@@ -587,6 +603,21 @@ impl Prefs {
                     "circle-user".into()
                 }
             })
+    }
+
+    pub fn account_ai_preprompt_for(&self, name: &str) -> String {
+        self.account_ai_preprompt
+            .get(name)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default()
+    }
+
+    pub fn ai_log_path() -> Result<PathBuf, String> {
+        let base = dirs::data_local_dir().ok_or("LOCALAPPDATA introuvable")?;
+        let dir = base.join("HimaWeb");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        Ok(dir.join("ai-log.jsonl"))
     }
 
     /// Serveur sans UID MOVE : COPY + purge au lieu de `message move`.

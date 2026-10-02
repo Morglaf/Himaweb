@@ -2,13 +2,18 @@
 # Usage (PowerShell) :
 #   irm https://raw.githubusercontent.com/Morglaf/Himaweb/master/install.ps1 | iex
 #   .\install.ps1 -Prefix "$env:LOCALAPPDATA\HimaWeb"
+#   .\install.ps1 -WithDeps   # + Himalaya/Cardamum/Calendula/Ortie si absents
+#
+# Préférer l’installateur GUI : HimaWeb-Setup-x64.exe (releases)
+# ou : winget install Morglaf.HimaWeb
 #
 # Par défaut : %LOCALAPPDATA%\HimaWeb\bin (ajouté au PATH utilisateur si possible).
 
 [CmdletBinding()]
 param(
     [string]$Prefix = (Join-Path $env:LOCALAPPDATA "HimaWeb"),
-    [string]$Tag = "latest"
+    [string]$Tag = "latest",
+    [switch]$WithDeps
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,4 +59,19 @@ try {
     Write-Host "Lancez avec : himaweb"
 } finally {
     Remove-Item -Recurse -Force $tmpdir -ErrorAction SilentlyContinue
+}
+
+if ($WithDeps) {
+    $depsScript = $null
+    if ($PSScriptRoot) {
+        $local = Join-Path $PSScriptRoot "installer\install-deps.ps1"
+        if (Test-Path -LiteralPath $local) { $depsScript = $local }
+    }
+    if (-not $depsScript) {
+        $depsScript = Join-Path ([System.IO.Path]::GetTempPath()) ("himaweb-install-deps-" + [guid]::NewGuid().ToString("n") + ".ps1")
+        $depsUrl = "https://raw.githubusercontent.com/Morglaf/Himaweb/master/installer/install-deps.ps1"
+        Invoke-WebRequest -Uri $depsUrl -OutFile $depsScript -UseBasicParsing
+    }
+    Write-Host "Installation des dépendances Pimalaya…"
+    & $depsScript -Prefix $Prefix -Tools "himalaya,cardamum,calendula,ortie" -SkipIfPresent
 }

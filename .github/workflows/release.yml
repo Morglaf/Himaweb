@@ -76,6 +76,26 @@ jobs:
           "ASSET_TGZ=$tgz" | Out-File -FilePath $env:GITHUB_ENV -Append
           "ASSET_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build Inno Setup installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          $exe = Resolve-Path "target\${{ matrix.target }}\release\${{ matrix.bin }}"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            "/DMyAppVersion=$ver" `
+            "/DMyAppExeSource=$exe" `
+            "installer\himaweb.iss"
+          if (-not (Test-Path "dist\HimaWeb-Setup-x64.exe")) {
+            throw "HimaWeb-Setup-x64.exe manquant"
+          }
+          "ASSET_SETUP=dist\HimaWeb-Setup-x64.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Upload Unix asset
         if: runner.os != 'Windows'
         uses: softprops/action-gh-release@v2
@@ -91,5 +111,61 @@ jobs:
           files: |
             ${{ env.ASSET_TGZ }}
             ${{ env.ASSET_ZIP }}
+            ${{ env.ASSET_SETUP }}
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  winget:
+    name: Submit Winget update
+    needs: build
+    runs-on: windows-latest
+    continue-on-error: true
+    # Nécessite le secret WINGET_PAT (PAT avec droit PR sur microsoft/winget-pkgs).
+    # Sans secret, le job no-op. Première publication : wingetcreate new (notes perso README.winget.md).
+    steps:
+      - name: Skip if no WINGET_PAT
+        id: gate
+        shell: pwsh
+        env:
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINGET_PAT)) {
+            Write-Host "Secret WINGET_PAT absent — skip publication Winget."
+            "skip=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "skip=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
+      - name: Install wingetcreate
+        if: steps.gate.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/microsoft/winget-create/releases/latest/download/wingetcreate.exe"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\wingetcreate.exe" -UseBasicParsing
+
+      - name: wingetcreate update
+        if: steps.gate.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          $setupUrl = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/HimaWeb-Setup-x64.exe"
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            try {
+              $r = Invoke-WebRequest -Uri $setupUrl -Method Head -UseBasicParsing
+              if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 400) { $ok = $true; break }
+            } catch { }
+            Start-Sleep -Seconds 10
+          }
+          if (-not $ok) { throw "Asset Setup inaccessible : $setupUrl" }
+          & "$env:RUNNER_TEMP\wingetcreate.exe" update Morglaf.HimaWeb `
+            --version $ver `
+            --urls $setupUrl `
+            --submit `
+            --token $env:WINGET_PAT
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "wingetcreate a échoué (exit $LASTEXITCODE). Si le paquet n’existe pas encore dans winget-pkgs, faire un « wingetcreate new »."
+            exit 1
+          }

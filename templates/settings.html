@@ -238,6 +238,15 @@
                 {% if a.kind == "ntfy" %}<span class="acct-kind-badge">NTFY</span>{% endif %}
                 {{ a.name }}
               </span>
+              {% if a.kind == "mail" %}
+              <label class="block acct-ai-preprompt" style="grid-column: 1 / -1">
+                <span class="label">Préprompt IA (propriétaire / style)</span>
+                <textarea class="input w-full" name="ai_preprompt" rows="2"
+                          placeholder="Ex. : Je suis …, je signe …, ton …">{{ a.ai_preprompt }}</textarea>
+              </label>
+              {% else %}
+              <input type="hidden" name="ai_preprompt" value="" />
+              {% endif %}
             </div>
             {% else %}
             <p class="muted tiny">Aucun compte.</p>
@@ -936,11 +945,6 @@
                      value="{{ ai_ollama_temperature }}" placeholder="défaut modèle (ex. 0.7)" />
             </label>
             <label class="block">
-              <span class="label">Préprompt</span>
-              <textarea class="input w-full" name="ollama_preprompt" rows="3" placeholder="Ex. : Réponds toujours en français, ton professionnel…">{{ ai_ollama_preprompt }}</textarea>
-              <span class="muted tiny">Ajouté au début du prompt système (mail / événement).</span>
-            </label>
-            <label class="block">
               <span class="label">Fallback distant (optionnel)</span>
               <input class="input w-full" name="remote_endpoint" value="{{ ai_remote_endpoint }}" placeholder="https://…" />
             </label>
@@ -969,7 +973,32 @@
             </div>
             <p class="muted tiny" x-show="scanError" x-text="scanError"></p>
           </div>
+          <label class="block">
+            <span class="label">Préprompt global (style / persona)</span>
+            <textarea class="input w-full" name="ollama_preprompt" rows="3" placeholder="Ex. : Je m’appelle …, ton professionnel, français…">{{ ai_ollama_preprompt }}</textarea>
+            <span class="muted tiny">Appliqué à Ollama et Gemini. Complété par le préprompt par compte (Apparence des comptes).</span>
+          </label>
+          <label class="block">
+            <span class="label">Adresse domicile</span>
+            <input class="input w-full" name="home_address" value="{{ home_address }}"
+                   placeholder="12 rue …, Paris" />
+            <span class="muted tiny">Contexte calendrier IA et trajets.</span>
+          </label>
+          <label class="block">
+            <span class="label">Préprompt calendrier</span>
+            <textarea class="input w-full" name="calendar_preprompt" rows="2"
+                      placeholder="Ex. : préfère les RDV le matin, fuseau Europe/Paris…">{{ ai_calendar_preprompt }}</textarea>
+          </label>
+          <label class="toggle-row">
+            <span>Journal de rédaction IA</span>
+            <input class="toggle" type="checkbox" name="ai_log_enabled" value="1" {% if ai_log_enabled %}checked{% endif %} />
+          </label>
+          <p class="muted tiny">Si activé : enregistre prompts / réponses dans <code>%LOCALAPPDATA%\HimaWeb\ai-log.jsonl</code> (désactivé = zéro I/O).</p>
           <button type="submit" class="btn">Enregistrer IA</button>
+        </form>
+        <form method="post" action="/settings/ai/log/clear" class="mt-2"
+              onsubmit="return confirm('Effacer le journal IA ?');">
+          <button type="submit" class="btn secondary">Effacer le journal IA</button>
         </form>
         {% if let Some(msg) = ai_message %}
         <div class="offline-strip mt-3">{{ msg }}</div>

@@ -24,13 +24,24 @@ curl -sSL https://raw.githubusercontent.com/Morglaf/Himaweb/master/install.sh | 
 curl -sSL https://raw.githubusercontent.com/Morglaf/Himaweb/master/install.sh | PREFIX=~/.local sh
 ```
 
-*Windows (PowerShell) :*
+*Windows — installateur GUI (recommandé) :*
+
+Télécharger **[HimaWeb-Setup-x64.exe](https://github.com/Morglaf/Himaweb/releases/latest/download/HimaWeb-Setup-x64.exe)** (Inno Setup) : HimaWeb + dépendances Pimalaya au choix (Himalaya, Cardamum, Calendula, Ortie, …).
+
+Ou via **Winget** / **UniGet** (mises à jour automatiques une fois le paquet publié) :
+
+```powershell
+winget install Morglaf.HimaWeb
+winget upgrade Morglaf.HimaWeb
+```
+
+*Windows — script silencieux (portable / CI) :*
 
 ```powershell
 irm https://raw.githubusercontent.com/Morglaf/Himaweb/master/install.ps1 | iex
 ```
 
-Ces commandes téléchargent la dernière [release GitHub](https://github.com/Morglaf/Himaweb/releases).
+Ces commandes pointent vers la dernière [release GitHub](https://github.com/Morglaf/Himaweb/releases).
 
 ### Depuis les sources (Rust)
 
@@ -50,16 +61,16 @@ cargo run
 
 HimaWeb ne fait rien tout seul : il appelle les binaires Pimalaya (et optionnellement Ollama) s’ils sont dans le `PATH`.
 
-| Outil | Statut | Rôle | Installation rapide |
-|-------|--------|------|---------------------|
-| **[Himalaya](https://github.com/pimalaya/himalaya)** | **Obligatoire** | Mail (comptes, boîtes, lecture, envoi, recherche…) | Voir ci-dessous |
-| **[Cardamum](https://github.com/pimalaya/cardamum)** | Conseillé | Contacts / suggestions d’adresses | Voir ci-dessous |
-| **[Calendula](https://github.com/pimalaya/calendula)** | Conseillé | Calendrier / événements | Voir ci-dessous |
-| **[Ortie](https://github.com/pimalaya/ortie)** | Conseillé | OAuth (Gmail, Microsoft, …) depuis Paramètres | Voir ci-dessous |
-| **[Ollama](https://ollama.com/)** | Conseillé | IA locale (brouillons mail / événements) | Voir ci-dessous |
-| **[Neverest](https://github.com/pimalaya/neverest)** | Optionnel | Sync / sauvegarde mail (depuis Paramètres) | `install.sh` Pimalaya ou `cargo install --git` |
-| **[Mirador](https://github.com/pimalaya/mirador)** | Optionnel | Watch des boîtes (complète le poll non-lus) | `cargo install --git` (releases encore limitées) |
-| Gemini API | Optionnel | Alternative cloud à Ollama (clé dans les prefs) | Compte Google AI |
+| Outil                                                  | Statut          | Rôle                                               | Installation rapide                              |
+| --------------------------------------------------------| -----------------| ----------------------------------------------------| --------------------------------------------------|
+| **[Himalaya](https://github.com/pimalaya/himalaya)**   | **Obligatoire** | Mail (comptes, boîtes, lecture, envoi, recherche…) | Voir ci-dessous                                  |
+| **[Cardamum](https://github.com/pimalaya/cardamum)**   | Conseillé       | Contacts / suggestions d’adresses                  | Voir ci-dessous                                  |
+| **[Calendula](https://github.com/pimalaya/calendula)** | Conseillé       | Calendrier / événements                            | Voir ci-dessous                                  |
+| **[Ortie](https://github.com/pimalaya/ortie)**         | Conseillé       | OAuth (Gmail, Microsoft, …) depuis Paramètres      | Voir ci-dessous                                  |
+| **[Ollama](https://ollama.com/)**                      | Conseillé       | IA locale (brouillons mail / événements)           | Voir ci-dessous                                  |
+| **[Neverest](https://github.com/pimalaya/neverest)**   | Optionnel       | Sync / sauvegarde mail (depuis Paramètres)         | `install.sh` Pimalaya ou `cargo install --git`   |
+| **[Mirador](https://github.com/pimalaya/mirador)**     | Optionnel       | Watch des boîtes (complète le poll non-lus)        | `cargo install --git` (releases encore limitées) |
+| Gemini API                                             | Optionnel       | Alternative cloud à Ollama (clé dans les prefs)    | Compte Google AI                                 |
 
 Sans Himalaya, HimaWeb démarre mais affiche une page d’état. Sans Cardamum / Calendula / Ortie / Ollama / etc., les sections concernées sont simplement limitées.
 
@@ -194,8 +205,10 @@ src/
 templates/      # Askama + HTMX fragments
 static/         # app.css / app.js (embarqués dans le binaire à la compilation)
 scripts/dev.ps1 # check binaires + cargo build + run
+scripts/build-installer.ps1  # compile HimaWeb-Setup-x64.exe (Inno Setup 6)
+installer/      # himaweb.iss + install-deps.ps1 (deps Pimalaya en parallèle)
 install.sh      # installateur Unix (GitHub Releases)
-install.ps1     # installateur Windows (GitHub Releases)
+install.ps1     # installateur Windows silencieux (fallback)
 ```
 
 - **Bind** : `127.0.0.1:8787` uniquement (pas d’écoute réseau).
