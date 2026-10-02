@@ -3,7 +3,7 @@
            ai: {{ ai_enabled }},
            defaultDate: '{{ default_date }}',
            defaultCalendar: '{{ default_calendar }}',
-           homeAddress: {{ home_address_js|safe }},
+           homeAddress: {{ home_address_js }},
            mapsProvider: '{{ maps_provider }}',
            year: {{ year }},
            month: {{ month }},
@@ -196,100 +196,84 @@
   {% endif %}
 
   <!-- Modal événement -->
-  <div class="modal-backdrop" x-show="visible" x-cloak @keydown.escape.window="closeModal()" @click.self="closeModal()">
-    <div class="modal-panel" role="dialog" aria-modal="true" @click.stop>
+  <div class="modal-backdrop" x-show="modalOpen" x-cloak
+       @keydown.escape.window="modalOpen && closeModal()"
+       @click.self="onBackdropClick()">
+    <div class="modal-panel event-modal-panel" role="dialog" aria-modal="true" @click.stop>
       <div class="modal-head">
-        <h2 class="font-display text-xl" x-text="mode === 'edit' ? 'Modifier l’événement' : 'Nouvel événement'"></h2>
+        <h2 class="font-display text-xl compose-title" x-text="displayTitle"></h2>
         <button type="button" class="icon-btn" @click="closeModal()" title="Fermer"><i data-lucide="x"></i></button>
       </div>
 
-      <template x-if="ai">
-        <div class="ai-fill-box mb-3">
-          <button type="button" class="ai-fill-toggle" :class="{ 'ai-busy-pulse': aiBusy }"
-                  @click="aiOpen = !aiOpen; $nextTick(() => lucide.createIcons())" :title="aiOpen ? 'Replier l’IA' : 'Ouvrir l’IA'">
-            <i data-lucide="sparkles"></i>
-            <span x-text="aiOpen ? 'Assistant IA' : 'IA'"></span>
-            <i data-lucide="chevron-up" x-show="aiOpen"></i>
-            <i data-lucide="chevron-down" x-show="!aiOpen"></i>
-          </button>
-          <div class="ai-fill-body" x-show="aiOpen" x-cloak>
-            <label class="block">
-              <span class="label">Décrire avec l’IA</span>
-              <textarea class="input w-full" rows="2" x-model="aiPrompt"
-                        placeholder="Ex. : réunion équipe mardi 10h–11h, salle A, chaque semaine"></textarea>
-            </label>
-            <button type="button" class="btn secondary mt-2" @click="fillAi()" :disabled="aiBusy"
-                    :class="{ 'ai-busy-pulse': aiBusy }"
-                    x-text="aiBusy ? 'Génération…' : 'Remplir les champs'"></button>
-            <p class="muted tiny mt-1" x-show="aiError" x-text="aiError"></p>
-          </div>
-        </div>
-      </template>
-
-      <form method="post" :action="mode === 'edit' ? '/calendar/update' : '/calendar/create'" class="space-y-3">
+      <form method="post" :action="mode === 'edit' ? '/calendar/update' : '/calendar/create'" class="compose-form event-form">
         <input type="hidden" name="year" :value="year" />
         <input type="hidden" name="month" :value="month" />
         <input type="hidden" name="day" :value="day" />
         <input type="hidden" name="view" :value="view" />
         <input type="hidden" name="id" :value="id" x-show="mode === 'edit'" />
 
-        <label class="block">
+        <template x-if="ai">
+          <div class="compose-ai-row">
+            <input class="input compose-ai-input" type="text" x-model="aiPrompt"
+                   placeholder="prompt…"
+                   @keydown.enter.prevent="fillAi()" />
+            <button type="button" class="icon-btn compose-ai-run" @click="fillAi()" :disabled="aiBusy"
+                    :class="{ 'ai-busy-pulse': aiBusy }"
+                    :title="aiBusy ? 'Génération…' : 'Générer avec l’IA'">
+              <i data-lucide="sparkles"></i>
+            </button>
+            <p class="muted tiny compose-ai-error" x-show="aiError" x-text="aiError"></p>
+          </div>
+        </template>
+
+        <div class="compose-inline-row">
           <span class="label">Calendrier</span>
-          <select name="calendar" class="select w-full" x-model="calendar" required>
+          <select name="calendar" class="select grow" x-model="calendar" required>
             {% for c in calendars %}
             <option value="{{ c.id }}">{{ c.name }}</option>
             {% endfor %}
           </select>
-        </label>
-        <label class="block">
+        </div>
+        <div class="compose-inline-row">
           <span class="label">Titre</span>
-          <input class="input w-full" name="summary" x-model="summary" required />
-        </label>
-        <div class="form-row">
-          <label class="block">
-            <span class="label">Date début</span>
-            <input class="input w-full" type="date" name="start_date" x-model="startDate" required />
-          </label>
-          <label class="block">
-            <span class="label">Heure début</span>
-            <input class="input w-full" type="time" name="start_time" x-model="startTime" required />
-          </label>
+          <input class="input grow" name="summary" x-model="summary" required placeholder="Réunion…" />
         </div>
-        <div class="form-row">
-          <label class="block">
-            <span class="label">Date fin</span>
-            <input class="input w-full" type="date" name="end_date" x-model="endDate" />
-          </label>
-          <label class="block">
-            <span class="label">Heure fin</span>
-            <input class="input w-full" type="time" name="end_time" x-model="endTime" />
-          </label>
+        <div class="compose-inline-row">
+          <span class="label">Début</span>
+          <input class="input event-dt" type="date" name="start_date" x-model="startDate" required />
+          <input class="input event-tm" type="time" name="start_time" x-model="startTime" required />
         </div>
-        <label class="block">
+        <div class="compose-inline-row">
+          <span class="label">Fin</span>
+          <input class="input event-dt" type="date" name="end_date" x-model="endDate" />
+          <input class="input event-tm" type="time" name="end_time" x-model="endTime" />
+        </div>
+        <div class="compose-inline-row">
           <span class="label">Lieu</span>
-          <div class="cal-location-row">
-            <input class="input w-full" name="location" x-model="location" placeholder="Adresse ou lieu…" />
+          <div class="cal-location-row grow">
+            <input class="input grow" name="location" x-model="location" placeholder="Adresse ou lieu…" />
             <a class="icon-btn" x-show="mapsLink()" x-cloak :href="mapsLink()" target="_blank" rel="noopener"
                title="Itinéraire / temps de trajet">
               <i data-lucide="route"></i>
             </a>
           </div>
-        </label>
-        <label class="block">
+        </div>
+        <div class="compose-inline-row">
           <span class="label">Récurrence</span>
-          <select name="rrule" class="select w-full" x-model="rrule">
+          <select name="rrule" class="select grow" x-model="rrule">
             <option value="none">Aucune</option>
             <option value="daily">Quotidienne</option>
             <option value="weekly">Hebdomadaire</option>
             <option value="monthly">Mensuelle</option>
             <option value="yearly">Annuelle</option>
           </select>
-        </label>
-        <label class="block">
-          <span class="label">Description</span>
-          <textarea class="input w-full" name="description" rows="3" x-model="description"></textarea>
-        </label>
-        <div class="flex gap-2 mt-2">
+        </div>
+        <div class="compose-inline-row event-desc-row">
+          <span class="label">Notes</span>
+          <textarea class="input grow" name="description" rows="2" x-model="description"
+                    placeholder="Description…"></textarea>
+        </div>
+        <div class="btn-row compose-actions">
           <button type="submit" class="btn" x-text="mode === 'edit' ? 'Enregistrer' : 'Créer'"></button>
           <button type="button" class="btn ghost" @click="closeModal()">Annuler</button>
           <template x-if="mode === 'edit' && id">

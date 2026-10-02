@@ -762,8 +762,9 @@ function eventModal(opts) {
     ? opts.defaultCalendar
     : '';
   return {
-    // Ne pas nommer `open`/`close` : collision Alpine avec window.open / window.close
-    visible: false,
+    // Éviter les noms open/close (collision window.open / window.close sous Alpine).
+    modalOpen: false,
+    _suppressBackdrop: false,
     mode: 'create',
     stay: !!opts.stay,
     busy: false,
@@ -788,6 +789,11 @@ function eventModal(opts) {
     location: '',
     description: '',
     rrule: 'none',
+    get displayTitle() {
+      const s = (this.summary || '').trim();
+      if (s) return s;
+      return this.mode === 'edit' ? 'Modifier l’événement' : 'Nouvel événement';
+    },
     mapsLink() {
       return mapsDirectionsUrl(this.mapsProvider, this.homeAddress, this.location);
     },
@@ -795,7 +801,11 @@ function eventModal(opts) {
       this.mode = 'create';
       this.id = '';
       this.summary = '';
-      const d = presetDate || opts.defaultDate || '';
+      // @click peut passer l'Event si mal appelé — n'accepter que les strings date
+      const d =
+        typeof presetDate === 'string' && /^\d{4}-\d{2}-\d{2}/.test(presetDate)
+          ? presetDate
+          : opts.defaultDate || '';
       this.startDate = d;
       this.endDate = d;
       this.startTime = '10:00';
@@ -806,8 +816,7 @@ function eventModal(opts) {
       this.aiPrompt = '';
       this.aiError = '';
       if (firstCal) this.calendar = firstCal;
-      this.visible = true;
-      this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
+      this._openModal();
     },
     openEdit(ds) {
       if (!ds) return;
@@ -848,12 +857,26 @@ function eventModal(opts) {
       this.rrule = obj.rrule || 'none';
       this.aiPrompt = '';
       this.aiError = '';
-      this.visible = true;
-      this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
+      this._openModal();
+    },
+    _openModal() {
+      this._suppressBackdrop = true;
+      this.modalOpen = true;
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+        setTimeout(() => {
+          this._suppressBackdrop = false;
+        }, 200);
+      });
     },
     closeModal() {
-      this.visible = false;
+      this.modalOpen = false;
       this.busy = false;
+      this._suppressBackdrop = false;
+    },
+    onBackdropClick() {
+      if (this._suppressBackdrop || !this.modalOpen) return;
+      this.closeModal();
     },
     confirmDelete() {
       if (!this.id) return;
@@ -1244,6 +1267,7 @@ document.addEventListener('alpine:init', () => {
     Alpine.data('accountAppearance', accountAppearance);
     Alpine.data('accountOrderList', accountOrderList);
     Alpine.data('quickEventModal', quickEventModal);
+    Alpine.data('eventModal', (opts) => eventModal(opts || {}));
     Alpine.data('tbImportForm', tbImportForm);
     Alpine.data('messageView', messageView);
     Alpine.data('inboxSummaryModal', inboxSummaryModal);
@@ -3226,6 +3250,44 @@ window.HimaWeb = {
       });
     };
 
+    // Quick actions au survol (délégation)
+    document.addEventListener(
+      'click',
+      (ev) => {
+        const btn = ev.target.closest('[data-qa]');
+        if (!btn || !btn.closest('[data-env-quick]')) return;
+        const env = btn.closest('.envelope');
+        if (!env) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const id = env.dataset.id || '';
+        const account = env.dataset.account || '';
+        const mailbox =
+          env.dataset.mailbox ||
+          (document.getElementById('current-mailbox') &&
+            document.getElementById('current-mailbox').value) ||
+          'Inbox';
+        const threadIds = (env.dataset.threadIds || id)
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const messageId = env.dataset.messageId || '';
+        const unread = env.classList.contains('unread');
+        const qa = btn.getAttribute('data-qa');
+        if (qa === 'flag') {
+          this.runContextAction('flag', {
+            id,
+            account,
+            mailbox,
+            seen: unread ? '1' : '0',
+          });
+        } else if (qa === 'archive' || qa === 'spam' || qa === 'delete') {
+          this.runContextAction(qa, { id, account, mailbox, threadIds, messageId });
+        }
+      },
+      true
+    );
+
     document.addEventListener('contextmenu', (ev) => {
       const env = ev.target.closest('.envelope');
       if (env) {
@@ -3248,6 +3310,9 @@ window.HimaWeb = {
           threadIds.length > 1
             ? `Supprimer la conversation (${threadIds.length})`
             : 'Supprimer';
+        const junk = this.isJunkMailbox(mailbox);
+        const spamLabel = junk ? 'Pas du spam' : 'Signaler spam';
+        const spamIcon = junk ? 'shield-check' : 'shield-alert';
         show(
           ev.clientX,
           ev.clientY,
@@ -3263,6 +3328,8 @@ window.HimaWeb = {
            <button type="button" data-ctx-action="reply" data-ctx-payload='${payload}'><i data-lucide="reply"></i> Répondre</button>
            <button type="button" data-ctx-action="forward" data-ctx-payload='${payload}'><i data-lucide="forward"></i> Transférer</button>
            <hr/>
+           <button type="button" data-ctx-action="archive" data-ctx-payload='${payload}'><i data-lucide="archive"></i> Archiver</button>
+           <button type="button" data-ctx-action="spam" data-ctx-payload='${payload}'><i data-lucide="${spamIcon}"></i> ${spamLabel}</button>
            <button type="button" class="danger" data-ctx-action="delete" data-ctx-payload='${payload}'><i data-lucide="trash-2"></i> ${delLabel}</button>`
         );
         return;
@@ -3306,6 +3373,85 @@ window.HimaWeb = {
            <button type="button" class="danger" data-ctx-action="contact-delete" data-ctx-payload='${payload}'><i data-lucide="trash-2"></i> Supprimer</button>`
         );
       }
+    });
+  },
+
+  isJunkMailbox(name) {
+    const n = String(name || '').toLowerCase();
+    return n.includes('junk') || n.includes('spam');
+  },
+
+  isArchiveMailbox(name) {
+    const n = String(name || '').toLowerCase();
+    return n.includes('archive') && !n.includes('inbox');
+  },
+
+  /** Résout Archive / Junk / Inbox depuis la sidebar (fallback si dossier absent). */
+  resolveSpecialFolder(kind, account) {
+    const acc = (account || '').trim();
+    const names = [];
+    const nav = document.getElementById('folder-nav');
+    if (nav) {
+      nav.querySelectorAll('[data-folder-key]').forEach((el) => {
+        const elAcc = (el.dataset.account || '').trim();
+        if (acc && elAcc && elAcc !== acc) return;
+        let key = el.dataset.folderKey || '';
+        if (elAcc && key.startsWith(elAcc + '::')) key = key.slice(elAcc.length + 2);
+        if (key) names.push(key);
+      });
+    }
+    const find = (preds, fallback) => {
+      for (const pred of preds) {
+        const hit = names.find((n) => pred(n.toLowerCase()));
+        if (hit) return hit;
+      }
+      return fallback;
+    };
+    if (kind === 'inbox') {
+      return find([(n) => n === 'inbox' || n.endsWith('/inbox')], 'Inbox');
+    }
+    if (kind === 'archive') {
+      return find(
+        [
+          (n) => n === 'archive' || n.endsWith('/archive'),
+          (n) => n.includes('archive') && !n.includes('inbox'),
+        ],
+        'Archive'
+      );
+    }
+    if (kind === 'junk') {
+      return find(
+        [
+          (n) => n === 'junk' || n === 'spam' || n.endsWith('/junk') || n.endsWith('/spam'),
+          (n) => n.includes('junk') || n.includes('spam'),
+        ],
+        'Junk'
+      );
+    }
+    return kind;
+  },
+
+  envelopeItemsFromPayload(p) {
+    const mb = p.mailbox || 'Inbox';
+    const acc = p.account || '';
+    const id = p.id || '';
+    const threadIds = Array.isArray(p.threadIds)
+      ? p.threadIds.map(String).filter(Boolean)
+      : id
+        ? [id]
+        : [];
+    const ids = threadIds.length ? threadIds : id ? [id] : [];
+    return ids.map((tid) => {
+      const el =
+        document.querySelector(
+          `.envelope[data-id="${cssEsc(tid)}"][data-account="${cssEsc(acc)}"]`
+        ) || document.querySelector(`.envelope[data-id="${cssEsc(tid)}"]`);
+      return {
+        id: tid,
+        mailbox: mb,
+        account: acc,
+        messageId: (el && el.dataset.messageId) || p.messageId || '',
+      };
     });
   },
 
@@ -3357,6 +3503,37 @@ window.HimaWeb = {
           values: Object.fromEntries(body),
         });
       }
+      // Feedback immédiat sur la ligne
+      const env = document.querySelector(
+        `.envelope[data-id="${cssEsc(id)}"][data-account="${cssEsc(acc)}"]`
+      ) || document.querySelector(`.envelope[data-id="${cssEsc(id)}"]`);
+      if (env) {
+        const markRead = (p.seen || '1') === '1';
+        env.classList.toggle('unread', !markRead);
+        const qa = env.querySelector('[data-qa="flag"]');
+        if (qa) {
+          qa.title = markRead ? 'Marquer non lu' : 'Marquer lu';
+          qa.innerHTML = `<i data-lucide="${markRead ? 'mail' : 'mail-open'}"></i>`;
+          if (window.lucide) lucide.createIcons();
+        }
+      }
+      return;
+    }
+    if (action === 'archive') {
+      const items = this.envelopeItemsFromPayload(p);
+      if (!items.length) return;
+      const dest = this.resolveSpecialFolder('archive', acc);
+      this.moveMailsToFolder(items, dest, acc);
+      return;
+    }
+    if (action === 'spam') {
+      const items = this.envelopeItemsFromPayload(p);
+      if (!items.length) return;
+      const junk = this.isJunkMailbox(mb);
+      const dest = junk
+        ? this.resolveSpecialFolder('inbox', acc)
+        : this.resolveSpecialFolder('junk', acc);
+      this.moveMailsToFolder(items, dest, acc);
       return;
     }
     if (action === 'delete') {

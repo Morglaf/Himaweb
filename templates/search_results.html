@@ -17,14 +17,17 @@
 {% else %}
 <div class="search-strip muted tiny">{{ envelopes.len() }} résultat(s) pour « {{ query }} »</div>
 {% for e in envelopes %}
-<button type="button" class="envelope {% if e.unread %}unread{% endif %}"
-        draggable="true"
-        data-id="{{ e.id }}" data-account="{{ e.account }}" data-mailbox="{{ e.mailbox }}"
-        data-message-id="{{ e.message_id }}"
-        style="{% if !e.color.is_empty() %}border-left: 3px solid {{ e.color }};{% endif %}"
-        hx-get="/partials/message?mailbox={{ e.mailbox_enc }}&id={{ e.id }}{% if !e.account.is_empty() %}&account={{ e.account_enc }}{% endif %}"
-        hx-target="#message-pane"
-        hx-swap="innerHTML">
+<div class="envelope {% if e.unread %}unread{% endif %}"
+     role="button"
+     tabindex="0"
+     draggable="true"
+     data-id="{{ e.id }}" data-account="{{ e.account }}" data-mailbox="{{ e.mailbox }}"
+     data-message-id="{{ e.message_id }}"
+     style="{% if !e.color.is_empty() %}border-left: 3px solid {{ e.color }};{% endif %}"
+     hx-get="/partials/message?mailbox={{ e.mailbox_enc }}&id={{ e.id }}{% if !e.account.is_empty() %}&account={{ e.account_enc }}{% endif %}"
+     hx-target="#message-pane"
+     hx-swap="innerHTML"
+     hx-trigger="click, keydown[key=='Enter']">
   <div class="env-avatar" aria-hidden="true" {% if !e.color.is_empty() %}style="background: {{ e.color }}"{% endif %}>{{ e.from_initial }}</div>
   <div class="env-main">
     <div class="env-top">
@@ -40,6 +43,22 @@
       <span class="subject-text">{{ e.subject }}</span>
     </div>
   </div>
-</button>
+  <div class="env-quick" data-env-quick>
+    <button type="button" class="icon-btn env-qa" data-qa="flag"
+            title="{% if e.unread %}Marquer lu{% else %}Marquer non lu{% endif %}">
+      <i data-lucide="{% if e.unread %}mail-open{% else %}mail{% endif %}"></i>
+    </button>
+    <button type="button" class="icon-btn env-qa" data-qa="archive" title="Archiver">
+      <i data-lucide="archive"></i>
+    </button>
+    <button type="button" class="icon-btn env-qa" data-qa="spam"
+            title="{% if e.mailbox.to_ascii_lowercase().contains("junk") || e.mailbox.to_ascii_lowercase().contains("spam") %}Pas du spam{% else %}Signaler spam{% endif %}">
+      <i data-lucide="{% if e.mailbox.to_ascii_lowercase().contains("junk") || e.mailbox.to_ascii_lowercase().contains("spam") %}shield-check{% else %}shield-alert{% endif %}"></i>
+    </button>
+    <button type="button" class="icon-btn env-qa danger" data-qa="delete" title="Supprimer">
+      <i data-lucide="trash-2"></i>
+    </button>
+  </div>
+</div>
 {% endfor %}
 {% endif %}
