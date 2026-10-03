@@ -1,5 +1,7 @@
 # HimaWeb
 
+[Français](README.md) · [English](README.en.md)
+
 Interface web locale pour l’écosystème [Pimalaya](https://pimalaya.org/) — **pas un client mail autonome**.
 
 Principe : HimaWeb orchestre les CLI existants (Himalaya, Cardamum, Calendula, Neverest, Mirador, Ortie, …). On n’implémente pas IMAP/SMTP/CardDAV/CalDAV soi-même : chaque action métier passe par l’outil Pimalaya adapté.
@@ -7,6 +9,10 @@ Principe : HimaWeb orchestre les CLI existants (Himalaya, Cardamum, Calendula, N
 Stack UI : Rust / Axum, Askama, HTMX, Alpine.js, Lucide. Écoute uniquement sur `http://127.0.0.1:8787`. Sous Windows : icône de barre système (ouvrir / redémarrer / quitter / démarrage auto), sans fenêtre console.
 
 Licence : [GPL-3.0](LICENSE).
+
+## Remerciements
+
+Un immense merci à l’équipe et à la communauté **[Pimalaya](https://pimalaya.org/)** pour tout le travail accompli — les CLI, les bibliothèques, la documentation et la vision d’un écosystème PIM libre, modulaire et I/O-free. HimaWeb n’existerait pas sans Himalaya, Cardamum, Calendula, Neverest, Mirador, Ortie et le reste de la famille Pimalaya. Merci pour ce socle solide et pour l’énergie mise dans l’open source.
 
 ## Installation
 
