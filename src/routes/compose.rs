@@ -40,6 +40,12 @@ struct ComposeTemplate {
     /// JSON meta sans le corps (évite de casser x-data)
     pub compose_boot: String,
     pub error: Option<String>,
+    /// Champs reply (rendus serveur — fiables au submit, contrairement aux seuls binds Alpine)
+    pub source_mailbox: String,
+    pub source_id: String,
+    pub source_account: String,
+    pub in_reply_to: String,
+    pub references: String,
 }
 
 pub struct AccountOpt {
@@ -169,20 +175,38 @@ async fn compose_get(
         preferred
     };
 
+    let is_reply = matches!(kind, ComposeKind::Reply | ComposeKind::ReplyAll);
+    let source_mailbox = if is_reply {
+        mailbox.clone()
+    } else {
+        String::new()
+    };
+    let source_id = if is_reply {
+        q.id.clone().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let source_account = if is_reply {
+        selected_account.clone()
+    } else {
+        String::new()
+    };
     let compose_boot = serde_json::json!({
         "cardamum": state.cardamum_available,
         "ai": prefs_snap.ai_enabled,
         "toolbarMode": prefs_snap.compose_toolbar_mode,
-        "kind": match kind {
-            ComposeKind::Reply | ComposeKind::ReplyAll => "reply",
-            _ => "compose",
-        },
+        "kind": if is_reply { "reply" } else { "compose" },
         "title": title,
         "to": draft.to,
         "cc": draft.cc,
         "bcc": draft.bcc,
         "subject": draft.subject,
         "account": selected_account,
+        "sourceMailbox": source_mailbox,
+        "sourceId": source_id,
+        "sourceAccount": source_account,
+        "inReplyTo": draft.in_reply_to,
+        "references": draft.references,
         "accounts": accounts.iter().map(|a| serde_json::json!({
             "name": a.name,
             "email": a.email,
@@ -197,6 +221,11 @@ async fn compose_get(
         body: draft.body,
         compose_boot,
         error,
+        source_mailbox,
+        source_id,
+        source_account,
+        in_reply_to: draft.in_reply_to,
+        references: draft.references,
     };
 
     let content = match inner.render() {
@@ -298,6 +327,12 @@ struct ParsedCompose {
     body_html: Option<String>,
     html: Option<String>,
     files: Vec<(String, Vec<u8>)>,
+    /// Message d’origine (reply) — pour poser le flag IMAP Answered
+    source_mailbox: Option<String>,
+    source_id: Option<String>,
+    source_account: Option<String>,
+    in_reply_to: Option<String>,
+    references: Option<String>,
 }
 
 fn form_wants_html(form: &ParsedCompose) -> bool {
@@ -359,6 +394,36 @@ async fn parse_compose_multipart(mut multipart: Multipart) -> Result<ParsedCompo
                     if !data.is_empty() {
                         out.files.push((name, data.to_vec()));
                     }
+                }
+            }
+            "source_mailbox" => {
+                let s = String::from_utf8_lossy(&data).trim().to_string();
+                if !s.is_empty() {
+                    out.source_mailbox = Some(s);
+                }
+            }
+            "source_id" => {
+                let s = String::from_utf8_lossy(&data).trim().to_string();
+                if !s.is_empty() {
+                    out.source_id = Some(s);
+                }
+            }
+            "source_account" => {
+                let s = String::from_utf8_lossy(&data).trim().to_string();
+                if !s.is_empty() {
+                    out.source_account = Some(s);
+                }
+            }
+            "in_reply_to" => {
+                let s = String::from_utf8_lossy(&data).trim().to_string();
+                if !s.is_empty() {
+                    out.in_reply_to = Some(s);
+                }
+            }
+            "references" => {
+                let s = String::from_utf8_lossy(&data).trim().to_string();
+                if !s.is_empty() {
+                    out.references = Some(s);
                 }
             }
             _ => {}
@@ -430,60 +495,185 @@ async fn finish_send(state: Arc<AppState>, form: ParsedCompose) -> axum::respons
         .as_deref()
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
+    let has_thread_hdrs = form
+        .in_reply_to
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+        || form
+            .references
+            .as_deref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+    let sent_mailbox = resolve_sent_mailbox(account.as_deref());
 
     let _permit = state.cli_limit.acquire().await.ok();
 
-    // PJ, HTML ou Reply-To : EML (himalaya compose = plain sans fichiers / sans Reply-To)
-    if as_html || has_files || has_reply_to {
-        let eml = build_eml(&form, from.as_deref().unwrap_or(""), &to, cc.as_deref(), bcc.as_deref(), &form.files);
-        return match state
-            .himalaya
-            .send_raw_eml(eml.as_bytes(), account.as_deref())
-            .await
-        {
-            Ok(()) => Redirect::to("/").into_response(),
-            Err(e) => Html(format!(
-                r#"<div class="error">Envoi échoué : {e}</div>
-               <p><a href="javascript:history.back()">Retour</a></p>"#
-            ))
-            .into_response(),
-        };
-    }
-
-    match state
-        .himalaya
-        .send_message(
+    // PJ, HTML, Reply-To ou en-têtes de fil : EML (compose CLI = plain sans ces champs)
+    let send_result = if as_html || has_files || has_reply_to || has_thread_hdrs {
+        let eml = build_eml(
+            &form,
+            from.as_deref().unwrap_or(""),
             &to,
             cc.as_deref(),
             bcc.as_deref(),
-            &form.subject,
-            &form.body,
+            &form.files,
+        );
+        send_eml_with_sent_fallback(
+            &state,
+            eml.as_bytes(),
             account.as_deref(),
-            from.as_deref(),
+            &sent_mailbox,
         )
         .await
-    {
-        Ok(()) => Redirect::to("/").into_response(),
-        Err(e) => {
-            let eml = build_eml(
-                &form,
-                from.as_deref().unwrap_or(""),
+    } else {
+        match state
+            .himalaya
+            .send_message(
                 &to,
                 cc.as_deref(),
                 bcc.as_deref(),
-                &form.files,
-            );
-            match state
-                .himalaya
-                .send_raw_eml(eml.as_bytes(), account.as_deref())
-                .await
-            {
-                Ok(()) => Redirect::to("/").into_response(),
-                Err(e2) => Html(format!(
-                    r#"<div class="error">Envoi échoué : {e} / {e2}</div>
+                &form.subject,
+                &form.body,
+                account.as_deref(),
+                from.as_deref(),
+                Some(&sent_mailbox),
+            )
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Échec souvent dû à l’alias Sent (Gmail) : réessayer sans --save, puis EML
+                let retry = state
+                    .himalaya
+                    .send_message(
+                        &to,
+                        cc.as_deref(),
+                        bcc.as_deref(),
+                        &form.subject,
+                        &form.body,
+                        account.as_deref(),
+                        from.as_deref(),
+                        None,
+                    )
+                    .await;
+                if retry.is_ok() {
+                    tracing::warn!("envoi OK sans copie Sent ({sent_mailbox}): {e}");
+                    Ok(())
+                } else {
+                    let eml = build_eml(
+                        &form,
+                        from.as_deref().unwrap_or(""),
+                        &to,
+                        cc.as_deref(),
+                        bcc.as_deref(),
+                        &form.files,
+                    );
+                    match send_eml_with_sent_fallback(
+                        &state,
+                        eml.as_bytes(),
+                        account.as_deref(),
+                        &sent_mailbox,
+                    )
+                    .await
+                    {
+                        Ok(()) => Ok(()),
+                        Err(e2) => Err(format!("{e} / {e2}")),
+                    }
+                }
+            }
+        }
+    };
+
+    match send_result {
+        Ok(()) => {
+            drop(_permit); // libérer avant un 2e acquire dans mark_source_answered
+            mark_source_answered(&state, &form, account.as_deref()).await;
+            Redirect::to("/").into_response()
+        }
+        Err(e) => Html(format!(
+            r#"<div class="error">Envoi échoué : {e}</div>
                <p><a href="javascript:history.back()">Retour</a></p>"#
-                ))
-                .into_response(),
+        ))
+        .into_response(),
+    }
+}
+
+async fn mark_source_answered(
+    state: &AppState,
+    form: &ParsedCompose,
+    send_account: Option<&str>,
+) {
+    let Some(mb) = form
+        .source_mailbox
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        tracing::warn!("reply: source_mailbox manquant — flag answered non posé");
+        return;
+    };
+    let Some(id) = form
+        .source_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        tracing::warn!("reply: source_id manquant — flag answered non posé");
+        return;
+    };
+    // Compte du message d’origine (pas forcément le From choisi à l’envoi)
+    let flag_account = form
+        .source_account
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != ACCOUNT_ALL)
+        .or(send_account);
+    let _permit = state.cli_limit.acquire().await.ok();
+    if let Err(e) = state
+        .himalaya
+        .set_flag(mb, id, "answered", true, flag_account)
+        .await
+    {
+        tracing::warn!("flag answered {mb}/{id} account={flag_account:?}: {e}");
+    } else {
+        tracing::info!("flag answered ok {mb}/{id} account={flag_account:?}");
+    }
+    // Mise à jour cache pour l’icône « répondu » dès le redirect
+    let acc_key = flag_account.unwrap_or("");
+    let cache = state.cache.lock().await;
+    let _ = cache.add_envelope_flag(acc_key, mb, id, "answered");
+}
+
+fn resolve_sent_mailbox(account: Option<&str>) -> String {
+    let editable = crate::accounts_config::list_editable_accounts().unwrap_or_default();
+    account
+        .and_then(|name| editable.into_iter().find(|a| a.name == name))
+        .map(|a| a.sent_alias)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "sent".into())
+}
+
+/// Envoi EML avec `--save` Sent ; si l’alias Sent est invalide, renvoie quand même le mail.
+async fn send_eml_with_sent_fallback(
+    state: &AppState,
+    eml: &[u8],
+    account: Option<&str>,
+    sent_mailbox: &str,
+) -> Result<(), String> {
+    match state
+        .himalaya
+        .send_raw_eml(eml, account, Some(sent_mailbox))
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            match state.himalaya.send_raw_eml(eml, account, None).await {
+                Ok(()) => {
+                    tracing::warn!("envoi OK sans copie Sent ({sent_mailbox}): {e}");
+                    Ok(())
+                }
+                Err(e2) => Err(format!("{e} / {e2}")),
             }
         }
     }
@@ -689,6 +879,22 @@ fn build_eml(
         .filter(|s| !s.is_empty())
     {
         headers.push_str(&format!("Reply-To: {rt}\r\n"));
+    }
+    if let Some(irt) = form
+        .in_reply_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        headers.push_str(&format!("In-Reply-To: {irt}\r\n"));
+    }
+    if let Some(refs) = form
+        .references
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        headers.push_str(&format!("References: {refs}\r\n"));
     }
     // Obligatoire (RFC 5322) — sans Date, IMAP/Himalaya renvoient date=null.
     headers.push_str(&format!(

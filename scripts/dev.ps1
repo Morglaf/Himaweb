@@ -10,6 +10,14 @@ if (-not (Test-Path (Join-Path $Root "Cargo.toml"))) {
 }
 Set-Location $Root
 
+# Stop any running himaweb instances (free port + unlock binary for rebuild)
+$running = Get-Process -Name "himaweb" -ErrorAction SilentlyContinue
+if ($running) {
+  Write-Host "Arrêt de $($running.Count) instance(s) himaweb..." -ForegroundColor Yellow
+  $running | Stop-Process -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Milliseconds 300
+}
+
 function Test-Bin([string]$Name, [string]$EnvVar) {
   $override = [Environment]::GetEnvironmentVariable($EnvVar)
   if ($override) {

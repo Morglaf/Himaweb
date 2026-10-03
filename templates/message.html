@@ -12,14 +12,19 @@
 
   {% for m in thread %}
   <article class="message-view thread-item {% if m.is_focus %}is-focus{% endif %} {% if m.unread %}is-unread{% endif %}"
-           id="thread-msg-{{ m.id }}" data-msg-id="{{ m.id }}"
+           id="thread-msg-{{ m.id }}" data-msg-id="{{ m.id }}" data-from-email="{{ m.from_email }}"
            x-data="window.HimaWeb.messageView({ hasRemote: {% if m.has_remote_content %}true{% else %}false{% endif %}, hasAccessory: {% if !m.accessory_attachments.is_empty() %}true{% else %}false{% endif %}, hasAttachments: {% if !m.attachments.is_empty() %}true{% else %}false{% endif %} })">
     <header class="msg-header">
       {% if thread_count > 1 %}
       <h2 class="thread-item-subject">{{ m.subject }}</h2>
       {% endif %}
       <div class="msg-meta-row">
-        <div class="msg-avatar">{{ m.from_initial }}</div>
+        <div class="msg-avatar">
+          <span class="env-avatar-initial">{{ m.from_initial }}</span>
+          {% if !m.avatar_url.is_empty() %}
+          <img class="env-avatar-img" src="{{ m.avatar_url }}" alt="" loading="lazy" decoding="async" onerror="this.remove()" />
+          {% endif %}
+        </div>
         <div class="msg-meta">
           <div class="msg-from">{{ m.from }}</div>
           <div class="msg-to muted tiny">À {{ m.to }}{% if !m.cc.is_empty() %} · Cc {{ m.cc }}{% endif %}</div>

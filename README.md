@@ -184,8 +184,8 @@ Arrêt : menu tray **Quitter**, ou `Ctrl+C` si lancé dans un terminal avec cons
 | Mail | **Himalaya** CLI | Comptes, boîtes, listes, lecture, envoi (texte / HTML / PJ), drapeaux, déplacement (dont glisser-déposer), suppression (simple / fil / multi-sélection), recherche, téléchargement de pièces jointes |
 | Conversations | Himalaya + prefs | Groupement par fil (Message-ID / In-Reply-To / sujet) ; ouverture d’un groupe = pile de messages |
 | UI mail | prefs + front | Topbar (icônes / texte), rail compact, dossiers surveillés avec badge local et option « Total » (hors compteur global), multi-sélection, menu contextuel |
-| Contacts | **Cardamum** CLI | Liste, suggestions, création / suppression |
-| Calendrier | **Calendula** CLI | Lecture, création / édition / suppression d’événements ; widget agenda |
+| Contacts | **Cardamum** + **tcard** | Liste, suggestions, création / édition / suppression, photos (vCard ↔ TOML) |
+| Calendrier | **Calendula** + **tcal** | Lecture, création / édition / suppression d’événements et tâches (iCal ↔ TOML) ; widget agenda |
 | Sync mail | **Neverest** CLI | Lancer une sync depuis Paramètres |
 | Watch | **Mirador** CLI | Watch des boîtes (complète le poll non-lus) |
 | OAuth | **Ortie** CLI | Auth OAuth (ex. Gmail) depuis Paramètres |
@@ -201,7 +201,7 @@ HimaWeb ajoute uniquement la couche web : prefs d’apparence, multi-comptes UI,
 
 ```
 src/
-  cli/          # wrappers Himalaya / Cardamum / Calendula / Neverest / Mirador / Ortie
+  cli/          # wrappers Himalaya / Cardamum / Calendula / Neverest / Mirador / Ortie + ponts tcard / tcal
   routes/       # Axum : mail, search, compose, contacts, calendar, settings, ai, attachments
   prefs.rs      # prefs HimaWeb (UI, dossiers surveillés, conversations, IA, NTFY, Mirador…)
   plugins.rs    # store local de plugins (git clone)
@@ -261,43 +261,22 @@ Le workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) con
 
 ## Roadmap
 
-### Moyen terme — données (toujours via CLI)
+### Fait
+- [x] **tcard** — édition riche vCard derrière les formulaires contacts
+- [x] **tcal** — édition riche iCalendar derrière les formulaires calendrier (événements + tâches)
 
-- [ ] Édition riche de contacts (éventuellement **tcard** pour vCard/TOML)
-- [ ] Édition riche iCal (éventuellement **tcal**)
-
-### Écosystème Pimalaya — ponts
-
-Objectif : maximiser l’usage de l’écosystème plutôt que de recréer des fonctions.
-
-**Mail / sync / watch**
-
-- [ ] **MML** — compose / réponse en MIME Meta Language si pertinent
-- [ ] **Sirup** — sessions IMAP/SMTP pré-authentifiées
-- [ ] **m2m** — conversion Maildir / Maildir++ / m2dir si stockage local
-- [ ] Himalaya TUI / plugins (vim, emacs, …) : rester compatible configs/comportements Himalaya
-
-**Contacts & calendrier**
-
-- [ ] **tcard** / **tcal** — édition ergonomique vCard / iCalendar derrière les formulaires web
-- [ ] Aligner le reste du CRUD sur les sous-commandes Cardamum / Calendula avancées
-
-**Sécurité & config**
+### À faire
+- [x] Traductions UI : **espagnol**, **allemand**, **italien** (en plus du FR / EN)
 - [ ] **Pimconf** — découverte de services PIM et validation des configs
-
-**Time**
-
 - [ ] **Comodoro** — timers / focus liés à un mail ou un événement (optionnel)
 
-**Bibliothèques (plus tard, si besoin)**
+**Règle**
 
-- [ ] Évaluer `io-email`, `io-addressbook`, `io-calendar`, `io-oauth`, `pimalaya-config`… **uniquement** si un pont CLI ne suffit plus — rester I/O-free / coroutine-friendly dans l’esprit Pimalaya, sans forker la logique métier
-
-**Règle de design**
-
-1. Une feature = d’abord « quelle CLI / lib Pimalaya la fait déjà ? »
-2. HimaWeb = UI + orchestration + prefs locales
-3. Pas de second moteur IMAP / sync / OAuth / vCard
+1. maximiser l’usage de l’écosystème plutôt que de recréer des fonctions.
+2. Une feature = d’abord « quelle CLI / lib Pimalaya la fait déjà ? »
+3. HimaWeb = UI + orchestration + prefs locales
+4. Pas de second moteur IMAP / sync / OAuth / vCard / iCalendar
+5. Himalaya TUI / plugins (vim, emacs, …) : rester compatible configs/comportements Himalaya
 
 ## Licence
 

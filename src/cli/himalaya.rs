@@ -301,11 +301,11 @@ impl HimalayaClient {
 
                 let flags = parse_flags(item.get("flags"));
 
-                let subject = item
-                    .get("subject")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("(sans objet)")
-                    .to_string();
+                let subject = display_subject(
+                    item.get("subject")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or(""),
+                );
 
                 let from = extract_addr(&item, "from");
                 let to = extract_addr(&item, "to");
@@ -415,13 +415,14 @@ impl HimalayaClient {
             }
         }
 
-        if subject.is_empty() {
+        if subject.trim().is_empty() {
             subject = obj
                 .get("subject")
                 .and_then(|x| x.as_str())
-                .unwrap_or("(sans objet)")
+                .unwrap_or("")
                 .to_string();
         }
+        subject = display_subject(&subject);
         if from.is_empty() {
             from = extract_addr(obj, "from");
         }
@@ -893,6 +894,7 @@ impl HimalayaClient {
         body: &str,
         account: Option<&str>,
         from: Option<&str>,
+        save_mailbox: Option<&str>,
     ) -> CliResult<()> {
         let account_owned = account.map(str::to_string);
         let from_owned = from
@@ -904,6 +906,10 @@ impl HimalayaClient {
         let body_owned = body.to_string();
         let cc_owned = cc.filter(|s| !s.trim().is_empty()).map(str::to_string);
         let bcc_owned = bcc.filter(|s| !s.trim().is_empty()).map(str::to_string);
+        let save_owned = save_mailbox
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
 
         let mut refs: Vec<&str> = Vec::new();
         if let Some(ref a) = account_owned {
@@ -932,6 +938,10 @@ impl HimalayaClient {
         if let Some(ref b) = bcc_owned {
             refs.push("--bcc");
             refs.push(b.as_str());
+        }
+        if let Some(ref s) = save_owned {
+            refs.push("--save");
+            refs.push(s.as_str());
         }
 
         self.json(&refs).await?;
@@ -1086,8 +1096,17 @@ impl HimalayaClient {
         Ok(())
     }
 
-    pub async fn send_raw_eml(&self, eml: &[u8], account: Option<&str>) -> CliResult<()> {
-        let args = Self::with_account(account, &["message", "send"]);
+    pub async fn send_raw_eml(
+        &self,
+        eml: &[u8],
+        account: Option<&str>,
+        save_mailbox: Option<&str>,
+    ) -> CliResult<()> {
+        let save = save_mailbox.map(str::trim).filter(|s| !s.is_empty());
+        let args = match save {
+            Some(mb) => Self::with_account(account, &["message", "send", "--save", mb]),
+            None => Self::with_account(account, &["message", "send"]),
+        };
         self.runner
             .run_with_stdin(&self.bin, &args, eml)
             .await
@@ -1138,6 +1157,9 @@ pub struct ComposeDraft {
     pub bcc: String,
     pub subject: String,
     pub body: String,
+    /// En-têtes de fil (réponse Himalaya)
+    pub in_reply_to: String,
+    pub references: String,
 }
 
 impl ComposeDraft {
@@ -1180,6 +1202,12 @@ impl ComposeDraft {
                     draft.bcc = normalize_addr_header(&decode_rfc2047(&v))
                 }
                 "subject" if draft.subject.is_empty() => draft.subject = decode_rfc2047(&v),
+                "in-reply-to" if draft.in_reply_to.is_empty() => {
+                    draft.in_reply_to = v.trim().to_string()
+                }
+                "references" if draft.references.is_empty() => {
+                    draft.references = v.trim().to_string()
+                }
                 _ => {}
             }
         }
@@ -1246,6 +1274,16 @@ impl ComposeDraft {
             draft.body = decode_quoted_printable(&content);
         }
         draft
+    }
+}
+
+/// Libellé d’affichage pour un sujet manquant ou le placeholder Himalaya « Empty ».
+pub fn display_subject(raw: &str) -> String {
+    let s = raw.trim();
+    if s.is_empty() || s.eq_ignore_ascii_case("empty") {
+        "(sans objet)".into()
+    } else {
+        s.to_string()
     }
 }
 
@@ -1510,7 +1548,7 @@ fn split_addr_list(raw: &str) -> Vec<String> {
     parts
 }
 
-fn extract_email_addr(s: &str) -> Option<String> {
+pub fn extract_email_addr(s: &str) -> Option<String> {
     if let Some(start) = s.rfind('<') {
         if let Some(end) = s[start + 1..].find('>') {
             let inner = s[start + 1..start + 1 + end].trim();

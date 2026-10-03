@@ -101,6 +101,9 @@
               <select name="locale" class="select" style="flex:1">
                 <option value="fr" {% if locale == "fr" %}selected{% endif %}>Français</option>
                 <option value="en" {% if locale == "en" %}selected{% endif %}>English</option>
+                <option value="es" {% if locale == "es" %}selected{% endif %}>Español</option>
+                <option value="de" {% if locale == "de" %}selected{% endif %}>Deutsch</option>
+                <option value="it" {% if locale == "it" %}selected{% endif %}>Italiano</option>
               </select>
               <button type="submit" class="btn secondary" data-i18n="settings.language.apply">Appliquer</button>
             </div>
@@ -1110,6 +1113,12 @@
             <span class="label" data-i18n="settings.cal_preprompt">Préprompt calendrier</span>
             <textarea class="input w-full" name="calendar_preprompt" rows="2"
                       placeholder="Ex. : préfère les RDV le matin, fuseau Europe/Paris…">{{ ai_calendar_preprompt }}</textarea>
+          </label>
+          <label class="block">
+            <span class="label" data-i18n="settings.inbox_preprompt">Préprompt résumé inbox</span>
+            <textarea class="input w-full" name="inbox_preprompt" rows="2"
+                      placeholder="Ex. : address me as you/tu, never use my first name…">{{ ai_inbox_preprompt }}</textarea>
+            <span class="muted tiny" data-i18n="settings.inbox_preprompt_hint">Complète le préprompt global et celui du compte pour le bouton « Résumé inbox ».</span>
           </label>
           <label class="toggle-row">
             <span data-i18n="settings.ai_log">Journal de rédaction IA</span>

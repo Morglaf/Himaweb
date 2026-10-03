@@ -338,44 +338,71 @@ async fn ai_api_inbox_summary(
     snippets.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut catalog = String::new();
-    for (i, (id, _acc, _mbox, from, subject, body_txt)) in snippets.iter().enumerate() {
+    let mut accounts_in_batch: Vec<String> = Vec::new();
+    for (i, (id, acc, _mbox, from, subject, body_txt)) in snippets.iter().enumerate() {
+        if let Some(a) = acc.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if !accounts_in_batch.iter().any(|x| x == a) {
+                accounts_in_batch.push(a.to_string());
+            }
+        }
         catalog.push_str(&format!(
             "### MSG {i}\nid: {id}\nfrom: {from}\nsubject: {subject}\nbody:\n{body_txt}\n\n"
         ));
     }
-
-    let now = Local::now().format("%Y-%m-%d %H:%M (%z)").to_string();
-    let system = "Tu résumes une boîte mail. Réponds en JSON strict uniquement: {\"items\":[{\"id\",\"summary\"}]} — une entrée par message (même id), summary = une phrase courte en français. Pas de markdown.";
-    let user = format!("Maintenant: {now}\n\nMessages:\n{catalog}");
-    let text = match complete(&prefs, system, &user, "inbox-summary").await {
-        Ok(t) => t,
-        Err(e) => return Json(json!({ "error": e })).into_response(),
-    };
-    let cleaned = strip_fences(&text);
-    let mut by_id: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-    if let Ok(v) = serde_json::from_str::<Value>(cleaned) {
-        if let Some(arr) = v.get("items").and_then(|x| x.as_array()) {
-            for it in arr {
-                let id = it.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                let summary = it
-                    .get("summary")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if !id.is_empty() {
-                    by_id.insert(id, summary);
-                }
-            }
+    if accounts_in_batch.is_empty() {
+        if let Some(a) = account_opt {
+            accounts_in_batch.push(a.to_string());
         }
     }
 
+    let now = Local::now().format("%Y-%m-%d %H:%M (%z)").to_string();
+    let system = build_inbox_summary_system(&prefs, &accounts_in_batch);
+    let user = format!("Now: {now}\n\nMessages:\n{catalog}");
+    let text = match complete(&prefs, &system, &user, "inbox-summary").await {
+        Ok(t) => t,
+        Err(e) => return Json(json!({ "error": e })).into_response(),
+    };
+    let parsed = parse_inbox_summary_response(&text);
+    let mut by_id: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut by_order: Vec<String> = Vec::new();
+    for (id, summary) in parsed {
+        let summary = summary.trim().to_string();
+        if summary.is_empty() {
+            continue;
+        }
+        by_order.push(summary.clone());
+        if !id.is_empty() {
+            by_id.insert(id, summary);
+        }
+    }
+    // Ne jamais réutiliser un résumé par index si on a déjà des ids matchés
+    // (évite d’attribuer le résumé de MSG N à MSG 0 quand le modèle fusionne les objets).
+    let allow_order_fallback = by_id.is_empty();
+
     let items: Vec<Value> = snippets
         .into_iter()
-        .map(|(id, acc, mbox, from, subject, _)| {
+        .enumerate()
+        .map(|(idx, (id, acc, mbox, from, subject, body_txt))| {
             let summary = by_id
                 .get(&id)
                 .cloned()
-                .unwrap_or_else(|| truncate_chars(&subject, 120));
+                .or_else(|| {
+                    if allow_order_fallback {
+                        by_order.get(idx).cloned()
+                    } else {
+                        None
+                    }
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    // Dernier recours : amorce du corps (pas le sujet seul, déjà affiché)
+                    let snip = body_txt.trim();
+                    if snip.is_empty() {
+                        truncate_chars(&subject, 120)
+                    } else {
+                        truncate_chars(snip, 160)
+                    }
+                });
             json!({
                 "id": id,
                 "account": acc.unwrap_or_default(),
@@ -426,6 +453,32 @@ fn build_system_preamble(prefs: &Prefs, account: Option<&str>, calendar: bool) -
             parts.push(format!("Adresse de domicile (départ trajet): {home}"));
         }
     }
+    parts.join("\n\n")
+}
+
+fn build_inbox_summary_system(prefs: &Prefs, accounts: &[String]) -> String {
+    // Consignes de style / langue / tutoiement : uniquement via les préprompts prefs.
+    let task = "Summarize each inbox message for the account owner (the recipient). \
+Reply with strict JSON only — an array of SEPARATE objects (close each object with }), never merge keys into one object: \
+{\"items\":[{\"id\":\"1\",\"summary\":\"…\"},{\"id\":\"2\",\"summary\":\"…\"}]} \
+One entry per message, id must match the given id string, summary = one short sentence. No markdown, no text outside JSON.";
+
+    let mut parts = Vec::new();
+    let global = prefs.ai_ollama_preprompt.trim();
+    if !global.is_empty() {
+        parts.push(global.to_string());
+    }
+    for acc in accounts {
+        let ap = prefs.account_ai_preprompt_for(acc);
+        if !ap.is_empty() {
+            parts.push(format!("Account `{acc}`:\n{ap}"));
+        }
+    }
+    let inbox = prefs.ai_inbox_preprompt.trim();
+    if !inbox.is_empty() {
+        parts.push(inbox.to_string());
+    }
+    parts.push(task.to_string());
     parts.join("\n\n")
 }
 
@@ -537,6 +590,268 @@ fn strip_fences(text: &str) -> &str {
         .trim_start_matches("```")
         .trim_end_matches("```")
         .trim()
+}
+
+fn strip_think_blocks(text: &str) -> String {
+    let mut out = text.to_string();
+    while let Some(start) = out.find("<think>") {
+        if let Some(rel_end) = out[start..].find("</think>") {
+            let end = start + rel_end + "</think>".len();
+            out.replace_range(start..end, "");
+        } else {
+            // Bloc de réflexion non fermé : tout jeter jusqu'au premier `{` JSON
+            if let Some(brace) = out[start..].find('{') {
+                out.replace_range(start..start + brace, "");
+            } else {
+                out.replace_range(start.., "");
+            }
+            break;
+        }
+    }
+    out
+}
+
+fn extract_json_value(text: &str) -> Option<&str> {
+    let cleaned = strip_fences(text);
+    let brace = cleaned.find('{');
+    let bracket = cleaned.find('[');
+    let (start, open, close) = match (brace, bracket) {
+        (Some(b), Some(a)) if a < b => (a, '[', ']'),
+        (Some(b), _) => (b, '{', '}'),
+        (None, Some(a)) => (a, '[', ']'),
+        (None, None) => return None,
+    };
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut escape = false;
+    for (i, ch) in cleaned[start..].char_indices() {
+        if in_str {
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        if ch == open {
+            depth += 1;
+        } else if ch == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(&cleaned[start..start + i + 1]);
+            }
+        } else if ch == '"' {
+            in_str = true;
+        }
+    }
+    // JSON tronqué : préfixe pour scrape
+    Some(&cleaned[start..])
+}
+
+fn extract_json_object(text: &str) -> Option<&str> {
+    // Conservé pour extract_ollama_text / thinking
+    let cleaned = strip_fences(text);
+    let start = cleaned.find('{')?;
+    extract_json_value(&cleaned[start..]).filter(|s| s.starts_with('{'))
+}
+
+fn json_stringish(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn items_from_json_value(v: &Value) -> Vec<(String, String)> {
+    let arr = if let Some(arr) = v.get("items").and_then(|x| x.as_array()) {
+        arr.as_slice()
+    } else if let Some(arr) = v.as_array() {
+        arr.as_slice()
+    } else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for it in arr {
+        let id = it.get("id").and_then(json_stringish).unwrap_or_default();
+        let summary = it
+            .get("summary")
+            .and_then(json_stringish)
+            .unwrap_or_default();
+        if !summary.trim().is_empty() {
+            out.push((id, summary));
+        }
+    }
+    out
+}
+
+/// Parse la réponse inbox-summary : `{"items":[…]}` ou tableau nu `[…]`,
+/// plus scrape des paires id/summary (JSON fusionné / tronqué / id numériques).
+fn parse_inbox_summary_response(text: &str) -> Vec<(String, String)> {
+    let without_think = strip_think_blocks(text);
+    // Scrape sur le texte complet — pas seulement le 1er `{…}` (sinon tableau nu → 1 seul item)
+    let scraped = scrape_inbox_summary_pairs(&without_think);
+
+    let mut from_json = Vec::new();
+    if let Some(frag) = extract_json_value(&without_think) {
+        for candidate in [frag.to_string(), repair_truncated_json(frag)] {
+            if let Ok(v) = serde_json::from_str::<Value>(&candidate) {
+                let out = items_from_json_value(&v);
+                if !out.is_empty() {
+                    from_json = out;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Prefer scrape when it recovers more pairs (flattened duplicate keys, etc.)
+    if scraped.len() > from_json.len() {
+        scraped
+    } else if !from_json.is_empty() {
+        from_json
+    } else {
+        scraped
+    }
+}
+
+/// Tente de refermer un JSON coupé (ex. `{"items":[...]}` sans `}` final).
+fn repair_truncated_json(frag: &str) -> String {
+    let mut s = frag.trim_end().to_string();
+    // Fermer une string ouverte
+    let mut in_str = false;
+    let mut escape = false;
+    for ch in s.chars() {
+        if in_str {
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+        } else if ch == '"' {
+            in_str = true;
+        }
+    }
+    if in_str {
+        s.push('"');
+    }
+    let opens = s.chars().filter(|c| *c == '{').count();
+    let closes = s.chars().filter(|c| *c == '}').count();
+    let open_arr = s.chars().filter(|c| *c == '[').count();
+    let close_arr = s.chars().filter(|c| *c == ']').count();
+    for _ in 0..open_arr.saturating_sub(close_arr) {
+        s.push(']');
+    }
+    for _ in 0..opens.saturating_sub(closes) {
+        s.push('}');
+    }
+    s
+}
+
+fn scrape_inbox_summary_pairs(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Cherche "id" : … puis "summary" : "…"
+        let rest = &text[i..];
+        let Some(id_key) = rest.find("\"id\"") else {
+            break;
+        };
+        let after_id = i + id_key + 4;
+        let Some(colon) = text[after_id..].find(':') else {
+            break;
+        };
+        let mut p = after_id + colon + 1;
+        while p < text.len() && text.as_bytes()[p].is_ascii_whitespace() {
+            p += 1;
+        }
+        if p >= text.len() {
+            break;
+        }
+        let id = if text.as_bytes()[p] == b'"' {
+            p += 1;
+            let start = p;
+            while p < text.len() {
+                let b = text.as_bytes()[p];
+                if b == b'\\' {
+                    p = (p + 2).min(text.len());
+                    continue;
+                }
+                if b == b'"' {
+                    break;
+                }
+                p += 1;
+            }
+            let s = text[start..p].to_string();
+            if p < text.len() {
+                p += 1;
+            }
+            s
+        } else {
+            let start = p;
+            while p < text.len() {
+                let b = text.as_bytes()[p];
+                if b.is_ascii_digit() {
+                    p += 1;
+                } else {
+                    break;
+                }
+            }
+            text[start..p].to_string()
+        };
+
+        let Some(sum_rel) = text[p..].find("\"summary\"") else {
+            i = p.max(i + 1);
+            continue;
+        };
+        let after_sum = p + sum_rel + 9;
+        let Some(colon2) = text[after_sum..].find(':') else {
+            i = after_sum.max(i + 1);
+            continue;
+        };
+        let mut q = after_sum + colon2 + 1;
+        while q < text.len() && text.as_bytes()[q].is_ascii_whitespace() {
+            q += 1;
+        }
+        if q >= text.len() || text.as_bytes()[q] != b'"' {
+            i = q.max(i + 1);
+            continue;
+        }
+        q += 1;
+        let start = q;
+        let mut incomplete = true;
+        while q < text.len() {
+            let b = text.as_bytes()[q];
+            if b == b'\\' {
+                q = (q + 2).min(text.len());
+                continue;
+            }
+            if b == b'"' {
+                incomplete = false;
+                break;
+            }
+            q += 1;
+        }
+        let mut summary = text[start..q].to_string();
+        // JSON coupé au milieu d'une string : garder la phrase partielle si utilisable
+        if incomplete {
+            summary = summary.trim_end().to_string();
+            if let Some(cut) = summary.rfind(['.', '!', '?', ',', ';']) {
+                summary = summary[..=cut].trim().to_string();
+            }
+        }
+        if !summary.trim().is_empty() {
+            out.push((id, summary));
+        }
+        i = if incomplete { text.len() } else { q + 1 };
+    }
+    out
 }
 
 fn split_subject_body(text: &str) -> (String, String) {
@@ -748,11 +1063,18 @@ async fn ollama_chat(prefs: &Prefs, system: &str, user: &str) -> Result<String, 
         "low" | "medium" | "high" => {
             body["think"] = json!(prefs.ai_ollama_think.as_str());
         }
-        _ => {}
+        // qwen3.5 « default » : thinking allumé → content vide, JSON perdu.
+        // On coupe le think sauf demande explicite low/medium/high.
+        _ => {
+            body["think"] = json!(false);
+        }
     }
+    // num_predict assez haut : qwen/think coupe sinon le JSON inbox-summary
+    let mut options = json!({ "num_predict": 2048 });
     if let Some(t) = prefs.ai_ollama_temperature {
-        body["options"] = json!({ "temperature": t });
+        options["temperature"] = json!(t);
     }
+    body["options"] = options;
     let client = reqwest::Client::new();
     let res = client
         .post(&url)
@@ -764,10 +1086,31 @@ async fn ollama_chat(prefs: &Prefs, system: &str, user: &str) -> Result<String, 
         return Err(format!("HTTP {}", res.status()));
     }
     let v: Value = res.json().await.map_err(|e| e.to_string())?;
-    v.pointer("/message/content")
+    extract_ollama_text(&v).ok_or_else(|| "réponse Ollama sans contenu".into())
+}
+
+fn extract_ollama_text(v: &Value) -> Option<String> {
+    let content = v
+        .pointer("/message/content")
         .and_then(|x| x.as_str())
-        .map(str::to_string)
-        .ok_or_else(|| "réponse Ollama sans contenu".into())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if content.is_some() {
+        return content;
+    }
+    // Certains modèles (qwen3.5) ne remplissent que `thinking`
+    let thinking = v
+        .pointer("/message/thinking")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    if let Some(json) = extract_json_object(thinking) {
+        if json.contains("items") || json.contains("subject") || json.contains("summary") {
+            return Some(json.to_string());
+        }
+    }
+    Some(thinking.to_string())
 }
 
 async fn remote_chat(
@@ -822,5 +1165,63 @@ async fn render_shell(state: &AppState, inner: AiTemplate) -> axum::response::Re
     match shell.render() {
         Ok(html) => Html(html).into_response(),
         Err(e) => Html(format!("<pre>{e}</pre>")).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod inbox_summary_parse_tests {
+    use super::*;
+
+    #[test]
+    fn parses_string_ids() {
+        let raw = r#"{"items":[{"id":"4652","summary":"Demande d'aide publication."}]}"#;
+        let out = parse_inbox_summary_response(raw);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "4652");
+        assert!(out[0].1.contains("publication"));
+    }
+
+    #[test]
+    fn parses_numeric_ids_and_missing_brace() {
+        // Cas réel qwen : id numériques + `}` racine manquant
+        let raw = r#"{"items":[{"id":4652,"summary":"Beatrice mentionne le site."},{"id":4653,"summary":"Elodie evoque un festival."}]"#;
+        let out = parse_inbox_summary_response(raw);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0, "4652");
+        assert_eq!(out[1].0, "4653");
+    }
+
+    #[test]
+    fn scrapes_truncated_mid_string() {
+        let raw = r#"{"items":[{"id":4652,"summary":"Phrase complete."},{"id":4653,"summary":"Coupe au mil"#;
+        let out = parse_inbox_summary_response(raw);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].1, "Phrase complete.");
+        assert!(!out[1].1.is_empty());
+    }
+
+    #[test]
+    fn scrapes_flattened_duplicate_keys_in_one_object() {
+        // Cas réel qwen : un seul objet avec id/summary répétés
+        let raw = r#"{"items":[{"id":"4652","summary":"Beatrice aide site.","id":"4653","summary":"Elodie programme.","id":"9827","summary":"Cecile meetup.","id":"9837","summary":"Jean-Claude photos."}]}"#;
+        let out = parse_inbox_summary_response(raw);
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[0].0, "4652");
+        assert_eq!(out[1].0, "4653");
+        assert_eq!(out[2].0, "9827");
+        assert_eq!(out[3].0, "9837");
+        assert!(out[0].1.contains("Beatrice"));
+        assert!(out[3].1.contains("Jean-Claude"));
+    }
+
+    #[test]
+    fn parses_bare_array_without_items_wrapper() {
+        // Cas réel qwen : tableau nu sans {"items":…}
+        let raw = r#"[{"id":"4652","summary":"Beatrice aide site."},{"id":"4653","summary":"Elodie programme."},{"id":"9827","summary":"Cecile meetup."},{"id":"9837","summary":"Jean-Claude photos."}]"#;
+        let out = parse_inbox_summary_response(raw);
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[0].0, "4652");
+        assert_eq!(out[3].0, "9837");
+        assert!(out[1].1.contains("Elodie"));
     }
 }

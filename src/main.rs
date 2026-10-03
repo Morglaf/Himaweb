@@ -121,7 +121,10 @@ async fn main() {
         tokio::spawn(async move {
             if warm.cardamum_available {
                 match crate::routes::contacts::refresh_contacts_into_cache(&warm).await {
-                    Ok(n) => tracing::info!("warm contacts: {n}"),
+                    Ok(n) => {
+                        tracing::info!("warm contacts: {n}");
+                        crate::routes::contacts::spawn_photo_sync(Arc::clone(&warm), Vec::new());
+                    }
                     Err(e) => tracing::warn!("warm contacts: {e}"),
                 }
             }

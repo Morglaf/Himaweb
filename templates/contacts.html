@@ -1,9 +1,10 @@
-<section class="contacts-page" x-data="contactsPage()">
+<section class="contacts-page" x-data="contactsPage()" data-q="{{ query }}"
+         x-init="qLive = ($el.dataset.q || '')">
   <div class="contacts-head">
     <h1 class="font-display text-2xl" data-i18n="contacts.title">Contacts</h1>
     <div class="flex gap-2">
       {% if cardamum_available %}
-      <button type="button" class="btn" @click="openCreate = true">
+      <button type="button" class="btn" @click="openCreateModal()">
         <i data-lucide="user-plus"></i> <span data-i18n="contacts.new">Nouveau</span>
       </button>
       {% endif %}
@@ -12,21 +13,23 @@
     </div>
   </div>
 
-  <form method="get" action="/contacts" class="contacts-search">
-    <select name="book" class="select" onchange="this.form.submit()">
-      {% for b in books %}
-      <option value="{{ b.id }}" {% if b.selected %}selected{% endif %}>{{ b.name }}</option>
-      {% endfor %}
-    </select>
-    <input class="input w-full" type="search" name="q" value="{{ query }}"
-           data-i18n-placeholder="contacts.search_ph" placeholder="Rechercher un nom ou un email…" />
-    <button class="btn" type="submit" data-i18n="contacts.search">Chercher</button>
-  </form>
+  <div class="contacts-search">
+    <form method="get" action="/contacts">
+      <select name="book" class="select" onchange="this.form.submit()">
+        {% for b in books %}
+        <option value="{{ b.id }}" {% if b.selected %}selected{% endif %}>{{ b.name }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    <input class="input w-full" type="search" x-model="qLive"
+           data-i18n-placeholder="contacts.search_ph" placeholder="Rechercher un nom ou un email…"
+           autocomplete="off" />
+  </div>
 
   <p class="muted tiny mb-3">
     <span data-i18n="contacts.source">Source</span> : {{ source }}
     {% if !cardamum_available %} · <span data-i18n="contacts.cardamum_missing">Cardamum absent</span>{% endif %}
-    · {{ contacts.len() }} <span data-i18n="contacts.count">contact(s)</span>
+    · <span x-text="visibleCount">{{ contacts.len() }}</span> <span data-i18n="contacts.count">contact(s)</span>
   </p>
 
   {% if let Some(e) = error %}
@@ -43,13 +46,15 @@
   </div>
   {% else %}
   <div class="contacts-split">
-    <ul class="contacts-list contacts-list-pane">
+    <ul class="contacts-list contacts-list-pane" x-ref="list">
       {% for c in contacts %}
       <li class="contact-row"
+          x-show="rowVisible($el)"
           :class="{ 'is-selected': isSelected($el) }"
           data-id="{{ c.id }}"
           data-name="{{ c.name }}"
           data-email="{{ c.email }}"
+          data-tel="{{ c.tel }}"
           data-book="{{ c.book }}"
           data-book-ref="{{ c.book_ref }}"
           data-initial="{{ c.initial }}"
@@ -58,6 +63,7 @@
         <div class="contact-main">
           <div class="contact-name">{% if !c.name.is_empty() %}{{ c.name }}{% else %}<span class="muted" data-i18n="contacts.no_name">Sans nom</span>{% endif %}</div>
           <div class="contact-email">{{ c.email }}</div>
+          {% if !c.tel.is_empty() %}<div class="contact-tel muted tiny">{{ c.tel }}</div>{% endif %}
         </div>
       </li>
       {% endfor %}
@@ -72,15 +78,66 @@
       </template>
       <template x-if="selected">
         <div class="contact-detail">
-          <div class="env-avatar contact-detail-avatar" x-text="selected.initial"></div>
-          <h2 class="font-display text-xl" x-text="selected.name || ((window.HimaWeb&&HimaWeb.t('contacts.no_name'))||'Sans nom')"></h2>
-          <p class="contact-email">
-            <a :href="'/compose?to=' + encodeURIComponent(selected.email)" x-text="selected.email"></a>
-          </p>
-          <p class="muted tiny" x-show="selected.book" x-text="selected.book"></p>
-          <div class="flex gap-2 mt-4">
-            <a class="btn" :href="'/compose?to=' + encodeURIComponent(selected.email)" data-i18n="contacts.write">Écrire</a>
-            <form method="post" action="/contacts/delete" x-show="selected.id && selected.book_ref"
+          <div class="contact-detail-hero">
+            <div class="env-avatar contact-detail-avatar">
+              <span class="env-avatar-initial" x-text="selected.initial"></span>
+              <img class="env-avatar-img" x-show="detail && detail.avatar_url"
+                   :src="detail && detail.avatar_url" alt="" loading="lazy"
+                   @error="$el.style.display='none'" />
+            </div>
+            <div>
+              <h2 class="font-display text-xl" x-text="(detail && detail.name) || selected.name || ((window.HimaWeb&&HimaWeb.t('contacts.no_name'))||'Sans nom')"></h2>
+              <p class="muted tiny" x-show="detail && detail.nickname" x-text="detail.nickname"></p>
+              <p class="muted tiny" x-show="detail && (detail.title || detail.org)"
+                 x-text="[detail.title, detail.org].filter(Boolean).join(' · ')"></p>
+            </div>
+          </div>
+
+          <p class="muted tiny" x-show="detailBusy" data-i18n="contacts.loading_detail">Chargement de la fiche…</p>
+          <p class="muted tiny" x-show="resolveError" x-text="resolveError"></p>
+
+          <dl class="contact-fields" x-show="detail">
+            <template x-for="(em, i) in ((detail && detail.emails) || [])" :key="'e'+i">
+              <div class="contact-field">
+                <dt data-i18n="contacts.email">Email</dt>
+                <dd><a :href="'/compose?to=' + encodeURIComponent(em)" x-text="em"></a></dd>
+              </div>
+            </template>
+            <template x-for="(t, i) in ((detail && detail.tels) || [])" :key="'t'+i">
+              <div class="contact-field">
+                <dt data-i18n="contacts.phone">Téléphone</dt>
+                <dd><a :href="'tel:' + t" x-text="t"></a></dd>
+              </div>
+            </template>
+            <div class="contact-field" x-show="detail && detail.address">
+              <dt data-i18n="contacts.address">Adresse</dt>
+              <dd class="contact-pre" x-text="detail.address"></dd>
+            </div>
+            <div class="contact-field" x-show="detail && detail.url">
+              <dt data-i18n="contacts.website">Site</dt>
+              <dd><a :href="detail.url" target="_blank" rel="noopener" x-text="detail.url"></a></dd>
+            </div>
+            <div class="contact-field" x-show="detail && detail.note">
+              <dt data-i18n="contacts.note">Note</dt>
+              <dd class="contact-pre" x-text="detail.note"></dd>
+            </div>
+            <div class="contact-field" x-show="selected.book">
+              <dt data-i18n="contacts.book">Carnet</dt>
+              <dd x-text="selected.book"></dd>
+            </div>
+          </dl>
+
+          <div class="flex gap-2 mt-4 flex-wrap">
+            <a class="btn" :href="'/compose?to=' + encodeURIComponent((detail && detail.email) || selected.email)" data-i18n="contacts.write">Écrire</a>
+            <button type="button" class="btn secondary"
+                    x-show="selected.email || selected.id"
+                    :disabled="resolveBusy || detailBusy"
+                    @click="openEditModal()"
+                    x-text="resolveBusy
+                      ? ((window.HimaWeb&&HimaWeb.t('contacts.resolving'))||'Recherche…')
+                      : ((window.HimaWeb&&HimaWeb.t('contacts.edit'))||'Modifier')"></button>
+            <form method="post" action="/contacts/delete"
+                  x-show="selected.id && selected.book_ref"
                   onsubmit="return confirm((window.HimaWeb&&HimaWeb.t('contacts.delete_confirm'))||'Supprimer ce contact ?');">
               <input type="hidden" name="id" :value="selected.id" />
               <input type="hidden" name="book" :value="selected.book_ref" />
@@ -93,38 +150,119 @@
   </div>
   {% endif %}
 
-  <div class="modal-backdrop" x-show="openCreate" x-cloak @click.self="openCreate = false" @keydown.escape.window="openCreate = false">
-    <div class="modal-panel" @click.stop>
+  <div class="modal-backdrop" x-show="openForm" x-cloak @click.self="closeForm()" @keydown.escape.window="closeForm()">
+    <div class="modal-panel contact-form-panel" @click.stop>
       <div class="modal-head">
-        <h2 class="font-display text-xl" data-i18n="contacts.new_title">Nouveau contact</h2>
-        <button type="button" class="icon-btn" @click="openCreate = false"><i data-lucide="x"></i></button>
+        <h2 class="font-display text-xl"
+            x-text="editMode
+              ? ((window.HimaWeb&&HimaWeb.t('contacts.edit_title'))||'Modifier le contact')
+              : ((window.HimaWeb&&HimaWeb.t('contacts.new_title'))||'Nouveau contact')"></h2>
+        <button type="button" class="icon-btn" @click="closeForm()"><i data-lucide="x"></i></button>
       </div>
-      <form method="post" action="/contacts/create" class="space-y-3">
+      <form method="post" enctype="multipart/form-data"
+            :action="editMode ? '/contacts/update' : '/contacts/create'"
+            class="space-y-3 contact-form-grid">
+        <template x-if="editMode">
+          <input type="hidden" name="id" :value="form.id" />
+        </template>
+        <div class="contact-form-span contact-photo-edit">
+          <span class="label" data-i18n="contacts.photo">Photo</span>
+          <div class="contact-photo-row">
+            <div class="env-avatar contact-detail-avatar">
+              <span class="env-avatar-initial"
+                    x-text="(form.name || form.email || '?').charAt(0).toUpperCase()"></span>
+              <img class="env-avatar-img" x-show="photoPreview && !clearPhoto"
+                   :src="photoPreview" alt="" />
+            </div>
+            <div class="contact-photo-actions">
+              <label class="btn secondary tiny-btn">
+                <span data-i18n="contacts.photo_choose">Choisir…</span>
+                <input type="file" name="photo" accept="image/*" class="sr-only"
+                       @change="onPhotoPick($event)" />
+              </label>
+              <label class="toggle-row" x-show="photoPreview || (detail && detail.has_photo)">
+                <input type="checkbox" name="clear_photo" value="1" x-model="clearPhoto" />
+                <span data-i18n="contacts.photo_remove">Supprimer la photo</span>
+              </label>
+            </div>
+          </div>
+        </div>
         <label class="block">
           <span class="label" data-i18n="contacts.book">Carnet</span>
-          <select name="book" class="select w-full" required>
-            {% for b in books %}
-            {% if b.id != "__all__" %}
-            <option value="{{ b.id }}" {% if b.selected %}selected{% endif %}>{{ b.name }}</option>
-            {% endif %}
-            {% endfor %}
-          </select>
+          <template x-if="!editMode">
+            <select name="book" class="select w-full" required>
+              {% for b in books %}
+              {% if b.id != "__all__" %}
+              <option value="{{ b.id }}" {% if b.selected %}selected{% endif %}>{{ b.name }}</option>
+              {% endif %}
+              {% endfor %}
+            </select>
+          </template>
+          <template x-if="editMode">
+            <div>
+              <input type="hidden" name="book" :value="form.book" />
+              <input class="input w-full" type="text" :value="form.book" disabled />
+            </div>
+          </template>
         </label>
         <label class="block">
           <span class="label" data-i18n="contacts.name">Nom</span>
-          <input class="input w-full" name="name" required />
+          <input class="input w-full" name="name" required x-model="form.name" />
+        </label>
+        <label class="block">
+          <span class="label" data-i18n="contacts.nickname">Surnom</span>
+          <input class="input w-full" name="nickname" x-model="form.nickname" />
         </label>
         <label class="block">
           <span class="label" data-i18n="contacts.email">Email</span>
-          <input class="input w-full" type="email" name="email" />
+          <input class="input w-full" type="email" name="email" x-model="form.email" />
         </label>
         <label class="block">
           <span class="label" data-i18n="contacts.phone">Téléphone</span>
-          <input class="input w-full" name="tel" />
+          <input class="input w-full" name="tel" x-model="form.tel" />
         </label>
-        <div class="flex gap-2">
-          <button type="submit" class="btn" data-i18n="common.create">Créer</button>
-          <button type="button" class="btn ghost" @click="openCreate = false" data-i18n="common.cancel">Annuler</button>
+        <label class="block">
+          <span class="label" data-i18n="contacts.org">Organisation</span>
+          <input class="input w-full" name="org" x-model="form.org" />
+        </label>
+        <label class="block">
+          <span class="label" data-i18n="contacts.job_title">Fonction</span>
+          <input class="input w-full" name="title" x-model="form.title" />
+        </label>
+        <label class="block contact-form-span">
+          <span class="label" data-i18n="contacts.street">Rue</span>
+          <input class="input w-full" name="street" x-model="form.street" />
+        </label>
+        <label class="block">
+          <span class="label" data-i18n="contacts.postal">Code postal</span>
+          <input class="input w-full" name="postal" x-model="form.postal" />
+        </label>
+        <label class="block">
+          <span class="label" data-i18n="contacts.city">Ville</span>
+          <input class="input w-full" name="city" x-model="form.city" />
+        </label>
+        <label class="block">
+          <span class="label" data-i18n="contacts.region">Région</span>
+          <input class="input w-full" name="region" x-model="form.region" />
+        </label>
+        <label class="block">
+          <span class="label" data-i18n="contacts.country">Pays</span>
+          <input class="input w-full" name="country" x-model="form.country" />
+        </label>
+        <label class="block contact-form-span">
+          <span class="label" data-i18n="contacts.website">Site</span>
+          <input class="input w-full" name="url" x-model="form.url" placeholder="https://" />
+        </label>
+        <label class="block contact-form-span">
+          <span class="label" data-i18n="contacts.note">Note</span>
+          <textarea class="input w-full" name="note" rows="3" x-model="form.note"></textarea>
+        </label>
+        <div class="flex gap-2 contact-form-span">
+          <button type="submit" class="btn"
+                  x-text="editMode
+                    ? ((window.HimaWeb&&HimaWeb.t('common.save'))||'Enregistrer')
+                    : ((window.HimaWeb&&HimaWeb.t('common.create'))||'Créer')"></button>
+          <button type="button" class="btn ghost" @click="closeForm()" data-i18n="common.cancel">Annuler</button>
         </div>
       </form>
     </div>

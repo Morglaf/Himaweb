@@ -38,20 +38,20 @@ pub fn list_editable_accounts() -> Result<Vec<AccountEdit>, String> {
             display_name: get_str(t, &["display-name"]),
             imap_server: get_str(t, &["imap", "server"]),
             imap_user: {
-                let plain = get_str(t, &["imap", "sasl", "plain", "username"]);
-                if plain.is_empty() {
-                    get_str(t, &["imap", "sasl", "oauthbearer", "username"])
+                let oauth = get_str(t, &["imap", "sasl", "oauthbearer", "username"]);
+                if !oauth.is_empty() {
+                    oauth
                 } else {
-                    plain
+                    get_str(t, &["imap", "sasl", "plain", "username"])
                 }
             },
             smtp_server: get_str(t, &["smtp", "server"]),
             smtp_user: {
-                let plain = get_str(t, &["smtp", "sasl", "plain", "username"]);
-                if plain.is_empty() {
-                    get_str(t, &["smtp", "sasl", "oauthbearer", "username"])
+                let oauth = get_str(t, &["smtp", "sasl", "oauthbearer", "username"]);
+                if !oauth.is_empty() {
+                    oauth
                 } else {
-                    plain
+                    get_str(t, &["smtp", "sasl", "plain", "username"])
                 }
             },
             is_default: t.get("default").and_then(|i| i.as_bool()).unwrap_or(false),
@@ -116,18 +116,50 @@ pub fn update_account(
         set_mailbox_alias(account, "sent", sent_alias);
         set_mailbox_alias(account, "drafts", drafts_alias);
         set_path(account, &["imap", "server"], imap_server);
-        set_path(account, &["imap", "sasl", "plain", "username"], imap_user);
-        if let Some(pw) = imap_password {
-            if !pw.is_empty() {
-                set_path(account, &["imap", "sasl", "plain", "password", "raw"], pw);
+        // Ne jamais mélanger plain + oauthbearer : Himalaya refuse (parse « more than 1 element »)
+        let imap_oauth = path_exists(account, &["imap", "sasl", "oauthbearer", "username"])
+            || path_exists(account, &["imap", "sasl", "oauthbearer", "token", "command"]);
+        if imap_oauth {
+            set_path(
+                account,
+                &["imap", "sasl", "oauthbearer", "username"],
+                imap_user,
+            );
+            // Nettoyer un plain résiduel (édition formulaire) qui casse le compte
+            if let Some(imap) = account.get_mut("imap").and_then(|i| i.as_table_mut()) {
+                if let Some(sasl) = imap.get_mut("sasl").and_then(|i| i.as_table_mut()) {
+                    sasl.remove("plain");
+                }
+            }
+        } else {
+            set_path(account, &["imap", "sasl", "plain", "username"], imap_user);
+            if let Some(pw) = imap_password {
+                if !pw.is_empty() {
+                    set_path(account, &["imap", "sasl", "plain", "password", "raw"], pw);
+                }
             }
         }
         if !smtp_server.trim().is_empty() {
             set_path(account, &["smtp", "server"], smtp_server);
-            set_path(account, &["smtp", "sasl", "plain", "username"], smtp_user);
-            if let Some(pw) = smtp_password {
-                if !pw.is_empty() {
-                    set_path(account, &["smtp", "sasl", "plain", "password", "raw"], pw);
+            let smtp_oauth = path_exists(account, &["smtp", "sasl", "oauthbearer", "username"])
+                || path_exists(account, &["smtp", "sasl", "oauthbearer", "token", "command"]);
+            if smtp_oauth {
+                set_path(
+                    account,
+                    &["smtp", "sasl", "oauthbearer", "username"],
+                    smtp_user,
+                );
+                if let Some(smtp) = account.get_mut("smtp").and_then(|i| i.as_table_mut()) {
+                    if let Some(sasl) = smtp.get_mut("sasl").and_then(|i| i.as_table_mut()) {
+                        sasl.remove("plain");
+                    }
+                }
+            } else {
+                set_path(account, &["smtp", "sasl", "plain", "username"], smtp_user);
+                if let Some(pw) = smtp_password {
+                    if !pw.is_empty() {
+                        set_path(account, &["smtp", "sasl", "plain", "password", "raw"], pw);
+                    }
                 }
             }
         }

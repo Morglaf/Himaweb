@@ -1081,14 +1081,27 @@ async fn create_event(
         form.end_date.as_deref().unwrap_or(&form.start_date),
         form.end_time.as_deref().unwrap_or(""),
     );
-    let ical = crate::cli::calendula::CalendulaClient::build_ical(
-        form.summary.trim(),
-        &start,
-        &end,
-        form.description.as_deref().unwrap_or(""),
-        form.location.as_deref().unwrap_or(""),
-        form.rrule.as_deref().unwrap_or("none"),
-    );
+    let fields = crate::cli::tcal::EventFields {
+        summary: form.summary.trim().to_string(),
+        start,
+        end,
+        description: form.description.as_deref().unwrap_or("").to_string(),
+        location: form.location.as_deref().unwrap_or("").to_string(),
+        rrule: form.rrule.as_deref().unwrap_or("none").to_string(),
+    };
+    let ical = match crate::cli::tcal::build_event(&fields) {
+        Ok(v) => v,
+        Err(e) => {
+            if stay {
+                let msg = serde_json::to_string(&format!("Erreur tcal: {e}"))
+                    .unwrap_or_else(|_| "\"Erreur\"".into());
+                return Html(format!(r#"<script>alert({msg});</script>"#)).into_response();
+            }
+            let err_s = format!("Erreur tcal: {e}");
+            let msg = urlencoding::encode(&err_s);
+            return Redirect::to(&format!("/calendar?msg={msg}")).into_response();
+        }
+    };
     let _permit = state.cli_limit.acquire().await.ok();
     let redirect = cal_redirect(
         cal,
@@ -1164,15 +1177,33 @@ async fn update_event(
         form.end_date.as_deref().unwrap_or(&form.start_date),
         form.end_time.as_deref().unwrap_or(""),
     );
-    let ical = crate::cli::calendula::CalendulaClient::build_ical(
-        form.summary.trim(),
-        &start,
-        &end,
-        form.description.as_deref().unwrap_or(""),
-        form.location.as_deref().unwrap_or(""),
-        form.rrule.as_deref().unwrap_or("none"),
-    );
+    let fields = crate::cli::tcal::EventFields {
+        summary: form.summary.trim().to_string(),
+        start,
+        end,
+        description: form.description.as_deref().unwrap_or("").to_string(),
+        location: form.location.as_deref().unwrap_or("").to_string(),
+        rrule: form.rrule.as_deref().unwrap_or("none").to_string(),
+    };
     let _permit = state.cli_limit.acquire().await.ok();
+    // Fold-back sur l’iCal existant : conserve UID / alarmes / props non modélisées
+    let ical = match client.read_event_ical(cal, id).await {
+        Ok(existing) if !existing.trim().is_empty() => {
+            crate::cli::tcal::apply_event_fields(&existing, &fields)
+        }
+        _ => {
+            let uid = id.trim().trim_end_matches(".ics");
+            crate::cli::tcal::build_event_with_uid(uid, &fields)
+        }
+    };
+    let ical = match ical {
+        Ok(v) => v,
+        Err(e) => {
+            let err_s = format!("Erreur tcal: {e}");
+            let msg = urlencoding::encode(&err_s);
+            return Redirect::to(&format!("/calendar?msg={msg}")).into_response();
+        }
+    };
     let redirect = cal_redirect(
         cal,
         form.view.as_deref(),
@@ -1386,11 +1417,20 @@ async fn create_todo(
     let Some(client) = &state.calendula else {
         return Redirect::to("/calendar?msg=Calendula%20absent").into_response();
     };
-    let ical = crate::cli::calendula::CalendulaClient::build_vtodo(
-        form.summary.trim(),
-        form.due.as_deref().unwrap_or(""),
-        false,
-    );
+    let fields = crate::cli::tcal::TodoFields {
+        summary: form.summary.trim().to_string(),
+        due: form.due.as_deref().unwrap_or("").to_string(),
+        completed: false,
+        description: String::new(),
+    };
+    let ical = match crate::cli::tcal::build_todo(&fields) {
+        Ok(v) => v,
+        Err(e) => {
+            let err_s = format!("Erreur tcal: {e}");
+            let msg = urlencoding::encode(&err_s);
+            return Redirect::to(&format!("/calendar?msg={msg}")).into_response();
+        }
+    };
     let _permit = state.cli_limit.acquire().await.ok();
     match client.create_todo(cal, ical.as_bytes()).await {
         Ok(_) => {
@@ -1437,12 +1477,27 @@ async fn toggle_todo(
     };
     let currently_done = form.completed.as_deref() == Some("1");
     let uid = todo_uid_from_id(&form.id);
-    let ical = crate::cli::calendula::CalendulaClient::build_vtodo_with_uid(
-        &uid,
-        form.summary.trim(),
-        form.due.as_deref().unwrap_or(""),
-        !currently_done,
-    );
+    let fields = crate::cli::tcal::TodoFields {
+        summary: form.summary.trim().to_string(),
+        due: form.due.as_deref().unwrap_or("").to_string(),
+        completed: !currently_done,
+        description: String::new(),
+    };
+    // Réutilise l’iCal distant si lisible (même verbe event read / contents)
+    let ical = match client.read_event_ical(cal, &form.id).await {
+        Ok(existing) if !existing.trim().is_empty() => {
+            crate::cli::tcal::apply_todo_fields(&existing, &fields)
+        }
+        _ => crate::cli::tcal::build_todo_with_uid(&uid, &fields),
+    };
+    let ical = match ical {
+        Ok(v) => v,
+        Err(e) => {
+            let err_s = format!("Erreur tcal: {e}");
+            let msg = urlencoding::encode(&err_s);
+            return Redirect::to(&format!("/calendar?msg={msg}")).into_response();
+        }
+    };
     let _permit = state.cli_limit.acquire().await.ok();
     match client.update_todo(cal, &form.id, ical.as_bytes()).await {
         Ok(()) => {

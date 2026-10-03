@@ -150,6 +150,7 @@ struct SettingsTemplate {
     pub home_address: String,
     pub maps_provider: String,
     pub ai_calendar_preprompt: String,
+    pub ai_inbox_preprompt: String,
     pub ai_message: Option<String>,
     pub cal_color_accounts: Vec<ColorAccountRow>,
     pub backup_message: Option<String>,
@@ -658,6 +659,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         home_address: prefs_snap.home_address.clone(),
         maps_provider: prefs_snap.maps_provider.clone(),
         ai_calendar_preprompt: prefs_snap.ai_calendar_preprompt.clone(),
+        ai_inbox_preprompt: prefs_snap.ai_inbox_preprompt.clone(),
         ai_message: flash.ai_message,
         cal_color_accounts,
         backup_message: flash.backup_message,
@@ -1915,6 +1917,7 @@ pub struct AiSettingsForm {
     pub home_address: Option<String>,
     pub maps_provider: Option<String>,
     pub calendar_preprompt: Option<String>,
+    pub inbox_preprompt: Option<String>,
 }
 
 async fn save_ai(
@@ -2013,6 +2016,11 @@ async fn save_ai(
         };
         p.ai_calendar_preprompt = form
             .calendar_preprompt
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        p.ai_inbox_preprompt = form
+            .inbox_preprompt
             .unwrap_or_default()
             .trim()
             .to_string();

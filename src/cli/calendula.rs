@@ -272,14 +272,17 @@ impl CalendulaClient {
             .collect()
     }
 
-    /// Lit le iCal brut d’un événement et extrait description / location / rrule.
+    /// Lit le iCal brut d’un événement et extrait description / location / rrule (via tcal).
     pub async fn enrich_event_from_ical(
         &self,
         calendar_ref: &str,
         event_id: &str,
     ) -> CliResult<(String, String, String)> {
         let ical = self.read_event_ical(calendar_ref, event_id).await?;
-        Ok(parse_ical_fields(&ical))
+        match crate::cli::tcal::parse_event_fields(&ical) {
+            Ok(f) => Ok((f.description, f.location, f.rrule)),
+            Err(_) => Ok(parse_ical_fields(&ical)),
+        }
     }
 
     pub async fn read_event_ical(&self, calendar_ref: &str, event_id: &str) -> CliResult<String> {
@@ -455,70 +458,6 @@ impl CalendulaClient {
         Ok(())
     }
 
-    /// iCalendar VTODO.
-    pub fn build_vtodo(summary: &str, due: &str, completed: bool) -> String {
-        let uid = uuid::Uuid::new_v4();
-        let dtstamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-        let status = if completed {
-            "COMPLETED"
-        } else {
-            "NEEDS-ACTION"
-        };
-        let percent = if completed { 100 } else { 0 };
-        let mut lines = vec![
-            "BEGIN:VCALENDAR".into(),
-            "VERSION:2.0".into(),
-            "PRODID:-//HimaWeb//EN".into(),
-            "BEGIN:VTODO".into(),
-            format!("UID:{uid}"),
-            format!("DTSTAMP:{dtstamp}"),
-            format!("SUMMARY:{}", escape_ical(summary)),
-            format!("STATUS:{status}"),
-            format!("PERCENT-COMPLETE:{percent}"),
-        ];
-        if let Some(d) = ical_date_only(due) {
-            lines.push(format!("DUE;VALUE=DATE:{d}"));
-        }
-        if completed {
-            lines.push(format!("COMPLETED:{dtstamp}"));
-        }
-        lines.push("END:VTODO".into());
-        lines.push("END:VCALENDAR".into());
-        lines.join("\r\n")
-    }
-
-    /// VTODO en réutilisant un UID existant (pour update / toggle).
-    pub fn build_vtodo_with_uid(uid: &str, summary: &str, due: &str, completed: bool) -> String {
-        let dtstamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-        let status = if completed {
-            "COMPLETED"
-        } else {
-            "NEEDS-ACTION"
-        };
-        let percent = if completed { 100 } else { 0 };
-        let mut lines = vec![
-            "BEGIN:VCALENDAR".into(),
-            "VERSION:2.0".into(),
-            "PRODID:-//HimaWeb//EN".into(),
-            "BEGIN:VTODO".into(),
-            format!("UID:{}", uid.trim()),
-            format!("DTSTAMP:{dtstamp}"),
-            format!("SUMMARY:{}", escape_ical(summary)),
-            format!("STATUS:{status}"),
-            format!("PERCENT-COMPLETE:{percent}"),
-        ];
-        if let Some(d) = ical_date_only(due) {
-            lines.push(format!("DUE;VALUE=DATE:{d}"));
-        }
-        if completed {
-            lines.push(format!("COMPLETED:{dtstamp}"));
-        }
-        lines.push("END:VTODO".into());
-        lines.push("END:VCALENDAR".into());
-        lines.join("\r\n")
-    }
-
-
     pub async fn create_event(&self, calendar_ref: &str, ical: &[u8]) -> CliResult<String> {
         let (account, cal_id) = split_cal_ref(calendar_ref);
         let mut args = Vec::new();
@@ -588,44 +527,6 @@ impl CalendulaClient {
         self.runner.run_json(&self.bin, &refs).await?;
         Ok(())
     }
-
-    /// iCalendar VEVENT (timestamps locaux flottants + récurrence optionnelle).
-    pub fn build_ical(
-        summary: &str,
-        start: &str,
-        end: &str,
-        description: &str,
-        location: &str,
-        rrule: &str,
-    ) -> String {
-        let uid = uuid::Uuid::new_v4();
-        let dtstamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-        let dtstart = ical_datetime(start);
-        let dtend = ical_datetime(if end.trim().is_empty() { start } else { end });
-        let mut lines = vec![
-            "BEGIN:VCALENDAR".into(),
-            "VERSION:2.0".into(),
-            "PRODID:-//HimaWeb//EN".into(),
-            "BEGIN:VEVENT".into(),
-            format!("UID:{uid}"),
-            format!("DTSTAMP:{dtstamp}"),
-            format!("DTSTART:{dtstart}"),
-            format!("DTEND:{dtend}"),
-            format!("SUMMARY:{}", escape_ical(summary)),
-        ];
-        if !description.trim().is_empty() {
-            lines.push(format!("DESCRIPTION:{}", escape_ical(description.trim())));
-        }
-        if !location.trim().is_empty() {
-            lines.push(format!("LOCATION:{}", escape_ical(location.trim())));
-        }
-        if let Some(rule) = normalize_rrule(rrule) {
-            lines.push(format!("RRULE:{rule}"));
-        }
-        lines.push("END:VEVENT".into());
-        lines.push("END:VCALENDAR".into());
-        lines.join("\r\n")
-    }
 }
 
 fn with_account(account: Option<&str>, rest: &[&str]) -> Vec<String> {
@@ -646,14 +547,7 @@ fn split_cal_ref(calendar_ref: &str) -> (Option<String>, String) {
     }
 }
 
-fn escape_ical(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('\n', "\\n")
-        .replace(',', "\\,")
-        .replace(';', "\\;")
-}
-
-/// Extrait (description, location, rrule) depuis un iCal VEVENT.
+/// Fallback minimal si tcal refuse un iCal exotique.
 fn parse_ical_fields(ical: &str) -> (String, String, String) {
     let mut description = String::new();
     let mut location = String::new();
@@ -662,90 +556,18 @@ fn parse_ical_fields(ical: &str) -> (String, String, String) {
         let line = raw_line.trim_end_matches('\r');
         let upper = line.to_ascii_uppercase();
         if upper.starts_with("DESCRIPTION") {
-            if let Some(v) = ical_prop_value(line) {
-                description = unescape_ical(&v);
+            if let Some((_, v)) = line.split_once(':') {
+                description = v.replace("\\n", "\n");
             }
         } else if upper.starts_with("LOCATION") {
-            if let Some(v) = ical_prop_value(line) {
-                location = unescape_ical(&v);
+            if let Some((_, v)) = line.split_once(':') {
+                location = v.to_string();
             }
         } else if upper.starts_with("RRULE") {
-            if let Some(v) = ical_prop_value(line) {
-                rrule = v;
+            if let Some((_, v)) = line.split_once(':') {
+                rrule = v.to_string();
             }
         }
     }
     (description, location, rrule)
-}
-
-fn ical_prop_value(line: &str) -> Option<String> {
-    let (_, rest) = line.split_once(':')?;
-    Some(rest.to_string())
-}
-
-fn unescape_ical(s: &str) -> String {
-    s.replace("\\n", "\n")
-        .replace("\\,", ",")
-        .replace("\\;", ";")
-        .replace("\\\\", "\\")
-}
-
-fn ical_date_only(raw: &str) -> Option<String> {
-    let t = raw.trim();
-    if t.is_empty() {
-        return None;
-    }
-    let digits: String = t.chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits.len() >= 8 {
-        return Some(digits[..8].to_string());
-    }
-    if t.len() >= 10 && t.as_bytes().get(4) == Some(&b'-') {
-        return Some(t[..10].replace('-', ""));
-    }
-    None
-}
-
-fn normalize_rrule(raw: &str) -> Option<String> {
-    let t = raw.trim();
-    if t.is_empty() || t.eq_ignore_ascii_case("none") {
-        return None;
-    }
-    let upper = t.to_ascii_uppercase();
-    let rule = if upper.starts_with("FREQ=") || upper.starts_with("RRULE:") {
-        upper.trim_start_matches("RRULE:").to_string()
-    } else {
-        match t.to_ascii_lowercase().as_str() {
-            "daily" | "quotidien" => "FREQ=DAILY".into(),
-            "weekly" | "hebdo" | "hebdomadaire" => "FREQ=WEEKLY".into(),
-            "monthly" | "mensuel" => "FREQ=MONTHLY".into(),
-            "yearly" | "annuel" => "FREQ=YEARLY".into(),
-            other => format!("FREQ={}", other.to_ascii_uppercase()),
-        }
-    };
-    Some(rule)
-}
-
-fn ical_datetime(raw: &str) -> String {
-    let t = raw.trim();
-    if t.is_empty() {
-        return chrono::Local::now().format("%Y%m%dT%H%M%S").to_string();
-    }
-    if t.chars().all(|c| c.is_ascii_digit() || c == 'T' || c == 'Z') && t.len() >= 8 {
-        return t.to_string();
-    }
-    let cleaned = t.replace(' ', "T");
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&cleaned, "%Y-%m-%dT%H:%M") {
-        return dt.format("%Y%m%dT%H%M%S").to_string();
-    }
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&cleaned, "%Y-%m-%dT%H:%M:%S") {
-        return dt.format("%Y%m%dT%H%M%S").to_string();
-    }
-    // datetime-local HTML: 2024-01-15T10:30
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&cleaned, "%Y-%m-%dT%H:%M") {
-        return dt.format("%Y%m%dT%H%M%S").to_string();
-    }
-    if let Ok(d) = chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d") {
-        return d.format("%Y%m%d").to_string();
-    }
-    t.replace(['-', ':', ' '], "")
 }

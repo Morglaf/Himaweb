@@ -3,6 +3,7 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension};
 use thiserror::Error;
 
+use crate::cli::cardamum::ContactRecord;
 use crate::cli::himalaya::{Envelope, Mailbox, MessageView};
 
 #[derive(Debug, Error)]
@@ -74,6 +75,29 @@ impl Cache {
         )?;
         self.migrate_envelopes()?;
         self.migrate_cal_events()?;
+        self.migrate_contacts_photos()?;
+        Ok(())
+    }
+
+    fn migrate_contacts_photos(&self) -> Result<(), CacheError> {
+        let cols: Vec<String> = {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(contacts)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            rows.filter_map(Result::ok).collect()
+        };
+        let add = |name: &str, decl: &str| -> Result<(), CacheError> {
+            if !cols.iter().any(|c| c == name) {
+                self.conn
+                    .execute(&format!("ALTER TABLE contacts ADD COLUMN {name} {decl}"), [])?;
+            }
+            Ok(())
+        };
+        add("card_id", "TEXT NOT NULL DEFAULT ''")?;
+        add("book_ref", "TEXT NOT NULL DEFAULT ''")?;
+        add("etag", "TEXT NOT NULL DEFAULT ''")?;
+        // 0 = inconnu, 1 = photo dispo, -1 = pas de PHOTO
+        add("has_photo", "INTEGER NOT NULL DEFAULT 0")?;
+        add("photo_ext", "TEXT NOT NULL DEFAULT ''")?;
         Ok(())
     }
 
@@ -220,6 +244,47 @@ impl Cache {
         Ok(())
     }
 
+    /// Ajoute un flag IMAP à une enveloppe en cache (ex. `answered` après reply).
+    pub fn add_envelope_flag(
+        &self,
+        account: &str,
+        mailbox: &str,
+        id: &str,
+        flag: &str,
+    ) -> Result<(), CacheError> {
+        let flag = flag.trim().to_ascii_lowercase();
+        if flag.is_empty() {
+            return Ok(());
+        }
+        let flags: Option<String> = self.conn.query_row(
+            "SELECT flags FROM envelopes WHERE account = ?1 AND mailbox = ?2 AND id = ?3",
+            params![account, mailbox, id],
+            |r| r.get(0),
+        ).optional()?;
+        let Some(flags) = flags else {
+            return Ok(());
+        };
+        let mut parts: Vec<String> = if flags.is_empty() {
+            Vec::new()
+        } else {
+            flags
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        if parts.iter().any(|p| p.eq_ignore_ascii_case(&flag)) {
+            return Ok(());
+        }
+        parts.push(flag);
+        self.conn.execute(
+            "UPDATE envelopes SET flags = ?1 WHERE account = ?2 AND mailbox = ?3 AND id = ?4",
+            params![parts.join(","), account, mailbox, id],
+        )?;
+        Ok(())
+    }
+
     pub fn load_envelopes(
         &self,
         account: &str,
@@ -319,18 +384,73 @@ impl Cache {
         &self,
         contacts: &[(String, String)],
     ) -> Result<(), CacheError> {
+        let records: Vec<ContactRecord> = contacts
+            .iter()
+            .filter(|(e, _)| !e.is_empty())
+            .map(|(email, name)| ContactRecord {
+                email: email.trim().to_ascii_lowercase(),
+                name: name.clone(),
+                card_id: String::new(),
+                book_ref: String::new(),
+                etag: String::new(),
+            })
+            .collect();
+        self.save_contact_records(&records)
+    }
+
+    /// Remplace le carnet en préservant `has_photo` quand l’etag est inchangé.
+    pub fn save_contact_records(&self, contacts: &[ContactRecord]) -> Result<(), CacheError> {
+        let prev: std::collections::HashMap<String, (String, i64, String)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT lower(email), etag, has_photo, photo_ext FROM contacts",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    (
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, String>(3)?,
+                    ),
+                ))
+            })?;
+            rows.filter_map(Result::ok).collect()
+        };
+
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM contacts", [])?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO contacts(email, name) VALUES (?1, ?2)
-                 ON CONFLICT(email) DO UPDATE SET name = excluded.name",
+                "INSERT INTO contacts(email, name, card_id, book_ref, etag, has_photo, photo_ext)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
-            for (email, name) in contacts {
-                if email.is_empty() {
+            for c in contacts {
+                if c.email.is_empty() {
                     continue;
                 }
-                stmt.execute(params![email, name])?;
+                let email = c.email.trim().to_ascii_lowercase();
+                // Conserver une photo déjà résolue même si l’etag liste ≠ etag card read
+                // (sinon les avatars mail disparaissent à chaque refresh carnet).
+                let (has_photo, photo_ext) = match prev.get(&email) {
+                    Some((_, hp, ext)) if *hp == 1 && !ext.is_empty() => (*hp, ext.clone()),
+                    Some((old_etag, hp, ext)) if *old_etag == c.etag && !c.etag.is_empty() => {
+                        (*hp, ext.clone())
+                    }
+                    Some((_, hp, ext)) if c.etag.is_empty() && c.card_id.is_empty() => {
+                        (*hp, ext.clone())
+                    }
+                    Some((_, hp, ext)) if *hp == -1 => (*hp, ext.clone()),
+                    _ => (0_i64, String::new()),
+                };
+                stmt.execute(params![
+                    email,
+                    c.name,
+                    c.card_id,
+                    c.book_ref,
+                    c.etag,
+                    has_photo,
+                    photo_ext
+                ])?;
             }
         }
         tx.commit()?;
@@ -348,9 +468,203 @@ impl Cache {
             if email.is_empty() {
                 continue;
             }
-            stmt.execute(params![email, name])?;
+            stmt.execute(params![email.trim().to_ascii_lowercase(), name])?;
         }
         Ok(())
+    }
+
+    /// Emails (lowercase) → `(has_photo, photo_ext, etag)` pour un batch d’adresses.
+    pub fn photo_meta_for_emails(
+        &self,
+        emails: &[String],
+    ) -> Result<std::collections::HashMap<String, (i64, String, String)>, CacheError> {
+        let mut out = std::collections::HashMap::new();
+        if emails.is_empty() {
+            return Ok(out);
+        }
+        // Chunk pour rester sous la limite SQLite des variables liées
+        for chunk in emails.chunks(80) {
+            let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT lower(email), has_photo, photo_ext, etag FROM contacts
+                 WHERE lower(email) IN ({placeholders})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let params_owned: Vec<String> = chunk
+                .iter()
+                .map(|e| e.trim().to_ascii_lowercase())
+                .collect();
+            let params_ref: Vec<&dyn rusqlite::ToSql> = params_owned
+                .iter()
+                .map(|s| s as &dyn rusqlite::ToSql)
+                .collect();
+            let rows = stmt.query_map(params_ref.as_slice(), |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    (
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                    ),
+                ))
+            })?;
+            for row in rows.flatten() {
+                out.insert(row.0, row.1);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Contacts à lire pour une photo (`has_photo = 0`, card_id non vide).
+    pub fn contacts_pending_photo(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<(String, String, String, String)>, CacheError> {
+        // (email, card_id, book_ref, etag)
+        let mut stmt = self.conn.prepare(
+            "SELECT lower(email), card_id, book_ref, etag FROM contacts
+             WHERE has_photo = 0 AND card_id != '' AND book_ref != ''
+             ORDER BY lower(email)
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    /// Contacts à résoudre pour une photo.
+    ///
+    /// - `emails` non vide : **uniquement** ces adresses (priorité mail), sans remplir
+    ///   avec le reste du carnet (évite de noyer les expéditeurs visibles).
+    /// - `emails` vide : file générale (warm), limitée à `limit`.
+    pub fn contacts_pending_photo_for(
+        &self,
+        emails: &[String],
+        limit: i64,
+    ) -> Result<Vec<(String, String, String, String)>, CacheError> {
+        if emails.is_empty() {
+            return self.contacts_pending_photo(limit);
+        }
+        let mut out = Vec::new();
+        for chunk in emails.chunks(80) {
+            if out.len() as i64 >= limit {
+                break;
+            }
+            let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT lower(email), card_id, book_ref, etag FROM contacts
+                 WHERE has_photo = 0 AND card_id != '' AND book_ref != ''
+                   AND lower(email) IN ({placeholders})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let params_owned: Vec<String> = chunk
+                .iter()
+                .map(|e| e.trim().to_ascii_lowercase())
+                .collect();
+            let params_ref: Vec<&dyn rusqlite::ToSql> = params_owned
+                .iter()
+                .map(|s| s as &dyn rusqlite::ToSql)
+                .collect();
+            let rows = stmt.query_map(params_ref.as_slice(), |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?;
+            for row in rows.flatten() {
+                out.push(row);
+                if out.len() as i64 >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// true si au moins un email prioritaire est absent du carnet ou sans card_id.
+    pub fn contacts_need_refresh_for_photos(&self, emails: &[String]) -> Result<bool, CacheError> {
+        for email in emails {
+            let email = email.trim();
+            if email.is_empty() || !email.contains('@') {
+                continue;
+            }
+            match self.contact_by_email(email)? {
+                None => return Ok(true),
+                Some(c) if c.card_id.is_empty() || c.book_ref.is_empty() => return Ok(true),
+                Some(_) => {}
+            }
+        }
+        Ok(false)
+    }
+
+    /// Tous les emails locaux pointant vers la même fiche CardDAV.
+    pub fn emails_for_card(
+        &self,
+        card_id: &str,
+        book_ref: &str,
+    ) -> Result<Vec<String>, CacheError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT lower(email) FROM contacts
+             WHERE card_id = ?1 AND book_ref = ?2 AND email != ''",
+        )?;
+        let rows = stmt.query_map(params![card_id, book_ref], |r| r.get(0))?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    pub fn set_contact_photo(
+        &self,
+        email: &str,
+        has_photo: i64,
+        photo_ext: &str,
+        etag: &str,
+    ) -> Result<(), CacheError> {
+        self.conn.execute(
+            "UPDATE contacts SET has_photo = ?1, photo_ext = ?2, etag = CASE WHEN ?3 = '' THEN etag ELSE ?3 END
+             WHERE lower(email) = lower(?4)",
+            params![has_photo, photo_ext, etag, email.trim()],
+        )?;
+        Ok(())
+    }
+
+    /// Retrouve card_id / book_ref / name / etag pour un email (édition).
+    pub fn contact_by_email(
+        &self,
+        email: &str,
+    ) -> Result<Option<ContactRecord>, CacheError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT email, name, card_id, book_ref, etag FROM contacts
+                 WHERE lower(email) = lower(?1)
+                 LIMIT 1",
+                params![email.trim()],
+                |r| {
+                    Ok(ContactRecord {
+                        email: r.get(0)?,
+                        name: r.get(1)?,
+                        card_id: r.get(2)?,
+                        book_ref: r.get(3)?,
+                        etag: r.get(4)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    pub fn contact_photo_file(
+        &self,
+        email: &str,
+    ) -> Result<Option<(String, String)>, CacheError> {
+        // (ext, etag) si has_photo = 1
+        let row = self
+            .conn
+            .query_row(
+                "SELECT photo_ext, etag FROM contacts
+                 WHERE lower(email) = lower(?1) AND has_photo = 1",
+                params![email.trim()],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        Ok(row)
     }
 
     pub fn contacts_count(&self) -> Result<i64, CacheError> {
@@ -371,15 +685,37 @@ impl Cache {
         Ok(rows.filter_map(Result::ok).collect())
     }
 
+    #[allow(dead_code)]
     pub fn list_contacts(&self, query: &str, limit: i64) -> Result<Vec<(String, String)>, CacheError> {
+        Ok(self
+            .list_contacts_full(query, limit)?
+            .into_iter()
+            .map(|c| (c.email, c.name))
+            .collect())
+    }
+
+    /// Liste enrichie (card_id / book_ref) pour l’édition depuis le cache.
+    pub fn list_contacts_full(
+        &self,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<ContactRecord>, CacheError> {
         let q = format!("%{}%", query.to_ascii_lowercase());
         let mut stmt = self.conn.prepare(
-            "SELECT email, name FROM contacts
+            "SELECT email, name, card_id, book_ref, etag FROM contacts
              WHERE lower(email) LIKE ?1 OR lower(name) LIKE ?1
              ORDER BY lower(name), lower(email)
              LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![q, limit], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let rows = stmt.query_map(params![q, limit], |r| {
+            Ok(ContactRecord {
+                email: r.get(0)?,
+                name: r.get(1)?,
+                card_id: r.get(2)?,
+                book_ref: r.get(3)?,
+                etag: r.get(4)?,
+            })
+        })?;
         Ok(rows.filter_map(Result::ok).collect())
     }
 

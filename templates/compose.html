@@ -42,6 +42,12 @@
         <input type="hidden" name="account" :value="account" />
         <input type="hidden" name="html" :value="bodyMode === 'html' ? '1' : '0'" />
         <input type="hidden" name="body_html" :value="bodyHtml" />
+        {# Reply : rendu serveur uniquement (les binds Alpine étaient souvent vides au submit) #}
+        <input type="hidden" name="source_mailbox" value="{{ source_mailbox }}" />
+        <input type="hidden" name="source_id" value="{{ source_id }}" />
+        <input type="hidden" name="source_account" value="{{ source_account }}" />
+        <input type="hidden" name="in_reply_to" value="{{ in_reply_to }}" />
+        <input type="hidden" name="references" value="{{ references }}" />
 
         <template x-if="ai">
           <div class="compose-ai-row">

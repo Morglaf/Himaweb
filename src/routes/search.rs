@@ -57,11 +57,14 @@ pub struct SearchHit {
     pub id: String,
     pub subject: String,
     pub from: String,
+    pub from_email: String,
     pub to: String,
     pub from_initial: String,
+    pub avatar_url: String,
     pub date: String,
     pub date_short: String,
     pub unread: bool,
+    pub answered: bool,
     pub has_attachment: bool,
     pub account: String,
     pub account_enc: String,
@@ -307,6 +310,10 @@ fn hit_from_envelope(
         let x = f.to_ascii_lowercase();
         x == "seen" || x == "\\seen"
     });
+    let answered = e.flags.iter().any(|f| {
+        let x = f.to_ascii_lowercase();
+        x == "answered" || x == "\\answered"
+    });
     SearchHit {
         id: e.id.clone(),
         subject: e.subject.clone(),
@@ -317,11 +324,16 @@ fn hit_from_envelope(
             .unwrap_or('?')
             .to_uppercase()
             .to_string(),
+        avatar_url: String::new(),
         from: e.from.clone(),
+        from_email: crate::cli::himalaya::extract_email_addr(&e.from)
+            .unwrap_or_default()
+            .to_ascii_lowercase(),
         to: e.to.clone(),
         date: e.date.clone(),
         date_short: short_date(&e.date),
         unread,
+        answered,
         has_attachment: e.has_attachment,
         account: account.to_string(),
         account_enc: urlencoding::encode(account).into_owned(),
@@ -533,6 +545,30 @@ async fn search_results(
 
     sort_hits(&mut hits, sort);
     hits.truncate(150);
+
+    {
+        use crate::cli::himalaya::extract_email_addr;
+        let emails: Vec<String> = hits
+            .iter()
+            .filter_map(|h| extract_email_addr(&h.from))
+            .map(|e| e.to_ascii_lowercase())
+            .collect();
+        let urls = crate::routes::contacts::avatar_urls_for(&state, &emails).await;
+        for hit in hits.iter_mut() {
+            if let Some(email) = extract_email_addr(&hit.from) {
+                if let Some(url) = urls.get(&email.to_ascii_lowercase()) {
+                    hit.avatar_url = url.clone();
+                }
+            }
+        }
+        let missing: Vec<String> = emails
+            .into_iter()
+            .filter(|e| !urls.contains_key(e))
+            .collect();
+        if !missing.is_empty() {
+            crate::routes::contacts::spawn_photo_sync(Arc::clone(&state), missing);
+        }
+    }
 
     tracing::info!(
         hits = hits.len(),

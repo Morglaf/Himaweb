@@ -8,7 +8,7 @@ use axum::routing::{get, post};
 use axum::{Form, Json, Router};
 use serde::{Deserialize, Serialize};
 
-use crate::cli::himalaya::Envelope;
+use crate::cli::himalaya::{extract_email_addr, Envelope};
 use crate::prefs::Prefs;
 use crate::attachments_class::is_accessory_attachment;
 use crate::sanitize::{plain_to_html, remote_url_label, rewrite_cid_images, sanitize_html};
@@ -612,11 +612,15 @@ pub struct EnvelopeRow {
     pub id: String,
     pub subject: String,
     pub from: String,
+    /// Adresse email extraite de `from` (avatars / data-attr)
+    pub from_email: String,
     pub to: String,
     pub from_initial: String,
     pub date: String,
     pub date_short: String,
     pub unread: bool,
+    /// Flag IMAP Answered (réponse envoyée)
+    pub answered: bool,
     pub has_attachment: bool,
     pub account: String,
     pub account_enc: String,
@@ -633,6 +637,37 @@ pub struct EnvelopeRow {
     /// Message-ID RFC (pour undo)
     pub message_id: String,
     pub id_enc: String,
+    /// URL lazy `/api/contacts/avatar?…` si photo contact en cache
+    pub avatar_url: String,
+}
+
+/// Attache les URLs avatar depuis le cache (SQLite only) et priorise le fetch photo.
+async fn attach_envelope_avatars(state: &Arc<AppState>, rows: &mut [EnvelopeRow]) {
+    let emails: Vec<String> = rows
+        .iter()
+        .filter_map(|r| extract_email_addr(&r.from))
+        .map(|e| e.to_ascii_lowercase())
+        .collect();
+    if emails.is_empty() {
+        return;
+    }
+    let urls = crate::routes::contacts::avatar_urls_for(state, &emails).await;
+    for row in rows.iter_mut() {
+        if let Some(email) = extract_email_addr(&row.from) {
+            let key = email.to_ascii_lowercase();
+            if let Some(url) = urls.get(&key) {
+                row.avatar_url = url.clone();
+            }
+        }
+    }
+    // Photos manquantes : sync fond prioritaire (ne bloque pas la réponse)
+    let missing: Vec<String> = emails
+        .into_iter()
+        .filter(|e| !urls.contains_key(e))
+        .collect();
+    if !missing.is_empty() {
+        crate::routes::contacts::spawn_photo_sync(Arc::clone(state), missing);
+    }
 }
 
 fn envelope_rows(list: &[Envelope], account: &str, prefs: &Prefs) -> Vec<EnvelopeRow> {
@@ -668,6 +703,13 @@ fn envelope_rows_styled(
                 let x = f.to_ascii_lowercase();
                 x == "seen" || x == "\\seen"
             });
+            let answered = e.flags.iter().any(|f| {
+                let x = f.to_ascii_lowercase();
+                x == "answered" || x == "\\answered"
+            });
+            let from_email = extract_email_addr(&e.from)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
             EnvelopeRow {
                 id: e.id.clone(),
                 subject: e.subject.clone(),
@@ -679,10 +721,12 @@ fn envelope_rows_styled(
                     .to_uppercase()
                     .to_string(),
                 from: e.from.clone(),
+                from_email,
                 to: e.to.clone(),
                 date: e.date.clone(),
                 date_short: short_date(&e.date),
                 unread,
+                answered,
                 has_attachment: e.has_attachment,
                 account: account.to_string(),
                 account_enc: urlencoding::encode(account).into_owned(),
@@ -695,6 +739,7 @@ fn envelope_rows_styled(
                 thread_ids_enc: urlencoding::encode(&e.id).into_owned(),
                 message_id: e.message_id.clone(),
                 id_enc: urlencoding::encode(&e.id).into_owned(),
+                avatar_url: String::new(),
             }
         })
         .collect()
@@ -809,8 +854,20 @@ fn collapse_conversations(list: &[Envelope], rows: Vec<EnvelopeRow>) -> Vec<Enve
             row.date = list[u].date.clone();
             row.date_short = short_date(&list[u].date);
             row.has_attachment = idxs.iter().any(|&i| list[i].has_attachment);
+            row.answered = idxs.iter().any(|&i| {
+                list[i].flags.iter().any(|f| {
+                    let x = f.to_ascii_lowercase();
+                    x == "answered" || x == "\\answered"
+                })
+            });
         } else {
             row.has_attachment = idxs.iter().any(|&i| list[i].has_attachment);
+            row.answered = idxs.iter().any(|&i| {
+                list[i].flags.iter().any(|f| {
+                    let x = f.to_ascii_lowercase();
+                    x == "answered" || x == "\\answered"
+                })
+            });
         }
         // Clean subject display (without endless Re:)
         let clean = normalize_subject(&list[head].subject);
@@ -1144,7 +1201,7 @@ async fn envelopes(
     // tri personnalisé : en dehors de ce cas, il ne peut rien servir.
     let cacheable = page == 1 && search_tokens.is_empty() && sort.is_default();
 
-    let (rows, offline, error, has_next, stale) = if !state.himalaya_available {
+    let (mut rows, offline, error, has_next, stale) = if !state.himalaya_available {
         let (rows, _, has_next) =
             load_envelopes_from_cache(&state, &targets, &name, &prefs_snap, sort, page_size).await;
         (rows, true, None, has_next, false)
@@ -1176,6 +1233,8 @@ async fn envelopes(
         .await;
         (fetched.0, fetched.1, fetched.2, fetched.3, false)
     };
+
+    attach_envelope_avatars(&state, &mut rows).await;
 
     render(EnvelopesTemplate {
         mailbox_enc,
@@ -1387,7 +1446,9 @@ pub struct ThreadPart {
     pub id: String,
     pub subject: String,
     pub from: String,
+    pub from_email: String,
     pub from_initial: String,
+    pub avatar_url: String,
     pub to: String,
     pub cc: String,
     pub date: String,
@@ -1799,6 +1860,9 @@ async fn message(
             thread_subject = msg.subject.clone();
         }
 
+        let from_email = extract_email_addr(&msg.from)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         thread_parts.push(ThreadPart {
             is_focus: tid == focus_id,
             id: msg.id,
@@ -1810,7 +1874,9 @@ async fn message(
                 .unwrap_or('?')
                 .to_uppercase()
                 .to_string(),
+            avatar_url: String::new(),
             from: msg.from,
+            from_email,
             to: msg.to,
             cc: msg.cc,
             date: msg.date,
@@ -1822,6 +1888,29 @@ async fn message(
             has_remote_content,
             attachments_lazy,
         });
+    }
+
+    {
+        let emails: Vec<String> = thread_parts
+            .iter()
+            .filter_map(|p| extract_email_addr(&p.from))
+            .map(|e| e.to_ascii_lowercase())
+            .collect();
+        let urls = crate::routes::contacts::avatar_urls_for(&state, &emails).await;
+        for part in thread_parts.iter_mut() {
+            if let Some(email) = extract_email_addr(&part.from) {
+                if let Some(url) = urls.get(&email.to_ascii_lowercase()) {
+                    part.avatar_url = url.clone();
+                }
+            }
+        }
+        let missing: Vec<String> = emails
+            .into_iter()
+            .filter(|e| !urls.contains_key(e))
+            .collect();
+        if !missing.is_empty() {
+            crate::routes::contacts::spawn_photo_sync(Arc::clone(&state), missing);
+        }
     }
 
     if thread_parts.is_empty() {
@@ -1846,8 +1935,10 @@ async fn message(
             break;
         }
     }
-    if display_subject.is_empty() {
-        display_subject = thread_subject;
+    if display_subject.is_empty()
+        || display_subject.eq_ignore_ascii_case("empty")
+    {
+        display_subject = crate::cli::himalaya::display_subject(&thread_subject);
     }
 
     let thread_count = thread_count_hint.max(thread_parts.len() as u32);
@@ -2957,11 +3048,13 @@ async fn ntfy_envelopes(
                         id: composite.clone(),
                         subject,
                         from,
+                        from_email: String::new(),
                         to: String::new(),
                         from_initial: "N".into(),
                         date: date.clone(),
                         date_short: date,
                         unread,
+                        answered: false,
                         has_attachment: false,
                         account: mailbox_key.to_string(),
                         account_enc: urlencoding::encode(mailbox_key).into_owned(),
@@ -2974,6 +3067,7 @@ async fn ntfy_envelopes(
                         thread_ids_enc: urlencoding::encode(&composite).into_owned(),
                         message_id: m.id,
                         id_enc: urlencoding::encode(&composite).into_owned(),
+                        avatar_url: String::new(),
                     });
                 }
             }

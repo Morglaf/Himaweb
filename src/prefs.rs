@@ -167,6 +167,9 @@ pub struct Prefs {
     /// Préprompt calendrier (complète le global)
     #[serde(default)]
     pub ai_calendar_preprompt: String,
+    /// Préprompt résumé inbox IA (complète le global + préprompt compte)
+    #[serde(default)]
+    pub ai_inbox_preprompt: String,
     /// Apparence comptes Calendula (comme mail)
     #[serde(default)]
     pub cal_account_colors: std::collections::BTreeMap<String, String>,
@@ -315,6 +318,7 @@ impl Default for Prefs {
             home_address: String::new(),
             maps_provider: default_maps_provider(),
             ai_calendar_preprompt: String::new(),
+            ai_inbox_preprompt: String::new(),
             cal_account_colors: Default::default(),
             cal_account_labels: Default::default(),
             cal_account_icons: Default::default(),

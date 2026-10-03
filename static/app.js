@@ -269,20 +269,76 @@ function hwRequestSettled(ev) {
 );
 
 function contactsPage() {
+  const emptyForm = () => ({
+    id: '',
+    book: '',
+    name: '',
+    nickname: '',
+    email: '',
+    tel: '',
+    org: '',
+    title: '',
+    street: '',
+    city: '',
+    region: '',
+    postal: '',
+    country: '',
+    url: '',
+    note: '',
+  });
   return {
-    openCreate: false,
+    openForm: false,
+    editMode: false,
     selected: null,
+    detail: null,
+    detailBusy: false,
+    qLive: '',
+    resolveBusy: false,
+    resolveError: '',
+    photoPreview: '',
+    clearPhoto: false,
+    form: emptyForm(),
+    get visibleCount() {
+      const q = this.qLive;
+      const list = this.$refs && this.$refs.list;
+      if (!list) return 0;
+      let n = 0;
+      list.querySelectorAll('.contact-row').forEach((el) => {
+        if (this.rowVisible(el)) n += 1;
+      });
+      void q;
+      return n;
+    },
+    rowVisible(el) {
+      const q = (this.qLive || '').trim().toLowerCase();
+      if (!q || !el || !el.dataset) return true;
+      const hay = [
+        el.dataset.name || '',
+        el.dataset.email || '',
+        el.dataset.tel || '',
+        el.dataset.book || '',
+      ]
+        .join(' ')
+        .toLowerCase();
+      return hay.includes(q);
+    },
     selectFromEl(el) {
       if (!el || !el.dataset) return;
+      this.resolveError = '';
+      this.detail = null;
       this.selected = {
         id: el.dataset.id || '',
         name: el.dataset.name || '',
         email: el.dataset.email || '',
+        tel: el.dataset.tel || '',
         book: el.dataset.book || '',
         book_ref: el.dataset.bookRef || '',
         initial: el.dataset.initial || '?',
       };
-      this.$nextTick(() => { if (window.lucide) lucide.createIcons(); });
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+      });
+      this.loadDetail();
     },
     isSelected(el) {
       if (!this.selected || !el || !el.dataset) return false;
@@ -290,6 +346,167 @@ function contactsPage() {
         this.selected.email === (el.dataset.email || '') &&
         this.selected.id === (el.dataset.id || '')
       );
+    },
+    async loadDetail() {
+      if (!this.selected) return;
+      await this.ensureRemoteIds();
+      if (!this.selected.id || !this.selected.book_ref) {
+        // Fallback minimal depuis la liste (card list = FN/EMAIL/TEL)
+        this.detail = {
+          name: this.selected.name,
+          email: this.selected.email,
+          emails: this.selected.email ? [this.selected.email] : [],
+          tel: this.selected.tel,
+          tels: this.selected.tel ? [this.selected.tel] : [],
+          avatar_url: '',
+        };
+        return;
+      }
+      this.detailBusy = true;
+      this.resolveError = '';
+      try {
+        const qs =
+          'book=' +
+          encodeURIComponent(this.selected.book_ref) +
+          '&id=' +
+          encodeURIComponent(this.selected.id) +
+          '&email=' +
+          encodeURIComponent(this.selected.email || '');
+        const res = await fetch('/api/contacts/detail?' + qs);
+        const data = await res.json();
+        if (data.error) {
+          this.resolveError = data.error;
+          this.detail = {
+            name: this.selected.name,
+            email: this.selected.email,
+            emails: this.selected.email ? [this.selected.email] : [],
+            tel: this.selected.tel,
+            tels: this.selected.tel ? [this.selected.tel] : [],
+            avatar_url: '',
+          };
+          return;
+        }
+        this.detail = data;
+        if (data.name) this.selected.name = data.name;
+        if (data.email) this.selected.email = data.email;
+        if (data.tel) this.selected.tel = data.tel;
+        if (data.name || data.email) {
+          this.selected.initial = (
+            (data.name || data.email || '?').charAt(0) || '?'
+          ).toUpperCase();
+        }
+      } catch (e) {
+        this.resolveError = e.message || String(e);
+      } finally {
+        this.detailBusy = false;
+      }
+    },
+    openCreateModal() {
+      this.editMode = false;
+      this.form = emptyForm();
+      this.photoPreview = '';
+      this.clearPhoto = false;
+      this.openForm = true;
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+      });
+    },
+    onPhotoPick(ev) {
+      const file = ev && ev.target && ev.target.files && ev.target.files[0];
+      if (!file) return;
+      this.clearPhoto = false;
+      const url = URL.createObjectURL(file);
+      if (this.photoPreview && this.photoPreview.startsWith('blob:')) {
+        try { URL.revokeObjectURL(this.photoPreview); } catch (_) {}
+      }
+      this.photoPreview = url;
+    },
+    async ensureRemoteIds() {
+      if (!this.selected) return false;
+      if (this.selected.id && this.selected.book_ref) return true;
+      const email = (this.selected.email || '').trim();
+      if (!email) {
+        this.resolveError = 'Email manquant';
+        return false;
+      }
+      this.resolveBusy = true;
+      this.resolveError = '';
+      try {
+        const res = await fetch(
+          '/api/contacts/resolve?email=' + encodeURIComponent(email)
+        );
+        const data = await res.json();
+        if (data.error || !data.id || !data.book) {
+          this.resolveError =
+            data.error || 'Contact distant introuvable — rafraîchissez les contacts';
+          return false;
+        }
+        this.selected.id = data.id;
+        this.selected.book_ref = data.book;
+        if (data.name) this.selected.name = data.name;
+        if (data.tel) this.selected.tel = data.tel;
+        const row = document.querySelector(
+          '.contact-row[data-email="' + CSS.escape(email) + '"]'
+        );
+        if (row) {
+          row.dataset.id = data.id;
+          row.dataset.bookRef = data.book;
+          if (data.tel) row.dataset.tel = data.tel;
+        }
+        return true;
+      } catch (e) {
+        this.resolveError = e.message || String(e);
+        return false;
+      } finally {
+        this.resolveBusy = false;
+      }
+    },
+    formFromDetail() {
+      const d = this.detail || {};
+      const s = this.selected || {};
+      return {
+        id: s.id || '',
+        book: s.book_ref || '',
+        name: d.name || s.name || '',
+        nickname: d.nickname || '',
+        email: d.email || s.email || '',
+        tel: d.tel || s.tel || '',
+        org: d.org || '',
+        title: d.title || '',
+        street: d.street || '',
+        city: d.city || '',
+        region: d.region || '',
+        postal: d.postal || '',
+        country: d.country || '',
+        url: d.url || '',
+        note: d.note || '',
+      };
+    },
+    async openEditModal() {
+      if (!this.selected) return;
+      const ok = await this.ensureRemoteIds();
+      if (!ok) return;
+      if (!this.detail) await this.loadDetail();
+      this.editMode = true;
+      this.form = this.formFromDetail();
+      this.clearPhoto = false;
+      if (this.photoPreview && this.photoPreview.startsWith('blob:')) {
+        try { URL.revokeObjectURL(this.photoPreview); } catch (_) {}
+      }
+      this.photoPreview = (this.detail && this.detail.avatar_url) || '';
+      this.openForm = true;
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+      });
+    },
+    closeForm() {
+      this.openForm = false;
+      this.editMode = false;
+      this.clearPhoto = false;
+      if (this.photoPreview && this.photoPreview.startsWith('blob:')) {
+        try { URL.revokeObjectURL(this.photoPreview); } catch (_) {}
+      }
+      this.photoPreview = '';
     },
   };
 }
@@ -3877,6 +4094,61 @@ function cssEsc(s) {
   return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+async function hydrateMailAvatars(root, attempt) {
+  const scope = root || document;
+  const tryN = typeof attempt === 'number' ? attempt : 0;
+  // Relances espacées : le card read CardDAV est lent (souvent > 2 s)
+  const delays = [800, 2000, 4000, 7000, 12000];
+  const nodes = scope.querySelectorAll
+    ? scope.querySelectorAll('[data-from-email]')
+    : [];
+  const emails = [];
+  nodes.forEach((el) => {
+    const e = (el.dataset.fromEmail || '').trim().toLowerCase();
+    if (e && e.includes('@') && emails.indexOf(e) < 0) emails.push(e);
+  });
+  if (!emails.length) return;
+  try {
+    const res = await fetch(
+      '/api/contacts/avatars?emails=' + encodeURIComponent(emails.join(','))
+    );
+    const data = await res.json();
+    const map = data.avatars || {};
+    nodes.forEach((el) => {
+      const email = (el.dataset.fromEmail || '').trim().toLowerCase();
+      const url = map[email];
+      if (!url) return;
+      const box =
+        el.classList.contains('env-avatar') || el.classList.contains('msg-avatar')
+          ? el
+          : el.querySelector('.env-avatar, .msg-avatar');
+      if (!box) return;
+      let img = box.querySelector('.env-avatar-img');
+      if (!img) {
+        img = document.createElement('img');
+        img.className = 'env-avatar-img';
+        img.alt = '';
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.onerror = function () {
+          this.remove();
+        };
+        box.appendChild(img);
+      }
+      if (img.getAttribute('src') !== url) img.setAttribute('src', url);
+    });
+    const missing = emails.some((e) => !map[e]);
+    if (missing && tryN < delays.length) {
+      const wait = delays[tryN];
+      setTimeout(() => hydrateMailAvatars(scope, tryN + 1), wait);
+    }
+  } catch (_) {
+    if (tryN < delays.length) {
+      setTimeout(() => hydrateMailAvatars(scope, tryN + 1), delays[tryN]);
+    }
+  }
+}
+
 document.addEventListener('htmx:afterSwap', (ev) => {
   const t = ev.detail && ev.detail.target;
   // Rendu limité au fragment muté : voir hwRenderIcons.
@@ -3886,6 +4158,7 @@ document.addEventListener('htmx:afterSwap', (ev) => {
   }
   if (t && (t.id === 'message-pane' || t.id === 'envelope-list')) {
     window.HimaWeb.setPaneBusy(t, false);
+    hydrateMailAvatars(t, 0);
   }
   if (t && t.id === 'message-pane') window.HimaWeb.clearEnvelopeOpening();
   if (t && window.Alpine && typeof Alpine.initTree === 'function') {

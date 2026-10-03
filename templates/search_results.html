@@ -23,12 +23,18 @@
      draggable="true"
      data-id="{{ e.id }}" data-account="{{ e.account }}" data-mailbox="{{ e.mailbox }}"
      data-message-id="{{ e.message_id }}"
+     data-from-email="{{ e.from_email }}"
      style="{% if !e.color.is_empty() %}border-left: 3px solid {{ e.color }};{% endif %}"
      hx-get="/partials/message?mailbox={{ e.mailbox_enc }}&id={{ e.id }}{% if !e.account.is_empty() %}&account={{ e.account_enc }}{% endif %}"
      hx-target="#message-pane"
      hx-swap="innerHTML"
      hx-trigger="click, keydown[key=='Enter']">
-  <div class="env-avatar" aria-hidden="true" {% if !e.color.is_empty() %}style="background: {{ e.color }}"{% endif %}>{{ e.from_initial }}</div>
+  <div class="env-avatar" aria-hidden="true" {% if !e.color.is_empty() %}style="background: {{ e.color }}"{% endif %}>
+    <span class="env-avatar-initial">{{ e.from_initial }}</span>
+    {% if !e.avatar_url.is_empty() %}
+    <img class="env-avatar-img" src="{{ e.avatar_url }}" alt="" loading="lazy" decoding="async" onerror="this.remove()" />
+    {% endif %}
+  </div>
   <div class="env-main">
     <div class="env-top">
       <span class="from">{% if e.unread %}<strong>{% endif %}{{ e.from }}{% if e.unread %}</strong>{% endif %}</span>
@@ -40,6 +46,7 @@
     </div>
     <div class="subject">
       {% if e.has_attachment %}<i data-lucide="paperclip" class="att-ico"></i>{% endif %}
+      {% if e.answered %}<i data-lucide="reply" class="att-ico" title="Répondu" data-i18n-title="mail.replied"></i>{% endif %}
       <span class="subject-text">{{ e.subject }}</span>
     </div>
   </div>

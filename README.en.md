@@ -184,8 +184,8 @@ Stop: tray menu **Quit**, or `Ctrl+C` if started in a terminal with console.
 | Mail | **Himalaya** CLI | Accounts, folders, lists, read, send (text / HTML / attachments), flags, move (incl. drag-and-drop), delete (single / thread / multi-select), search, attachment download |
 | Conversations | Himalaya + prefs | Thread grouping (Message-ID / In-Reply-To / subject); opening a group = message stack |
 | Mail UI | prefs + front | Topbar (icons / text), compact rail, watched folders with local badge and optional “Total” (outside global counter), multi-select, context menu |
-| Contacts | **Cardamum** CLI | List, suggestions, create / delete |
-| Calendar | **Calendula** CLI | Read, create / edit / delete events; agenda widget |
+| Contacts | **Cardamum** + **tcard** | List, suggestions, create / edit / delete, photos (vCard ↔ TOML) |
+| Calendar | **Calendula** + **tcal** | Read, create / edit / delete events and todos (iCal ↔ TOML); agenda widget |
 | Mail sync | **Neverest** CLI | Run a sync from Settings |
 | Watch | **Mirador** CLI | Folder watch (complements unread polling) |
 | OAuth | **Ortie** CLI | OAuth auth (e.g. Gmail) from Settings |
@@ -201,7 +201,7 @@ HimaWeb only adds the web layer: appearance prefs, multi-account UI, HTMX, conve
 
 ```
 src/
-  cli/          # Himalaya / Cardamum / Calendula / Neverest / Mirador / Ortie wrappers
+  cli/          # Himalaya / Cardamum / Calendula / Neverest / Mirador / Ortie wrappers + tcard / tcal bridges
   routes/       # Axum: mail, search, compose, contacts, calendar, settings, ai, attachments
   prefs.rs      # HimaWeb prefs (UI, watched folders, conversations, AI, NTFY, Mirador…)
   plugins.rs    # local plugin store (git clone)
@@ -261,43 +261,22 @@ The [`.github/workflows/release.yml`](.github/workflows/release.yml) workflow bu
 
 ## Roadmap
 
-### Medium term — data (still via CLI)
+### Done
+- [x] **tcard** — rich vCard editing behind contact forms
+- [x] **tcal** — rich iCalendar editing behind calendar forms (events + todos)
 
-- [ ] Rich contact editing (possibly **tcard** for vCard/TOML)
-- [ ] Rich iCal editing (possibly **tcal**)
-
-### Pimalaya ecosystem — bridges
-
-Goal: maximize use of the ecosystem rather than reimplement features.
-
-**Mail / sync / watch**
-
-- [ ] **MML** — compose / reply in MIME Meta Language when relevant
-- [ ] **Sirup** — pre-authenticated IMAP/SMTP sessions
-- [ ] **m2m** — Maildir / Maildir++ / m2dir conversion if local storage
-- [ ] Himalaya TUI / plugins (vim, emacs, …): stay compatible with Himalaya configs/behavior
-
-**Contacts & calendar**
-
-- [ ] **tcard** / **tcal** — ergonomic vCard / iCalendar editing behind web forms
-- [ ] Align remaining CRUD with advanced Cardamum / Calendula subcommands
-
-**Security & config**
+### Todo
+- [x] UI translations: **Spanish**, **German**, **Italian** (in addition to FR / EN)
 - [ ] **Pimconf** — PIM service discovery and config validation
-
-**Time**
-
 - [ ] **Comodoro** — timers / focus tied to a mail or event (optional)
-
-**Libraries (later, if needed)**
-
-- [ ] Evaluate `io-email`, `io-addressbook`, `io-calendar`, `io-oauth`, `pimalaya-config`… **only** if a CLI gateway is no longer enough — stay I/O-free / coroutine-friendly in the Pimalaya spirit, without forking domain logic
 
 **Design rule**
 
-1. A feature = first ask “which Pimalaya CLI / lib already does this?”
-2. HimaWeb = UI + orchestration + local prefs
-3. No second IMAP / sync / OAuth / vCard engine
+1. Maximize use of the ecosystem rather than reimplementing features.
+2. A feature = first ask “which Pimalaya CLI / lib already does this?”
+3. HimaWeb = UI + orchestration + local prefs
+4. No second IMAP / sync / OAuth / vCard / iCalendar engine
+5. Himalaya TUI / plugins (vim, emacs, …): stay compatible with Himalaya configs/behavior
 
 ## License
 

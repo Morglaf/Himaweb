@@ -14,8 +14,46 @@ pub struct ContactSuggest {
     pub id: String,
     pub name: String,
     pub email: String,
+    #[serde(default)]
+    pub tel: String,
     pub addressbook: String,
     pub account: String,
+    #[serde(default)]
+    pub etag: String,
+}
+
+/// Fiche contact enrichie pour le cache (lookup avatar).
+#[derive(Debug, Clone)]
+pub struct ContactRecord {
+    pub email: String,
+    pub name: String,
+    pub card_id: String,
+    pub book_ref: String,
+    pub etag: String,
+}
+
+/// Champs formulaire contact (list Cardamum = FN/EMAIL/TEL ; détail via `card read` + tcard).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VcardFields {
+    pub fn_name: String,
+    pub nickname: String,
+    pub email: String,
+    #[serde(default)]
+    pub emails: Vec<String>,
+    pub tel: String,
+    #[serde(default)]
+    pub tels: Vec<String>,
+    pub org: String,
+    pub title: String,
+    pub note: String,
+    pub url: String,
+    pub address: String,
+    pub street: String,
+    pub city: String,
+    pub region: String,
+    pub postal: String,
+    pub country: String,
+    pub has_photo: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +293,26 @@ impl CardamumClient {
                 _ => vec![],
             };
 
+            let etag = item
+                .get("etag")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let tel = match item.get("tel").or_else(|| item.get("TEL")) {
+                Some(Value::String(s)) => s.clone(),
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .filter_map(|x| {
+                        x.as_str()
+                            .map(str::to_string)
+                            .or_else(|| x.get("value").and_then(|v| v.as_str()).map(str::to_string))
+                    })
+                    .find(|s| !s.is_empty())
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+
             if emails.is_empty() {
                 // Afficher quand même les fiches sans email (fn seulement)
                 if !name.is_empty() {
@@ -262,8 +320,10 @@ impl CardamumClient {
                         id: card_id.clone(),
                         name: name.clone(),
                         email: String::new(),
+                        tel: tel.clone(),
                         addressbook: book.to_string(),
                         account: account.to_string(),
+                        etag: etag.clone(),
                     });
                 }
             } else {
@@ -272,13 +332,121 @@ impl CardamumClient {
                         id: card_id.clone(),
                         name: name.clone(),
                         email,
+                        tel: tel.clone(),
                         addressbook: book.to_string(),
                         account: account.to_string(),
+                        etag: etag.clone(),
                     });
                 }
             }
         }
         out
+    }
+
+    /// Lit le vCard brut (`card read --json` → `contents`).
+    pub async fn read_card(&self, book_ref: &str, card_id: &str) -> CliResult<(String, String)> {
+        let (account, book_id) = split_ref(book_ref);
+        let mut owned = Vec::new();
+        if let Some(a) = account.as_deref() {
+            owned.push("--account".into());
+            owned.push(a.to_string());
+        }
+        owned.extend([
+            "card".into(),
+            "read".into(),
+            "-k".into(),
+            book_id,
+            card_id.to_string(),
+        ]);
+        let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        let v = self.runner.run_json(&self.bin, &refs).await?;
+        let etag = v
+            .get("etag")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let contents = match v.get("contents") {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Array(arr)) => {
+                // Certains backends renvoient des octets JSON
+                let bytes: Vec<u8> = arr.iter().filter_map(|x| x.as_u64().map(|n| n as u8)).collect();
+                String::from_utf8_lossy(&bytes).into_owned()
+            }
+            _ => String::new(),
+        };
+        Ok((etag, contents))
+    }
+
+    pub fn to_records(items: &[ContactSuggest]) -> Vec<ContactRecord> {
+        items
+            .iter()
+            .filter(|c| !c.email.trim().is_empty() && !c.id.is_empty())
+            .map(|c| {
+                let book_ref = if c.account.is_empty() {
+                    c.addressbook.clone()
+                } else if c.addressbook.contains("::") {
+                    c.addressbook.clone()
+                } else {
+                    format!("{}::{}", c.account, c.addressbook)
+                };
+                ContactRecord {
+                    email: c.email.trim().to_ascii_lowercase(),
+                    name: c.name.clone(),
+                    card_id: c.id.clone(),
+                    book_ref,
+                    etag: c.etag.clone(),
+                }
+            })
+            .collect()
+    }
+
+    /// Extrait `(extension, octets)` depuis une propriété PHOTO vCard.
+    pub fn parse_vcard_photo(vcard: &str) -> Option<(String, Vec<u8>)> {
+        let unfolded = unfold_vcard(vcard);
+        for line in unfolded.lines() {
+            let upper = line.to_ascii_uppercase();
+            if !upper.starts_with("PHOTO") {
+                continue;
+            }
+            let Some((_, rest)) = line.split_once(':') else {
+                continue;
+            };
+            // tcard échappe `;` et `,` dans les data URI (RFC 6350)
+            let rest = unescape_vcard_text(rest.trim());
+            if rest.is_empty() {
+                continue;
+            }
+            // data URI
+            if let Some(data) = rest.strip_prefix("data:") {
+                let (meta, b64) = data.split_once(',')?;
+                let mime = meta.split(';').next().unwrap_or("image/jpeg");
+                let ext = mime_to_ext(mime);
+                let bytes = decode_b64(b64)?;
+                if !bytes.is_empty() {
+                    return Some((ext, bytes));
+                }
+                continue;
+            }
+            // URI http(s) — ignoré (évite fetch réseau synchrone)
+            if rest.starts_with("http://") || rest.starts_with("https://") {
+                continue;
+            }
+            let params = line[..line.find(':').unwrap_or(0)].to_ascii_uppercase();
+            let ext = if params.contains("PNG") {
+                "png".into()
+            } else if params.contains("GIF") {
+                "gif".into()
+            } else if params.contains("WEBP") {
+                "webp".into()
+            } else {
+                "jpg".into()
+            };
+            let bytes = decode_b64(&rest)?;
+            if !bytes.is_empty() {
+                return Some((ext, bytes));
+            }
+        }
+        None
     }
 
 
@@ -323,23 +491,37 @@ impl CardamumClient {
         Ok(())
     }
 
-    /// Construit une vCard 3.0 minimale.
-    pub fn build_vcard(fn_name: &str, email: &str, tel: &str) -> String {
-        let uid = uuid::Uuid::new_v4();
-        let mut lines = vec![
-            "BEGIN:VCARD".into(),
-            "VERSION:3.0".into(),
-            format!("UID:{uid}"),
-            format!("FN:{}", escape_vcard(fn_name)),
-        ];
-        if !email.trim().is_empty() {
-            lines.push(format!("EMAIL:{}", escape_vcard(email.trim())));
+    /// Remplace le vCard (`card update`, stdin).
+    pub async fn update_card(
+        &self,
+        book_ref: &str,
+        card_id: &str,
+        vcard: &[u8],
+        if_match: Option<&str>,
+    ) -> CliResult<()> {
+        let (account, book_id) = split_ref(book_ref);
+        let mut owned = Vec::new();
+        if let Some(a) = account.as_deref() {
+            owned.push("--account".into());
+            owned.push(a.to_string());
         }
-        if !tel.trim().is_empty() {
-            lines.push(format!("TEL:{}", escape_vcard(tel.trim())));
+        owned.extend([
+            "card".into(),
+            "update".into(),
+            "-k".into(),
+            book_id,
+            card_id.to_string(),
+            "-".into(),
+        ]);
+        if let Some(etag) = if_match.map(str::trim).filter(|s| !s.is_empty()) {
+            owned.push("--if-match".into());
+            owned.push(etag.to_string());
         }
-        lines.push("END:VCARD".into());
-        lines.join("\r\n")
+        let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        self.runner
+            .run_with_stdin(&self.bin, &refs, vcard)
+            .await?;
+        Ok(())
     }
 
     pub async fn suggest(&self, query: &str) -> CliResult<Vec<ContactSuggest>> {
@@ -388,9 +570,65 @@ fn looks_like_gal_id(id: &str) -> bool {
     has_dot && no_slash && mostly_dns && !id.contains("6650")
 }
 
-fn escape_vcard(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('\n', "\\n")
-        .replace(',', "\\,")
-        .replace(';', "\\;")
+fn unescape_vcard_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') | Some('N') => out.push('\n'),
+                Some(',') => out.push(','),
+                Some(';') => out.push(';'),
+                Some('\\') => out.push('\\'),
+                Some(other) => out.push(other),
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn unfold_vcard(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for line in s.lines() {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            out.push_str(line.trim_start_matches([' ', '\t']));
+        } else {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+fn mime_to_ext(mime: &str) -> String {
+    let m = mime.trim().to_ascii_lowercase();
+    if m.contains("png") {
+        "png".into()
+    } else if m.contains("gif") {
+        "gif".into()
+    } else if m.contains("webp") {
+        "webp".into()
+    } else {
+        "jpg".into()
+    }
+}
+
+fn decode_b64(raw: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '\r' && *c != '\n')
+        .collect();
+    if cleaned.is_empty() {
+        return None;
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(&cleaned)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(&cleaned))
+        .ok()
 }
