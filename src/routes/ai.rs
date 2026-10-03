@@ -440,10 +440,10 @@ async fn generate_mail(
 ) -> Result<MailDraft, String> {
     let system_task = match kind {
         Some("reply") => {
-            "Tu aides à rédiger / corriger un email (réponse). Applique la consigne (corriger, reformuler, compléter…). Réponds en JSON strict uniquement: {\"to\",\"subject\",\"body\"}. Ne vide pas un champ déjà rempli sauf demande explicite. Pas de markdown."
+            "Tu aides à rédiger / corriger un email (réponse). Applique la consigne (corriger, reformuler, compléter…). Réponds en JSON strict uniquement: {\"to\",\"subject\",\"body\"}. Le champ body doit contenir uniquement la nouvelle réponse ou correction, sans réinclure ni citer le message précédent (déjà fourni à part). Ne vide pas un champ déjà rempli sauf demande explicite. Pas de markdown."
         }
         _ => {
-            "Tu aides à rédiger / corriger un email. Applique la consigne (corriger, reformuler, compléter…). Réponds en JSON strict uniquement: {\"to\",\"subject\",\"body\"}. Ne vide pas un champ déjà rempli sauf demande explicite. Pas de markdown."
+            "Tu aides à rédiger / corriger un email. Applique la consigne (corriger, reformuler, compléter…). Réponds en JSON strict uniquement: {\"to\",\"subject\",\"body\"}. Si un message précédent est fourni à part, ne l'inclus pas dans body — body = seulement le brouillon / la nouvelle réponse. Ne vide pas un champ déjà rempli sauf demande explicite. Pas de markdown."
         }
     };
     let preamble = build_system_preamble(prefs, account, false);

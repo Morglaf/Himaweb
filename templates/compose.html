@@ -176,6 +176,15 @@
           <div x-show="bodyMode === 'html'" x-cloak class="compose-quill-wrap">
             <div id="compose-quill" class="compose-quill"></div>
           </div>
+          <div class="compose-quote" x-show="previousQuote" x-cloak>
+            <button type="button" class="compose-quote-toggle" @click="toggleQuote()"
+                    :class="quoteExpanded && 'is-open'"
+                    :aria-expanded="quoteExpanded ? 'true' : 'false'">
+              <i data-lucide="chevron-right" class="compose-quote-chevron"></i>
+              <span x-text="quoteExpanded ? 'Masquer le message précédent' : 'Message précédent'"></span>
+            </button>
+            <pre class="compose-quote-body" x-show="quoteExpanded" x-text="displayQuoteText"></pre>
+          </div>
         </div>
 
         <ul class="compose-attach-chips" x-show="attachNames.length" x-cloak>

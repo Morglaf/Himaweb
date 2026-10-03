@@ -1941,6 +1941,52 @@ html[data-topbar="text"] .tab > i { display: none; }
   max-height: min(50vh, 28rem);
   overflow-y: auto;
 }
+.compose-quote {
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.35rem;
+}
+.compose-quote-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.15rem;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.compose-quote-toggle:hover {
+  color: var(--fg);
+}
+.compose-quote-toggle .compose-quote-chevron,
+.compose-quote-toggle svg.compose-quote-chevron {
+  width: 1rem;
+  height: 1rem;
+  transition: transform 0.15s ease;
+}
+.compose-quote-toggle.is-open .compose-quote-chevron,
+.compose-quote-toggle.is-open svg.compose-quote-chevron {
+  transform: rotate(90deg);
+}
+.compose-quote-body {
+  margin: 0.35rem 0 0;
+  padding: 0.65rem 0.75rem;
+  max-height: min(30vh, 16rem);
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+}
 .compose-actions { margin-top: 0.25rem; }
 .from-picker {
   display: flex;

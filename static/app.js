@@ -346,6 +346,8 @@ function composeForm() {
     body: '',
     bodyHtml: '',
     bodyMode: 'plain',
+    previousQuote: '',
+    quoteExpanded: false,
     account: '',
     accounts: [],
     fromOpen: false,
@@ -365,6 +367,12 @@ function composeForm() {
     get displayTitle() {
       const s = (this.subject || '').trim();
       return s || this.baseTitle;
+    },
+    get displayQuoteText() {
+      return (this.previousQuote || '')
+        .split('\n')
+        .map((line) => line.replace(/^(?:>\s?)+/, ''))
+        .join('\n');
     },
     boot() {
       try {
@@ -405,7 +413,11 @@ function composeForm() {
         }
       } catch (_) {}
       const seed = document.getElementById('compose-body-seed');
-      if (seed) this.body = seed.value || '';
+      const full = seed ? seed.value || '' : '';
+      const { draftBody, previous } = this.splitTextDraftAndPrevious(full);
+      this.body = draftBody;
+      this.previousQuote = previous;
+      this.quoteExpanded = false;
       this.$nextTick(() => {
         if (window.lucide) lucide.createIcons();
         if (this.bodyMode === 'html') this.initQuill();
@@ -459,45 +471,89 @@ function composeForm() {
       if (this.bcc) lines.push('Cci: ' + this.bcc);
       if (this.replyTo) lines.push('Reply-To: ' + this.replyTo);
       if (this.subject) lines.push('Sujet: ' + this.subject);
-      const { draftBody, previous } = this.splitDraftAndPrevious();
+      const draftBody = this.currentBodyText();
       if (draftBody) lines.push('Corps:\n' + draftBody);
       return {
         context: lines.join('\n\n') || '(brouillon vide)',
-        previous: previous || '',
+        previous: this.previousQuote || '',
       };
     },
     splitDraftAndPrevious() {
-      const full = this.currentBodyText();
+      return this.splitTextDraftAndPrevious(this.currentBodyText());
+    },
+    splitTextDraftAndPrevious(full) {
       if (!full) return { draftBody: '', previous: '' };
-      // Sépare le brouillon utilisateur du message cité (reply)
-      const markers = [
-        /\nOn .+ wrote:\n/,
-        /\nLe .+ a écrit\s*:\n/i,
-        /\n-{2,}\s*Original Message\s*-{2,}\n/i,
-        /\n_{2,}\nFrom:\s/i,
-        /\n> /,
+      // Sépare le brouillon du message cité (reply / forward).
+      // Himalaya (body vide) produit souvent un corps qui commence directement
+      // par le headline ou par `> …` — il faut couper dès la 1re ligne citée,
+      // pas seulement après un `\n>`.
+      const headerRes = [
+        /(?:^|\n)On .+ wrote:\s*\n/i,
+        /(?:^|\n)Le .+ a écrit\s*:\s*\n/i,
+        /(?:^|\n)-{2,}\s*Original Message\s*-{2,}\s*\n/i,
+        /(?:^|\n)-{2,}\s*Message original\s*-{2,}\s*\n/i,
+        /(?:^|\n)_{2,}\s*\nFrom:\s/i,
       ];
       let cut = -1;
-      for (const re of markers) {
+      for (const re of headerRes) {
         const m = full.search(re);
-        if (m >= 0 && (cut < 0 || m < cut)) cut = m;
+        if (m < 0) continue;
+        // Si le match commence par \n, inclure le header dans previous (pas le \n)
+        const at = full[m] === '\n' ? m + 1 : m;
+        if (cut < 0 || at < cut) cut = at;
       }
-      if (cut > 0) {
-        return {
-          draftBody: full.slice(0, cut).trim(),
-          previous: full.slice(cut).trim(),
-        };
-      }
-      if (this.kind === 'reply' && full.includes('\n>')) {
-        const idx = full.indexOf('\n>');
-        if (idx > 0) {
-          return {
-            draftBody: full.slice(0, idx).trim(),
-            previous: full.slice(idx).trim(),
-          };
+      // Première ligne préfixée par `>` (y compris en tête du corps)
+      {
+        let pos = 0;
+        const parts = full.split('\n');
+        for (let i = 0; i < parts.length; i++) {
+          if (/^>/.test(parts[i])) {
+            if (cut < 0 || pos < cut) cut = pos;
+            break;
+          }
+          pos += parts[i].length + (i < parts.length - 1 ? 1 : 0);
         }
       }
-      return { draftBody: full, previous: '' };
+      if (cut < 0) return { draftBody: full, previous: '' };
+      return {
+        draftBody: full.slice(0, cut).trim(),
+        previous: full.slice(cut).replace(/^\n+/, '').trim(),
+      };
+    },
+    fullBodyText() {
+      const draft = this.currentBodyText();
+      const quote = (this.previousQuote || '').trim();
+      if (!quote) return draft;
+      if (!draft) return quote;
+      return draft + '\n\n' + quote;
+    },
+    mergeQuoteIntoBody() {
+      const quote = (this.previousQuote || '').trim();
+      if (!quote) return;
+      const draftPlain =
+        this.bodyMode === 'html' && this.quill
+          ? (this.quill.getText() || '').replace(/\n$/, '')
+          : (this.body || '').replace(/\n$/, '');
+      this.body = draftPlain ? draftPlain + '\n\n' + quote : quote;
+      if (this.bodyMode === 'html') {
+        const draftHtml =
+          (this.quill ? this.quill.root.innerHTML : this.bodyHtml) || '';
+        const esc = quote
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/\n/g, '<br>');
+        const sep = draftHtml.trim() ? '<p><br></p>' : '';
+        this.bodyHtml = draftHtml + sep + '<pre>' + esc + '</pre>';
+      }
+      // Sync immédiat des champs formulaire (évite une course avec le scheduler Alpine)
+      const ta = document.querySelector('textarea.compose-plain[name="body"]');
+      if (ta) ta.value = this.body;
+      const htmlInput = document.querySelector('input[name="body_html"]');
+      if (htmlInput) htmlInput.value = this.bodyHtml || '';
+    },
+    toggleQuote() {
+      this.quoteExpanded = !this.quoteExpanded;
     },
     localNowLabel() {
       try {
@@ -614,6 +670,7 @@ function composeForm() {
         this.bodyHtml = this.quill.root.innerHTML || '';
         this.body = this.quill.getText().replace(/\n$/, '');
       }
+      this.mergeQuoteIntoBody();
     },
     onFilesChange(ev) {
       const incoming = [...((ev.target && ev.target.files) || [])];
@@ -721,7 +778,11 @@ function composeForm() {
         if (data.to) this.to = data.to;
         if (data.subject) this.subject = data.subject;
         if (data.body) {
-          this.body = data.body;
+          // Ne jamais écraser previousQuote : l’IA ne doit toucher que le brouillon
+          let draft = data.body;
+          const split = this.splitTextDraftAndPrevious(draft);
+          if (split.previous) draft = split.draftBody;
+          this.body = draft;
           if (this.bodyMode === 'html') {
             this.syncHtmlFromPlain();
             if (this.quill) this.quill.root.innerHTML = this.bodyHtml;
