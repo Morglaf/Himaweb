@@ -11,18 +11,18 @@
            view: '{{ view }}'
          })">
   <div class="contacts-head">
-    <h1 class="font-display text-2xl">Calendrier</h1>
+    <h1 class="font-display text-2xl" data-i18n="cal.title">Calendrier</h1>
     <div class="btn-row">
       <button type="button" class="btn" @click="openCreate()" {% if calendars.is_empty() %}disabled{% endif %}>
-        <i data-lucide="plus"></i> Nouvel événement
+        <i data-lucide="plus"></i> <span data-i18n="cal.new_event">Nouvel événement</span>
       </button>
-      <a class="btn secondary" href="/calendar?view={{ view }}&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id_enc }}&refresh=1">Rafraîchir</a>
-      <a class="btn secondary" href="/settings#calendar">Configurer</a>
+      <a class="btn secondary" href="/calendar?view={{ view }}&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id_enc }}&refresh=1" data-i18n="cal.refresh">Rafraîchir</a>
+      <a class="btn secondary" href="/settings#calendar" data-i18n="cal.configure">Configurer</a>
     </div>
   </div>
 
   {% if !calendula_available %}
-  <div class="error-banner">Calendula est introuvable. Installez-le, puis ajoutez un compte CalDAV dans Paramètres.</div>
+  <div class="error-banner" data-i18n="cal.missing">Calendula est introuvable. Installez-le, puis ajoutez un compte CalDAV dans Paramètres.</div>
   {% else %}
   {% if let Some(e) = error %}
   <div class="error-banner mb-3">{{ e }}</div>
@@ -45,29 +45,29 @@
   {% if calendars.is_empty() %}
   <div class="empty-list">
     <i data-lucide="calendar-off"></i>
-    <p>Aucun calendrier chargé</p>
-    <a class="btn mt-3" href="/settings#calendar">Configurer CalDAV</a>
+    <p data-i18n="cal.empty">Aucun calendrier chargé</p>
+    <a class="btn mt-3" href="/settings#calendar" data-i18n="cal.configure_caldav">Configurer CalDAV</a>
   </div>
   {% else %}
   <div class="cal-toolbar">
     <div class="cal-nav">
-      <a class="icon-btn" title="Précédent"
+      <a class="icon-btn" data-i18n-title="common.prev" title="Précédent"
          href="/calendar?view={{ view }}&year={{ prev_year }}&month={{ prev_month }}&day={{ prev_day }}&calendar={{ current_id }}">
         <i data-lucide="chevron-left"></i>
       </a>
       <h2 class="cal-title font-display">{{ title_label }}</h2>
-      <a class="icon-btn" title="Suivant"
+      <a class="icon-btn" data-i18n-title="common.next" title="Suivant"
          href="/calendar?view={{ view }}&year={{ next_year }}&month={{ next_month }}&day={{ next_day }}&calendar={{ current_id }}">
         <i data-lucide="chevron-right"></i>
       </a>
     </div>
     <div class="cal-views">
       <a class="btn {% if view == "day" %}primary{% else %}ghost{% endif %}"
-         href="/calendar?view=day&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id }}">Jour</a>
+         href="/calendar?view=day&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id }}" data-i18n="cal.day">Jour</a>
       <a class="btn {% if view == "week" %}primary{% else %}ghost{% endif %}"
-         href="/calendar?view=week&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id }}">Semaine</a>
+         href="/calendar?view=week&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id }}" data-i18n="cal.week">Semaine</a>
       <a class="btn {% if view == "month" %}primary{% else %}ghost{% endif %}"
-         href="/calendar?view=month&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id }}">Mois</a>
+         href="/calendar?view=month&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id }}" data-i18n="cal.month">Mois</a>
     </div>
     <form method="get" action="/calendar" class="cal-cal-select">
       <input type="hidden" name="view" value="{{ view }}" />
@@ -75,7 +75,7 @@
       <input type="hidden" name="month" value="{{ month }}" />
       <input type="hidden" name="day" value="{{ day }}" />
       <select name="calendar" class="select" onchange="this.form.submit()">
-        <option value="__all__" {% if current_id == "__all__" %}selected{% endif %}>Tous les calendriers</option>
+        <option value="__all__" {% if current_id == "__all__" %}selected{% endif %}>{{ all_calendars_label }}</option>
         {% for c in calendars %}
         <option value="{{ c.id }}" {% if c.id == current_id %}selected{% endif %}>{{ c.name }}</option>
         {% endfor %}
@@ -85,7 +85,7 @@
 
   {% if view == "month" %}
   <div class="cal-grid-head">
-    <span>Lun</span><span>Mar</span><span>Mer</span><span>Jeu</span><span>Ven</span><span>Sam</span><span>Dim</span>
+    {% for d in dow %}<span>{{ d }}</span>{% endfor %}
   </div>
   <div class="cal-grid cal-grid-rich">
     {% for d in days %}
@@ -141,15 +141,15 @@
 
   {% if view == "month" %}
   <div id="cal-events" class="cal-events mt-6">
-    <h2 class="font-display text-xl mb-3">Événements du {{ day }} {{ month_name }} {{ year }}</h2>
+    <h2 class="font-display text-xl mb-3"><span data-i18n="cal.events_of">Événements du</span> {{ day }} {{ month_name }} {{ year }}</h2>
     {% include "calendar_events.html" %}
   </div>
   {% endif %}
 
   <div class="cal-todos mt-6">
-    <h2 class="font-display text-xl mb-3">Tâches</h2>
+    <h2 class="font-display text-xl mb-3" data-i18n="cal.tasks">Tâches</h2>
     {% if todos.is_empty() %}
-    <p class="muted tiny">Aucune tâche (CalDAV VTODO).</p>
+    <p class="muted tiny" data-i18n="cal.no_tasks">Aucune tâche (CalDAV VTODO).</p>
     {% else %}
     <ul class="todo-list">
       {% for t in todos %}
@@ -169,7 +169,7 @@
           {% if !t.due_label.is_empty() %}<span class="muted tiny">{{ t.due_label }}</span>{% endif %}
         </div>
         <form method="post" action="/calendar/todo/delete"
-              onsubmit="return confirm('Supprimer cette tâche ?');">
+              onsubmit="return confirm((window.HimaWeb&&HimaWeb.t('cal.delete_task'))||'Supprimer cette tâche ?');">
           <input type="hidden" name="calendar" value="{{ t.calendar_id }}" />
           <input type="hidden" name="id" value="{{ t.id }}" />
           <button type="submit" class="icon-btn" title="Supprimer"><i data-lucide="trash-2"></i></button>
@@ -179,16 +179,16 @@
     </ul>
     {% endif %}
     <details class="todo-create mt-3">
-      <summary class="btn secondary sm">Nouvelle tâche</summary>
+      <summary class="btn secondary sm" data-i18n="cal.new_task">Nouvelle tâche</summary>
       <form method="post" action="/calendar/todo/create" class="space-y-2 mt-2">
         <select name="calendar" class="select w-full" required>
           {% for c in calendars %}
           <option value="{{ c.id }}" {% if c.id == default_calendar %}selected{% endif %}>{{ c.name }}</option>
           {% endfor %}
         </select>
-        <input class="input w-full" name="summary" required placeholder="Titre de la tâche…" />
+        <input class="input w-full" name="summary" required data-i18n-placeholder="cal.task_title" placeholder="Titre de la tâche…" />
         <input class="input w-full" type="date" name="due" />
-        <button type="submit" class="btn">Créer</button>
+        <button type="submit" class="btn" data-i18n="common.create">Créer</button>
       </form>
     </details>
   </div>
@@ -202,7 +202,7 @@
     <div class="modal-panel event-modal-panel" role="dialog" aria-modal="true" @click.stop>
       <div class="modal-head">
         <h2 class="font-display text-xl compose-title" x-text="displayTitle"></h2>
-        <button type="button" class="icon-btn" @click="closeModal()" title="Fermer"><i data-lucide="x"></i></button>
+        <button type="button" class="icon-btn" @click="closeModal()" data-i18n-title="common.close" title="Fermer"><i data-lucide="x"></i></button>
       </div>
 
       <form method="post" :action="mode === 'edit' ? '/calendar/update' : '/calendar/create'" class="compose-form event-form">
@@ -227,7 +227,7 @@
         </template>
 
         <div class="compose-inline-row">
-          <span class="label">Calendrier</span>
+          <span class="label" data-i18n="cal.calendar">Calendrier</span>
           <select name="calendar" class="select grow" x-model="calendar" required>
             {% for c in calendars %}
             <option value="{{ c.id }}">{{ c.name }}</option>
@@ -235,23 +235,23 @@
           </select>
         </div>
         <div class="compose-inline-row">
-          <span class="label">Titre</span>
+          <span class="label" data-i18n="cal.summary">Titre</span>
           <input class="input grow" name="summary" x-model="summary" required placeholder="Réunion…" />
         </div>
         <div class="compose-inline-row">
-          <span class="label">Début</span>
+          <span class="label" data-i18n="cal.start">Début</span>
           <input class="input event-dt" type="date" name="start_date" x-model="startDate" required />
           <input class="input event-tm" type="time" name="start_time" x-model="startTime" required />
         </div>
         <div class="compose-inline-row">
-          <span class="label">Fin</span>
+          <span class="label" data-i18n="cal.end">Fin</span>
           <input class="input event-dt" type="date" name="end_date" x-model="endDate" />
           <input class="input event-tm" type="time" name="end_time" x-model="endTime" />
         </div>
         <div class="compose-inline-row">
-          <span class="label">Lieu</span>
+          <span class="label" data-i18n="cal.location">Lieu</span>
           <div class="cal-location-row grow">
-            <input class="input grow" name="location" x-model="location" placeholder="Adresse ou lieu…" />
+            <input class="input grow" name="location" x-model="location" data-i18n-placeholder="cal.location_ph" placeholder="Adresse ou lieu…" />
             <a class="icon-btn" x-show="mapsLink()" x-cloak :href="mapsLink()" target="_blank" rel="noopener"
                title="Itinéraire / temps de trajet">
               <i data-lucide="route"></i>
@@ -259,25 +259,25 @@
           </div>
         </div>
         <div class="compose-inline-row">
-          <span class="label">Récurrence</span>
+          <span class="label" data-i18n="cal.rrule">Récurrence</span>
           <select name="rrule" class="select grow" x-model="rrule">
-            <option value="none">Aucune</option>
-            <option value="daily">Quotidienne</option>
-            <option value="weekly">Hebdomadaire</option>
-            <option value="monthly">Mensuelle</option>
-            <option value="yearly">Annuelle</option>
+            <option value="none" data-i18n="cal.rrule.none">Aucune</option>
+            <option value="daily" data-i18n="cal.rrule.daily">Quotidienne</option>
+            <option value="weekly" data-i18n="cal.rrule.weekly">Hebdomadaire</option>
+            <option value="monthly" data-i18n="cal.rrule.monthly">Mensuelle</option>
+            <option value="yearly" data-i18n="cal.rrule.yearly">Annuelle</option>
           </select>
         </div>
         <div class="compose-inline-row event-desc-row">
-          <span class="label">Notes</span>
+          <span class="label" data-i18n="cal.notes">Notes</span>
           <textarea class="input grow" name="description" rows="2" x-model="description"
                     placeholder="Description…"></textarea>
         </div>
         <div class="btn-row compose-actions">
-          <button type="submit" class="btn" x-text="mode === 'edit' ? 'Enregistrer' : 'Créer'"></button>
-          <button type="button" class="btn ghost" @click="closeModal()">Annuler</button>
+          <button type="submit" class="btn" x-text="mode === 'edit' ? (window.HimaWeb&&HimaWeb.t('common.save')) : (window.HimaWeb&&HimaWeb.t('common.create'))"></button>
+          <button type="button" class="btn ghost" @click="closeModal()" data-i18n="common.cancel">Annuler</button>
           <template x-if="mode === 'edit' && id">
-            <button type="button" class="btn secondary danger-text" @click="confirmDelete()">Supprimer</button>
+            <button type="button" class="btn secondary danger-text" @click="confirmDelete()" data-i18n="common.delete">Supprimer</button>
           </template>
         </div>
       </form>

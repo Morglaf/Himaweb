@@ -3,6 +3,7 @@ pub mod calendar;
 pub mod contacts;
 mod attachments;
 mod compose;
+mod extras;
 mod mail;
 mod pages;
 mod search;
@@ -23,4 +24,5 @@ pub fn router() -> Router<std::sync::Arc<AppState>> {
         .merge(calendar::router())
         .merge(settings::router())
         .merge(ai::router())
+        .merge(extras::router())
 }

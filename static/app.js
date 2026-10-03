@@ -356,7 +356,7 @@ function composeForm() {
     attachNames: [],
     attachFiles: [],
     windowMode: 'normal',
-    baseTitle: 'Nouveau message',
+    baseTitle: (window.HimaWeb && window.HimaWeb.t('mail.new_message')) || 'Nouveau message',
     quill: null,
     suggestions: { to: [], cc: [], bcc: [] },
     get selectedAccount() {
@@ -384,7 +384,10 @@ function composeForm() {
           this.cardamum = !!opts.cardamum;
           this.ai = !!opts.ai;
           this.kind = opts.kind || 'compose';
-          this.baseTitle = opts.title || 'Nouveau message';
+          this.baseTitle =
+            opts.title ||
+            (window.HimaWeb && window.HimaWeb.t('mail.new_message')) ||
+            'Nouveau message';
           this.toolbarMode =
             opts.toolbarMode === 'icon' || opts.toolbarMode === 'text' || opts.toolbarMode === 'icon-text'
               ? opts.toolbarMode
@@ -792,6 +795,11 @@ function eventModal(opts) {
     get displayTitle() {
       const s = (this.summary || '').trim();
       if (s) return s;
+      if (window.HimaWeb && HimaWeb.t) {
+        return this.mode === 'edit'
+          ? HimaWeb.t('cal.edit_event')
+          : HimaWeb.t('cal.new_event');
+      }
       return this.mode === 'edit' ? 'Modifier l’événement' : 'Nouvel événement';
     },
     mapsLink() {
@@ -1271,8 +1279,53 @@ document.addEventListener('alpine:init', () => {
     Alpine.data('tbImportForm', tbImportForm);
     Alpine.data('messageView', messageView);
     Alpine.data('inboxSummaryModal', inboxSummaryModal);
+    Alpine.data('updateChecker', updateChecker);
+    Alpine.data('sideRss', sideRss);
   }
 });
+
+function sideRss() {
+  return {
+    busy: false,
+    error: '',
+    items: [],
+    async load() {
+      this.busy = true;
+      this.error = '';
+      try {
+        const res = await fetch('/api/rss/items?limit=10');
+        const data = await res.json();
+        this.items = data.items || [];
+      } catch (e) {
+        this.error = e.message || String(e);
+      } finally {
+        this.busy = false;
+        this.$nextTick(() => {
+          if (window.lucide) lucide.createIcons();
+        });
+      }
+    },
+  };
+}
+
+function updateChecker() {
+  return {
+    busy: false,
+    info: null,
+    async check(force) {
+      this.busy = true;
+      try {
+        const q = force ? '?force=1' : '';
+        const res = await fetch('/api/updates/check' + q);
+        this.info = await res.json();
+      } catch (e) {
+        this.info = { error: e.message || String(e), newer: false };
+      } finally {
+        this.busy = false;
+      }
+    },
+  };
+}
 
 function inboxSummaryModal() {
   return {
@@ -1366,6 +1419,141 @@ function inboxSummaryModal() {
 
 window.HimaWeb = {
   messageView,
+
+  applyI18n(root) {
+    const apply = (strings, locale) => {
+      if (locale) document.documentElement.lang = locale;
+      const scope = root || document;
+      scope.querySelectorAll('[data-i18n]').forEach((el) => {
+        const k = el.getAttribute('data-i18n');
+        if (!(k && strings[k])) return;
+        // Ne pas écraser le HTML riche (liens/code) sauf éléments simples
+        const tag = el.tagName;
+        if (
+          el.children.length &&
+          tag !== 'BUTTON' &&
+          tag !== 'A' &&
+          tag !== 'OPTION' &&
+          tag !== 'SUMMARY' &&
+          tag !== 'LABEL' &&
+          tag !== 'SPAN' &&
+          tag !== 'P' &&
+          tag !== 'H1' &&
+          tag !== 'H2' &&
+          tag !== 'H3' &&
+          tag !== 'H4'
+        ) {
+          return;
+        }
+        // Remplacer le texte même si l’élément ne contient que du texte (pas d’enfants)
+        if (!el.children.length || tag === 'OPTION' || tag === 'BUTTON' || tag === 'A' || tag === 'SUMMARY') {
+          el.textContent = strings[k];
+        } else if (tag === 'P' || tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'H4' || tag === 'SPAN' || tag === 'LABEL') {
+          // Si data-i18n est sur un conteneur avec enfants, ne pas écraser le HTML
+          // (les chaînes complexes sont découpées en spans data-i18n).
+          return;
+        } else {
+          el.textContent = strings[k];
+        }
+      });
+      scope.querySelectorAll('[data-i18n-title]').forEach((el) => {
+        const k = el.getAttribute('data-i18n-title');
+        if (k && strings[k]) el.setAttribute('title', strings[k]);
+      });
+      scope.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+        const k = el.getAttribute('data-i18n-placeholder');
+        if (k && strings[k]) el.setAttribute('placeholder', strings[k]);
+      });
+      scope.querySelectorAll('[data-i18n-aria]').forEach((el) => {
+        const k = el.getAttribute('data-i18n-aria');
+        if (k && strings[k]) el.setAttribute('aria-label', strings[k]);
+      });
+      scope.querySelectorAll('[data-i18n-label]').forEach((el) => {
+        const k = el.getAttribute('data-i18n-label');
+        if (k && strings[k]) el.setAttribute('data-label', strings[k]);
+      });
+      scope.querySelectorAll('[data-i18n-value]').forEach((el) => {
+        const k = el.getAttribute('data-i18n-value');
+        if (k && strings[k]) el.setAttribute('value', strings[k]);
+      });
+      const uiForm = scope.querySelector
+        ? scope.querySelector('form.settings-autosave[hx-post="/settings/ui"], form.settings-autosave[action="/settings/ui"]')
+        : null;
+      const form =
+        uiForm ||
+        document.querySelector(
+          'form.settings-autosave[hx-post="/settings/ui"], form.settings-autosave[action*="/settings/ui"]'
+        );
+      if (form) this.applyUiFromForm(form);
+    };
+
+    if (this._i18nStrings) {
+      apply(this._i18nStrings, this._i18nLocale);
+      return Promise.resolve();
+    }
+
+    return fetch('/api/i18n')
+      .then((r) => r.json())
+      .then((data) => {
+        this._i18nStrings = (data && data.strings) || {};
+        this._i18nLocale = (data && data.locale) || 'fr';
+        try {
+          localStorage.setItem('himaweb-locale', this._i18nLocale);
+        } catch (_) {}
+        apply(this._i18nStrings, this._i18nLocale);
+      })
+      .catch(() => {});
+  },
+
+  t(key, vars) {
+    const s = this._i18nStrings || {};
+    let out = s[key] || key;
+    if (vars && typeof vars === 'object') {
+      Object.keys(vars).forEach((k) => {
+        out = out.split(`{${k}}`).join(String(vars[k]));
+      });
+    }
+    return out;
+  },
+
+  emptyReadHtml() {
+    const msg = this.t('mail.select_message');
+    const text = msg === 'mail.select_message' ? 'Sélectionnez un message' : msg;
+    return `<div class="empty-read"><i data-lucide="mail-open"></i><p data-i18n="mail.select_message">${text}</p></div>`;
+  },
+
+  maybeCheckUpdatesOnce() {
+    try {
+      if (sessionStorage.getItem('himaweb-update-checked') === '1') return;
+      sessionStorage.setItem('himaweb-update-checked', '1');
+    } catch (_) {
+      return;
+    }
+    setTimeout(() => {
+      fetch('/api/updates/check')
+        .then((r) => r.json())
+        .then((info) => {
+          if (!info || !info.newer || info.error) return;
+          const bar = document.createElement('div');
+          bar.className = 'offline-strip update-toast';
+          const latest = String(info.latest || '').replace(/</g, '');
+          const cmd = String(info.winget_cmd || 'winget upgrade Morglaf.HimaWeb').replace(/</g, '');
+          const toast = this.t('updates.toast');
+          const settings = this.t('updates.open_settings');
+          bar.innerHTML =
+            toast +
+            ' (<strong>' +
+            latest +
+            '</strong>) — <a href="/settings#updates">' +
+            settings +
+            '</a> ou <code>' +
+            cmd +
+            '</code>';
+          document.body.prepend(bar);
+        })
+        .catch(() => {});
+    }, 4000);
+  },
 
   openInboxSummary() {
     let host = document.getElementById('inbox-summary-host');
@@ -1518,13 +1706,17 @@ window.HimaWeb = {
     root.style.setProperty('--rail', `${Math.round(rail)}px`);
     root.style.setProperty('--list', `${Math.round(list)}px`);
 
-    const setLabel = (name, text) => {
+    const setLabel = (name, valueSuffix) => {
       const lab = form.querySelector(`[data-ui-label="${name}"]`);
-      if (lab) lab.textContent = text;
+      if (!lab) return;
+      const key = lab.getAttribute('data-i18n-base');
+      const base = key ? this.t(key) : lab.textContent.replace(/\s*\([^)]*\)\s*$/, '');
+      const label = base === key ? lab.textContent.replace(/\s*\([^)]*\)\s*$/, '') : base;
+      lab.textContent = `${label} (${valueSuffix})`;
     };
-    setLabel('ui_font_scale', `Taille du texte (${font.toFixed(2)})`);
-    setLabel('ui_radius', `Coins arrondis (${Math.round(radius)} px)`);
-    setLabel('ui_space', `Densité / marges (${space.toFixed(2)})`);
+    setLabel('ui_font_scale', font.toFixed(2));
+    setLabel('ui_radius', `${Math.round(radius)} px`);
+    setLabel('ui_space', space.toFixed(2));
   },
 
   bindUiPreview() {
@@ -1588,15 +1780,15 @@ window.HimaWeb = {
       backdrop.className = 'confirm-backdrop';
       backdrop.innerHTML = `
         <div class="modal-panel confirm-panel" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
-          <h2 id="confirm-title" class="font-display text-xl">Confirmation</h2>
+          <h2 id="confirm-title" class="font-display text-xl">${this.t('common.confirm')}</h2>
           <p class="confirm-message"></p>
           <label class="toggle-row confirm-dont-ask">
-            <span>Ne plus demander</span>
+            <span>${this.t('common.dont_ask')}</span>
             <input type="checkbox" class="toggle" id="confirm-dont-ask" />
           </label>
           <div class="btn-row confirm-actions">
-            <button type="button" class="btn ghost" data-confirm="no">Annuler</button>
-            <button type="button" class="btn danger" data-confirm="yes">Supprimer</button>
+            <button type="button" class="btn ghost" data-confirm="no">${this.t('common.cancel')}</button>
+            <button type="button" class="btn danger" data-confirm="yes">${this.t('common.delete')}</button>
           </div>
         </div>`;
       backdrop.querySelector('.confirm-message').textContent = message;
@@ -1720,9 +1912,9 @@ window.HimaWeb = {
         this.pollUnread();
         const pane = document.getElementById('message-pane');
         if (pane) {
-          pane.innerHTML =
-            '<div class="empty-read"><i data-lucide="mail-open"></i><p>Sélectionnez un message</p></div>';
+          pane.innerHTML = this.emptyReadHtml();
           hwRenderIcons(pane);
+          this.applyI18n(pane);
         }
       }
     } catch (e) {
@@ -1744,7 +1936,7 @@ window.HimaWeb = {
         if (!form.matches('form[hx-post="/partials/message/delete"]')) return;
         ev.preventDefault();
         ev.stopPropagation();
-        const ok = await this.confirmDelete('Supprimer ce message ?');
+        const ok = await this.confirmDelete(this.t('mail.delete_confirm'));
         if (!ok) return;
         const fd = new FormData(form);
         const id = String(fd.get('id') || '');
@@ -2193,9 +2385,9 @@ window.HimaWeb = {
       else el.classList.add('active');
       const pane = document.getElementById('message-pane');
       if (pane) {
-        pane.innerHTML =
-          '<div class="empty-read"><i data-lucide="mail-open"></i><p>Sélectionnez un message</p></div>';
+        pane.innerHTML = this.emptyReadHtml();
         if (window.lucide) lucide.createIcons(pane);
+        this.applyI18n(pane);
       }
       // La liste va être remplacée par HTMX : montrer l'attente tout de suite.
       this.clearEnvelopeOpening();
@@ -2230,7 +2422,7 @@ window.HimaWeb = {
     });
     nav.querySelectorAll('.folder-twist').forEach((btn) => {
       btn.setAttribute('aria-expanded', 'false');
-      btn.setAttribute('aria-label', 'Déplier');
+      btn.setAttribute('aria-label', this.t('mail.expand'));
       btn.classList.remove('open');
     });
 
@@ -2299,7 +2491,10 @@ window.HimaWeb = {
     );
     if (twist) {
       twist.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-      twist.setAttribute('aria-label', expanded ? 'Replier' : 'Déplier');
+      twist.setAttribute(
+        'aria-label',
+        expanded ? this.t('mail.collapse_folder') : this.t('mail.expand')
+      );
       twist.classList.toggle('open', expanded);
     }
     nav.querySelectorAll('.folder-row').forEach((row) => {
@@ -2330,7 +2525,7 @@ window.HimaWeb = {
     } catch (_) {}
     const btn = document.querySelector('.rail-compact-btn');
     if (btn) {
-      btn.title = on ? 'Étendre la colonne' : 'Compacter la colonne';
+      btn.title = on ? this.t('mail.expand_rail') : this.t('mail.compact_rail');
       btn.setAttribute('aria-label', btn.title);
     }
     if (window.lucide) lucide.createIcons();
@@ -2346,7 +2541,7 @@ window.HimaWeb = {
     shell.classList.toggle('rail-compact', on);
     const btn = document.querySelector('.rail-compact-btn');
     if (btn) {
-      btn.title = on ? 'Étendre la colonne' : 'Compacter la colonne';
+      btn.title = on ? this.t('mail.expand_rail') : this.t('mail.compact_rail');
       btn.setAttribute('aria-label', btn.title);
     }
   },
@@ -2741,9 +2936,9 @@ window.HimaWeb = {
       } else {
         const pane = document.getElementById('message-pane');
         if (pane) {
-          pane.innerHTML =
-            '<div class="empty-read"><i data-lucide="mail-open"></i><p>Sélectionnez un message</p></div>';
+          pane.innerHTML = this.emptyReadHtml();
           if (window.lucide) lucide.createIcons();
+          this.applyI18n(pane);
         }
       }
 
@@ -2818,11 +3013,11 @@ window.HimaWeb = {
       bar.className = 'mail-selection-bar';
       listPane.appendChild(bar);
     }
-    bar.innerHTML = `<span>${n} sélectionnés</span>
+    bar.innerHTML = `<span>${this.t('mail.n_selected', { n })}</span>
       <button type="button" class="btn danger sm" id="mail-sel-delete">
-        <i data-lucide="trash-2"></i> Supprimer
+        <i data-lucide="trash-2"></i> ${this.t('mail.delete')}
       </button>
-      <button type="button" class="icon-btn" id="mail-sel-clear" title="Annuler la sélection">
+      <button type="button" class="icon-btn" id="mail-sel-clear" title="${this.t('mail.clear_selection')}">
         <i data-lucide="x"></i>
       </button>`;
     if (window.lucide) lucide.createIcons();
@@ -2862,8 +3057,8 @@ window.HimaWeb = {
     if (!items.length) return;
     const label =
       items.length === 1
-        ? 'Supprimer ce message ?'
-        : `Supprimer ${items.length} messages ?`;
+        ? this.t('mail.delete_confirm')
+        : this.t('mail.delete_n_confirm', { n: items.length });
     const ok = await this.confirmDelete(label);
     if (!ok) return;
     this.deleteMailsApi(items);
@@ -3099,14 +3294,14 @@ window.HimaWeb = {
         if (!document.querySelector('#message-pane .message-view, #message-pane .thread-view'))
           return;
         ev.preventDefault();
-        openAction('a[title="Répondre"]');
+        openAction('a[data-i18n-title="mail.reply"], a[href*="kind=reply&"]');
         return;
       }
       if (key === 'f' || key === 'F') {
         if (!document.querySelector('#message-pane .message-view, #message-pane .thread-view'))
           return;
         ev.preventDefault();
-        openAction('a[title="Transférer"]');
+        openAction('a[data-i18n-title="mail.forward"], a[href*="kind=forward"]');
         return;
       }
       if (key === 'u' || key === 'U') {
@@ -3128,9 +3323,9 @@ window.HimaWeb = {
         const pane = document.getElementById('message-pane');
         if (pane && pane.querySelector('.message-view, .thread-view')) {
           ev.preventDefault();
-          pane.innerHTML =
-            '<div class="empty-read"><i data-lucide="mail-open"></i><p>Sélectionnez un message</p></div>';
+          pane.innerHTML = this.emptyReadHtml();
           if (window.lucide) lucide.createIcons();
+          this.applyI18n(pane);
         }
       }
     });
@@ -3308,27 +3503,27 @@ window.HimaWeb = {
         const payload = JSON.stringify({ id, account, mailbox, threadIds, messageId });
         const delLabel =
           threadIds.length > 1
-            ? `Supprimer la conversation (${threadIds.length})`
-            : 'Supprimer';
+            ? `${this.t('mail.delete_thread')} (${threadIds.length})`
+            : this.t('mail.delete');
         const junk = this.isJunkMailbox(mailbox);
-        const spamLabel = junk ? 'Pas du spam' : 'Signaler spam';
+        const spamLabel = junk ? this.t('mail.not_spam') : this.t('mail.report_spam');
         const spamIcon = junk ? 'shield-check' : 'shield-alert';
         show(
           ev.clientX,
           ev.clientY,
-          `<button type="button" data-ctx-action="open" data-ctx-payload='${payload}'><i data-lucide="mail-open"></i> Ouvrir</button>
+          `<button type="button" data-ctx-action="open" data-ctx-payload='${payload}'><i data-lucide="mail-open"></i> ${this.t('common.open')}</button>
            <button type="button" data-ctx-action="flag" data-ctx-payload='${JSON.stringify({
              id,
              account,
              mailbox,
              seen: unread ? '1' : '0',
            })}'><i data-lucide="${unread ? 'mail-open' : 'mail'}"></i> ${
-             unread ? 'Marquer lu' : 'Marquer non lu'
+             unread ? this.t('mail.mark_read') : this.t('mail.mark_unread')
            }</button>
-           <button type="button" data-ctx-action="reply" data-ctx-payload='${payload}'><i data-lucide="reply"></i> Répondre</button>
-           <button type="button" data-ctx-action="forward" data-ctx-payload='${payload}'><i data-lucide="forward"></i> Transférer</button>
+           <button type="button" data-ctx-action="reply" data-ctx-payload='${payload}'><i data-lucide="reply"></i> ${this.t('mail.reply')}</button>
+           <button type="button" data-ctx-action="forward" data-ctx-payload='${payload}'><i data-lucide="forward"></i> ${this.t('mail.forward')}</button>
            <hr/>
-           <button type="button" data-ctx-action="archive" data-ctx-payload='${payload}'><i data-lucide="archive"></i> Archiver</button>
+           <button type="button" data-ctx-action="archive" data-ctx-payload='${payload}'><i data-lucide="archive"></i> ${this.t('mail.archive')}</button>
            <button type="button" data-ctx-action="spam" data-ctx-payload='${payload}'><i data-lucide="${spamIcon}"></i> ${spamLabel}</button>
            <button type="button" class="danger" data-ctx-action="delete" data-ctx-payload='${payload}'><i data-lucide="trash-2"></i> ${delLabel}</button>`
         );
@@ -3369,8 +3564,8 @@ window.HimaWeb = {
         show(
           ev.clientX,
           ev.clientY,
-          `<button type="button" data-ctx-action="contact-mail" data-ctx-payload='${payload}'><i data-lucide="pen-square"></i> Écrire</button>
-           <button type="button" class="danger" data-ctx-action="contact-delete" data-ctx-payload='${payload}'><i data-lucide="trash-2"></i> Supprimer</button>`
+          `<button type="button" data-ctx-action="contact-mail" data-ctx-payload='${payload}'><i data-lucide="pen-square"></i> ${this.t('contacts.write')}</button>
+           <button type="button" class="danger" data-ctx-action="contact-delete" data-ctx-payload='${payload}'><i data-lucide="trash-2"></i> ${this.t('contacts.delete')}</button>`
         );
       }
     });
@@ -3512,7 +3707,7 @@ window.HimaWeb = {
         env.classList.toggle('unread', !markRead);
         const qa = env.querySelector('[data-qa="flag"]');
         if (qa) {
-          qa.title = markRead ? 'Marquer non lu' : 'Marquer lu';
+          qa.title = markRead ? this.t('mail.mark_unread') : this.t('mail.mark_read');
           qa.innerHTML = `<i data-lucide="${markRead ? 'mail' : 'mail-open'}"></i>`;
           if (window.lucide) lucide.createIcons();
         }
@@ -3546,8 +3741,8 @@ window.HimaWeb = {
       if (!ids.length) return;
       const label =
         ids.length > 1
-          ? `Supprimer cette conversation (${ids.length} messages) ?`
-          : 'Supprimer ce message ?';
+          ? this.t('mail.delete_thread_confirm', { n: ids.length })
+          : this.t('mail.delete_confirm');
       this.confirmDelete(label).then((ok) => {
         if (!ok) return;
         const items = ids.map((tid) => {
@@ -3599,7 +3794,7 @@ window.HimaWeb = {
       return;
     }
     if (action === 'contact-delete') {
-      if (!window.confirm('Supprimer ce contact ?')) return;
+      if (!window.confirm(this.t('contacts.delete_confirm'))) return;
       const form = document.createElement('form');
       form.method = 'post';
       form.action = '/contacts/delete';
@@ -3625,6 +3820,9 @@ document.addEventListener('htmx:afterSwap', (ev) => {
   const t = ev.detail && ev.detail.target;
   // Rendu limité au fragment muté : voir hwRenderIcons.
   hwRenderIcons(t || document);
+  if (window.HimaWeb && window.HimaWeb.applyI18n) {
+    window.HimaWeb.applyI18n(t || document);
+  }
   if (t && (t.id === 'message-pane' || t.id === 'envelope-list')) {
     window.HimaWeb.setPaneBusy(t, false);
   }
@@ -3709,6 +3907,14 @@ document.addEventListener('DOMContentLoaded', () => {
   window.HimaWeb.loadPrefs();
   window.HimaWeb.startUnreadPolling();
   window.HimaWeb.applyRailCompactFromStorage();
+  Promise.resolve(window.HimaWeb.applyI18n()).then(() => {
+    window.HimaWeb.applyRailCompactFromStorage();
+    const uiForm = document.querySelector(
+      'form.settings-autosave[hx-post="/settings/ui"], form.settings-autosave[action*="/settings/ui"]'
+    );
+    if (uiForm) window.HimaWeb.applyUiFromForm(uiForm);
+  });
+  window.HimaWeb.maybeCheckUpdatesOnce();
   try {
     const side = document.getElementById('side-widget');
     if (side && localStorage.getItem('himaweb-side-open') === '0') {

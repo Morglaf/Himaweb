@@ -1,5 +1,6 @@
 # Publie une nouvelle release HimaWeb (bump version -> commit -> tag -> push).
-# La CI GitHub Actions construit les binaires et les attache a la release.
+# Compile aussi HimaWeb-Setup-x64.exe en local et l'attache a la release GitHub.
+# La CI construit les binaires multi-plateformes (et peut reecrire le Setup).
 #
 # Usage :
 #   .\scripts\release.ps1                      # patch : 0.1.0 -> 0.1.1
@@ -7,6 +8,7 @@
 #   .\scripts\release.ps1 -Bump major          # 0.1.0 -> 1.0.0
 #   .\scripts\release.ps1 -Version 0.3.0       # version exacte
 #   .\scripts\release.ps1 -IncludeChanges      # inclut aussi les fichiers modifies non commites
+#   .\scripts\release.ps1 -SkipInstaller       # ne compile / n'upload pas le Setup local
 #   .\scripts\release.ps1 -DryRun              # affiche ce qui serait fait, sans ecrire
 #   .\scripts\release.ps1 -Wait                # attend la fin du workflow Release
 
@@ -17,6 +19,7 @@ param(
     [string]$Version,
     [string]$Message,
     [switch]$IncludeChanges,
+    [switch]$SkipInstaller,
     [switch]$DryRun,
     [switch]$Wait
 )
@@ -105,11 +108,19 @@ if ($Version) {
 $tag = "v$newVersion"
 $commitMsg = if ($Message) { $Message } else { "release: $tag" }
 
+$doInstaller = -not $SkipInstaller
+if ($doInstaller -and $env:OS -ne "Windows_NT") {
+    Write-Host "Installer local ignore (hors Windows)." -ForegroundColor DarkYellow
+    $doInstaller = $false
+}
+
 Write-Host "=== HimaWeb release ===" -ForegroundColor Cyan
 Write-Host "Version : $current -> $newVersion"
 Write-Host "Tag     : $tag"
 Write-Host "Commit  : $commitMsg"
 if ($IncludeChanges) { Write-Host "Mode    : Inclure les changements locaux" -ForegroundColor DarkYellow }
+if ($SkipInstaller) { Write-Host "Mode    : Skip installer local" -ForegroundColor DarkYellow }
+elseif ($doInstaller) { Write-Host "Mode    : Build + upload HimaWeb-Setup-x64.exe" -ForegroundColor DarkYellow }
 if ($DryRun) { Write-Host "Dry-run : aucune ecriture / push" -ForegroundColor DarkYellow }
 
 Assert-GitOk
@@ -125,12 +136,20 @@ if ($remoteTag) {
 
 if ($DryRun) {
     Write-Host ""
-    Write-Host "[DryRun] OK - aurait mis a jour Cargo.toml, commit, tag $tag, push branch + tag." -ForegroundColor Green
+    $extra = if ($doInstaller) { ", cargo build --release, build-installer, gh release upload Setup" } else { "" }
+    Write-Host "[DryRun] OK - aurait mis a jour Cargo.toml, commit, tag $tag, push branch + tag$extra." -ForegroundColor Green
     exit 0
 }
 
+$totalSteps = if ($doInstaller) { 6 } else { 5 }
+$step = 0
+function Step([string]$Label) {
+    $script:step++
+    Write-Host "$($script:step)/$totalSteps $Label" -ForegroundColor Cyan
+}
+
 Write-Host ""
-Write-Host "1/5 Cargo.toml -> $newVersion" -ForegroundColor Cyan
+Step "Cargo.toml -> $newVersion"
 Set-CargoVersion $newVersion
 Write-Host "    refresh Cargo.lock..."
 cargo check --quiet 2>&1 | Out-Null
@@ -138,7 +157,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "    cargo check a signale une erreur - verifiez avant d'installer la release." -ForegroundColor Yellow
 }
 
-Write-Host "2/5 git add / commit" -ForegroundColor Cyan
+Step "git add / commit"
 if ($IncludeChanges) {
     git add -A
 } else {
@@ -151,27 +170,60 @@ if (-not $staged) {
 git commit -m $commitMsg
 if ($LASTEXITCODE -ne 0) { throw "git commit a echoue" }
 
-Write-Host "3/5 tag $tag" -ForegroundColor Cyan
+Step "tag $tag"
 git tag -a $tag -m $commitMsg
 if ($LASTEXITCODE -ne 0) { throw "git tag a echoue" }
 
-Write-Host "4/5 push branch + tag" -ForegroundColor Cyan
+Step "push branch + tag"
 git push origin HEAD
 if ($LASTEXITCODE -ne 0) { throw "git push branch a echoue" }
 git push origin $tag
 if ($LASTEXITCODE -ne 0) { throw "git push tag a echoue" }
 
-Write-Host "5/5 workflow Release declenche" -ForegroundColor Cyan
 $repo = (gh repo view --json nameWithOwner -q .nameWithOwner 2>$null)
 if (-not $repo) { $repo = "Morglaf/Himaweb" }
 $actionsUrl = "https://github.com/$repo/actions/workflows/release.yml"
 $releaseUrl = "https://github.com/$repo/releases/tag/$tag"
+$setupUrl = "https://github.com/$repo/releases/download/$tag/HimaWeb-Setup-x64.exe"
 
+if ($doInstaller) {
+    Step "cargo build --release + installer"
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        throw "gh introuvable - requis pour uploader le Setup. Installez GitHub CLI ou passez -SkipInstaller."
+    }
+    cargo build --release --locked
+    if ($LASTEXITCODE -ne 0) { throw "cargo build --release a echoue" }
+
+    & (Join-Path $PSScriptRoot "build-installer.ps1") -Version $newVersion
+    if ($LASTEXITCODE -ne 0) { throw "build-installer.ps1 a echoue" }
+
+    $setup = Join-Path $Root "dist\HimaWeb-Setup-x64.exe"
+    if (-not (Test-Path -LiteralPath $setup)) {
+        throw "Setup introuvable apres build : $setup"
+    }
+
+    Write-Host "    upload $setup -> release $tag"
+    # La CI peut avoir cree la release entre-temps : create sinon upload --clobber.
+    gh release create $tag $setup --title $tag --generate-notes 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        gh release upload $tag $setup --clobber
+        if ($LASTEXITCODE -ne 0) { throw "gh release upload a echoue" }
+    }
+    Write-Host "    Setup : $setupUrl" -ForegroundColor Green
+}
+
+Step "workflow Release declenche"
 Write-Host ""
 Write-Host "Release $tag poussee." -ForegroundColor Green
 Write-Host "CI     : $actionsUrl"
 Write-Host "Page   : $releaseUrl"
-Write-Host "Quand la CI est verte, l'install recupere automatiquement latest :"
+if ($doInstaller) {
+    Write-Host "Setup  : $setupUrl"
+    Write-Host "Le Setup local est deja sur la release ; la CI peut le remplacer et ajoute les autres OS."
+}
+else {
+    Write-Host "Quand la CI est verte, l'install recupere automatiquement latest :"
+}
 Write-Host "  irm https://raw.githubusercontent.com/$repo/master/install.ps1 | iex" -ForegroundColor DarkGray
 Write-Host "  curl -sSL https://raw.githubusercontent.com/$repo/master/install.sh | PREFIX=~/.local sh" -ForegroundColor DarkGray
 

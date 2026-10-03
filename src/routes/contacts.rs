@@ -131,6 +131,37 @@ fn book_ref(account: &str, book: &str) -> String {
     }
 }
 
+async fn populate_books(
+    state: &Arc<AppState>,
+    books: &mut Vec<BookOpt>,
+    book: &str,
+) -> Vec<crate::cli::cardamum::AddressBookInfo> {
+    let Some(client) = &state.cardamum else {
+        return vec![];
+    };
+    let _permit = state.cli_limit.acquire().await.ok();
+    match client.list_all_addressbooks().await {
+        Ok(list) => {
+            for b in &list {
+                books.push(BookOpt {
+                    selected: b.id == book,
+                    id: b.id.clone(),
+                    name: b.name.clone(),
+                });
+            }
+            list
+        }
+        Err(e) => {
+            tracing::warn!("addressbooks: {e}");
+            vec![]
+        }
+    }
+}
+
+fn book_is_all(book: &str) -> bool {
+    book == "__all__" || book.is_empty()
+}
+
 async fn load_contacts(
     state: &Arc<AppState>,
     query: &str,
@@ -150,10 +181,14 @@ async fn load_contacts(
         name.to_ascii_lowercase().contains(&q) || email.to_ascii_lowercase().contains(&q)
     };
 
+    let loc = {
+        let prefs = state.prefs.lock().await;
+        crate::i18n::normalize_locale(&prefs.locale)
+    };
     let mut books = vec![BookOpt {
         id: "__all__".into(),
-        name: "Tous les carnets".into(),
-        selected: book == "__all__" || book.is_empty(),
+        name: crate::i18n::t(loc, "contacts.all_books"),
+        selected: book_is_all(book),
     }];
 
     let cache_count = {
@@ -161,7 +196,8 @@ async fn load_contacts(
         cache.contacts_count().unwrap_or(0)
     };
 
-    if !force_refresh && (book == "__all__" || book.is_empty()) && cache_count > 0 {
+    if !force_refresh && book_is_all(book) && cache_count > 0 {
+        let _ = populate_books(state, &mut books, book).await;
         let all = load_all_cached(state).await;
         let contacts: Vec<_> = all
             .into_iter()
@@ -175,26 +211,10 @@ async fn load_contacts(
         return (contacts, books, "cache".into(), None);
     }
 
-    if let Some(client) = &state.cardamum {
-        let _permit = state.cli_limit.acquire().await.ok();
-        let book_list = match client.list_all_addressbooks().await {
-            Ok(list) => {
-                for b in &list {
-                    books.push(BookOpt {
-                        selected: b.id == book,
-                        id: b.id.clone(),
-                        name: b.name.clone(),
-                    });
-                }
-                list
-            }
-            Err(e) => {
-                tracing::warn!("addressbooks: {e}");
-                vec![]
-            }
-        };
+    if state.cardamum.is_some() {
+        let book_list = populate_books(state, &mut books, book).await;
 
-        let book_refs: Vec<(Option<String>, String)> = if book == "__all__" || book.is_empty() {
+        let book_refs: Vec<(Option<String>, String)> = if book_is_all(book) {
             book_list
                 .iter()
                 .map(|b| {
@@ -211,6 +231,8 @@ async fn load_contacts(
             vec![(None, book.to_string())]
         };
 
+        let client = state.cardamum.as_ref().unwrap();
+        let _permit = state.cli_limit.acquire().await.ok();
         match client.list_contacts_from_books(&book_refs).await {
             Ok(items) if !items.is_empty() => {
                 let pairs: Vec<(String, String)> = items
@@ -233,6 +255,15 @@ async fn load_contacts(
                 return (contacts, books, "cardamum".into(), None);
             }
             Ok(_) => {
+                // Carnet précis : ne pas servir le cache global non filtré.
+                if !book_is_all(book) {
+                    return (
+                        vec![],
+                        books,
+                        "cardamum".into(),
+                        Some("Aucun contact dans ce carnet (ou carnets vides).".into()),
+                    );
+                }
                 let all = load_all_cached(state).await;
                 if !all.is_empty() {
                     let contacts: Vec<_> = all
@@ -257,6 +288,14 @@ async fn load_contacts(
                 );
             }
             Err(e) => {
+                if !book_is_all(book) {
+                    return (
+                        vec![],
+                        books,
+                        "cache".into(),
+                        Some(format!("Cardamum: {e}")),
+                    );
+                }
                 let all = load_all_cached(state).await;
                 let contacts: Vec<_> = all
                     .into_iter()

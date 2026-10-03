@@ -1,38 +1,38 @@
 <div class="rail-inner">
   <div class="rail-actions">
-    <label class="sr-only" for="account-select">Compte</label>
+    <label class="sr-only" for="account-select" data-i18n="mail.account">Compte</label>
     <form method="post" action="/account/select" class="account-form">
       <input type="hidden" name="mailbox" value="Inbox" />
-      <div class="account-select-wrap" title="Changer de compte">
+      <div class="account-select-wrap" data-i18n-title="mail.change_account" title="Changer de compte">
         <i data-lucide="circle-user" class="acct-select-ico"></i>
         <select id="account-select" name="account" class="account-select" onchange="this.form.submit()">
           {% for a in accounts %}
           <option value="{{ a.name }}" {% if a.selected %}selected{% endif %}>
-            {{ a.label }}{% if a.is_default %} · défaut{% endif %}
+            {{ a.label }}{% if a.is_default %} · {{ default_label }}{% endif %}
           </option>
           {% else %}
-          <option value="">(aucun compte)</option>
+          <option value="">{{ no_account_label }}</option>
           {% endfor %}
-          <option value="__all__" {% if all_selected %}selected{% endif %}>Tous les comptes</option>
+          <option value="__all__" {% if all_selected %}selected{% endif %}>{{ all_accounts_label }}</option>
         </select>
         <i data-lucide="chevrons-up-down" class="chev"></i>
       </div>
     </form>
-    <a class="icon-btn compose-icon-btn" href="/compose" title="Nouveau message">
+    <a class="icon-btn compose-icon-btn" href="/compose" data-i18n-title="mail.new_message" title="Nouveau message">
       <i data-lucide="pen-square"></i>
     </a>
-    <button type="button" class="icon-btn rail-compact-btn" title="Compacter la colonne"
-            aria-label="Compacter la colonne" onclick="window.HimaWeb && HimaWeb.toggleRailCompact()">
+    <button type="button" class="icon-btn rail-compact-btn" data-i18n-title="mail.compact_rail" title="Compacter la colonne"
+            data-i18n-aria="mail.compact_rail" aria-label="Compacter la colonne" onclick="window.HimaWeb && HimaWeb.toggleRailCompact()">
       <i data-lucide="panel-left-close" class="rail-compact-ico-collapse"></i>
       <i data-lucide="panel-left" class="rail-compact-ico-expand"></i>
     </button>
   </div>
 
   {% if offline %}
-  <div class="badge-offline rail-badge">Cache local</div>
+  <div class="badge-offline rail-badge" data-i18n="badge.local_cache">Cache local</div>
   {% endif %}
 
-  <nav class="folder-nav" id="folder-nav" aria-label="Dossiers" data-current="{{ current }}">
+  <nav class="folder-nav" id="folder-nav" data-i18n-aria="mail.folders" aria-label="Dossiers" data-current="{{ current }}">
     {% if show_merged_inbox %}
     <a class="folder-link folder-merged {% if merged_inbox_active %}active{% endif %}"
        href="/?mailbox=Inbox"
@@ -41,18 +41,18 @@
        hx-swap="innerHTML"
        hx-include="#mail-sort"
        hx-push-url="/?mailbox=Inbox"
-       data-label="Toutes les Inbox"
+       data-label="{{ merged_inbox_label }}"
        data-folder-icon="mails"
        data-folder-key="Inbox"
        data-account="">
       <i data-lucide="mails"></i>
-      <span class="folder-label">Toutes les Inbox</span>
+      <span class="folder-label">{{ merged_inbox_label }}</span>
       {% if merged_inbox_unread > 0 %}<span class="unread" data-unread-for="Inbox">{{ merged_inbox_unread }}</span>{% endif %}
     </a>
     {% endif %}
 
     {% if !pinned.is_empty() %}
-    <div class="folder-section-label">Épinglés</div>
+    <div class="folder-section-label" data-i18n="mail.pinned">Épinglés</div>
     {% for m in pinned %}
     <a class="folder-link {% if m.active %}active{% endif %}"
        style="{% if !m.color.is_empty() %}border-left: 3px solid {{ m.color }};{% endif %}"
@@ -85,7 +85,7 @@
         <span class="folder-ico" style="color: {{ m.color }}"><i data-lucide="{{ m.icon }}"></i></span>
         {% endif %}
         {% if m.has_children %}
-        <button type="button" class="folder-twist" data-twist="{{ m.tree_id }}" aria-label="Déplier" aria-expanded="false">
+        <button type="button" class="folder-twist" data-twist="{{ m.tree_id }}" data-i18n-aria="mail.expand" aria-label="Déplier" aria-expanded="false">
           <i data-lucide="chevron-right"></i>
         </button>
         {% else if !m.is_account_header %}
@@ -117,7 +117,7 @@
     </div>
     {% else %}
       {% if pinned.is_empty() %}
-      <p class="muted tiny">Aucun dossier</p>
+      <p class="muted tiny" data-i18n="mail.no_folders">Aucun dossier</p>
       {% endif %}
     {% endfor %}
   </nav>

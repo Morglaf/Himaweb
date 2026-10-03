@@ -55,6 +55,18 @@ struct SideWidgetTemplate {
     ai_enabled: bool,
     home_address_js: String,
     maps_provider: String,
+    show_calendar: bool,
+    show_tasks: bool,
+    show_contacts: bool,
+    has_rss: bool,
+    has_freshrss: bool,
+    plugin_panels: Vec<SidePluginPanel>,
+    matrix_url: String,
+}
+
+struct SidePluginPanel {
+    title: String,
+    html: String,
 }
 
 struct SideEventRow {
@@ -160,7 +172,10 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             name: c.name.clone(),
         })
         .collect();
-    let todos = if state.calendula_available && !cal_rows.is_empty() {
+    let todos = if prefs.side_show_tasks
+        && state.calendula_available
+        && !cal_rows.is_empty()
+    {
         let mut list =
             crate::routes::calendar::load_todos(&state, &cal_rows, "__all__").await;
         // Sidebar : tâches ouvertes d'abord, max ~8
@@ -175,6 +190,25 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         .first()
         .map(|c| c.id.clone())
         .unwrap_or_default();
+    let plugin_panels: Vec<SidePluginPanel> = crate::plugins::sidebar_panels()
+        .into_iter()
+        .map(|p| SidePluginPanel {
+            title: p.title,
+            html: p.html,
+        })
+        .collect();
+    let freshrss_ok = prefs.plugin_freshrss
+        && crate::freshrss::is_configured(
+            &prefs.freshrss_url,
+            &prefs.freshrss_user,
+            &prefs.freshrss_api_password,
+        );
+    let rss_ok = prefs.plugin_rss && !prefs.rss_feeds.is_empty();
+    let events = if prefs.side_show_calendar {
+        events
+    } else {
+        vec![]
+    };
     match (SideWidgetTemplate {
         events,
         calendars,
@@ -185,6 +219,17 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         home_address_js: serde_json::to_string(&prefs.home_address)
             .unwrap_or_else(|_| "\"\"".into()),
         maps_provider: prefs.maps_provider.clone(),
+        show_calendar: prefs.side_show_calendar,
+        show_tasks: prefs.side_show_tasks,
+        show_contacts: prefs.side_show_contacts,
+        has_rss: freshrss_ok || rss_ok,
+        has_freshrss: freshrss_ok,
+        plugin_panels,
+        matrix_url: if prefs.plugin_matrix {
+            prefs.matrix_url.clone()
+        } else {
+            String::new()
+        },
     })
     .render()
     {
@@ -248,7 +293,7 @@ async fn home(
         }
     };
     let ai_summary_btn = if prefs_snap.ai_enabled {
-        r#"<button type="button" class="icon-btn" id="inbox-ai-summary-btn" title="Résumer la boîte (IA)"
+        r#"<button type="button" class="icon-btn" id="inbox-ai-summary-btn" title="Résumer la boîte (IA)" data-i18n-title="mail.ai_summary"
                         onclick="window.HimaWeb && HimaWeb.openInboxSummary()">
                   <i data-lucide="sparkles"></i>
                 </button>"#
@@ -317,7 +362,7 @@ async fn home(
                  hx-get="/partials/sidebar?mailbox={mailbox_q}{account_q}"
                  hx-trigger="load"
                  hx-swap="innerHTML"></aside>
-          <div class="col-resizer" data-resize="rail" title="Redimensionner"></div>
+          <div class="col-resizer" data-resize="rail" title="Redimensionner" data-i18n-title="mail.resize"></div>
 
           <section class="list-pane">
             <div class="list-toolbar">
@@ -328,34 +373,35 @@ async fn home(
               <form class="mail-search" method="get" action="/search">
                 <input class="input mail-search-input" type="search" name="q"
                        placeholder="Recherche dans toutes les boîtes…"
+                       data-i18n-placeholder="mail.search_ph"
                        autocomplete="off" />
-                <button class="icon-btn" type="submit" title="Recherche">
+                <button class="icon-btn" type="submit" title="Recherche" data-i18n-title="mail.search">
                   <i data-lucide="search"></i>
                 </button>
               </form>
               <div class="toolbar-actions">
-                <label class="sr-only" for="mail-sort">Trier</label>
+                <label class="sr-only" for="mail-sort" data-i18n="mail.sort">Trier</label>
                 <select id="mail-sort" name="sort" class="select sort-select"
-                        title="Classement"
+                        title="Classement" data-i18n-title="mail.sort_by"
                         hx-get="/partials/envelopes"
                         hx-target="#envelope-list"
                         hx-swap="innerHTML"
                         hx-include="#mail-sort-ctx"
                         hx-vals='{{"page":"1"}}'
                         hx-on::before-request="HimaWeb.showListLoading()">
-                  <option value="date_desc" selected>Date ↓</option>
-                  <option value="date_asc">Date ↑</option>
-                  <option value="from_asc">De A→Z</option>
-                  <option value="from_desc">De Z→A</option>
-                  <option value="to_asc">À A→Z</option>
-                  <option value="to_desc">À Z→A</option>
+                  <option value="date_desc" selected data-i18n="mail.sort.date_desc">Date ↓</option>
+                  <option value="date_asc" data-i18n="mail.sort.date_asc">Date ↑</option>
+                  <option value="from_asc" data-i18n="mail.sort.from_asc">De A→Z</option>
+                  <option value="from_desc" data-i18n="mail.sort.from_desc">De Z→A</option>
+                  <option value="to_asc" data-i18n="mail.sort.to_asc">À A→Z</option>
+                  <option value="to_desc" data-i18n="mail.sort.to_desc">À Z→A</option>
                 </select>
                 <div id="mail-sort-ctx" hidden>
                   <input type="hidden" name="mailbox" id="current-mailbox" value="{mailbox}" />
                   <input type="hidden" name="account" id="current-account" value="{account_val}" />
                 </div>
                 {ai_summary_btn}
-                <button class="icon-btn" title="Rafraîchir"
+                <button class="icon-btn" title="Rafraîchir" data-i18n-title="common.refresh"
                         hx-get="/partials/envelopes?mailbox={mailbox_q}&page={page}{account_q}"
                         hx-target="#envelope-list" hx-swap="innerHTML"
                         hx-include="#mail-sort"
@@ -383,12 +429,12 @@ async fn home(
             </div>
           </section>
 
-          <div class="col-resizer" data-resize="list" title="Redimensionner"></div>
+          <div class="col-resizer" data-resize="list" title="Redimensionner" data-i18n-title="mail.resize"></div>
 
           <section class="read-pane" id="message-pane">
             <div class="empty-read">
               <i data-lucide="mail-open"></i>
-              <p>Sélectionnez un message</p>
+              <p data-i18n="mail.select_message">Sélectionnez un message</p>
             </div>
           </section>
           {{SIDE_WIDGET}}
@@ -398,9 +444,9 @@ async fn home(
     );
 
     let side_widget_html = if prefs_snap.side_widget {
-        r#"<div class="col-resizer" data-resize="side" title="Redimensionner"></div>
+        r#"<div class="col-resizer" data-resize="side" title="Redimensionner" data-i18n-title="mail.resize"></div>
           <aside class="side-widget" id="side-widget" data-open="1">
-            <button type="button" class="side-widget-tab" title="Aperçu" onclick="window.HimaWeb && HimaWeb.toggleSideWidget()">
+            <button type="button" class="side-widget-tab" title="Aperçu" data-i18n-title="side.preview" onclick="window.HimaWeb && HimaWeb.toggleSideWidget()">
               <i data-lucide="panel-right"></i>
             </button>
             <div class="side-widget-body"

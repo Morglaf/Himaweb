@@ -70,6 +70,21 @@ pub struct Prefs {
     /// Nombre de prochains RDV dans le panneau latéral
     #[serde(default = "default_side_events")]
     pub side_widget_events: u16,
+    #[serde(default = "default_true")]
+    pub side_show_calendar: bool,
+    #[serde(default = "default_true")]
+    pub side_show_tasks: bool,
+    #[serde(default = "default_true")]
+    pub side_show_contacts: bool,
+    /// Plugins intégrés (hors dossiers git)
+    #[serde(default = "default_true")]
+    pub plugin_ntfy: bool,
+    #[serde(default = "default_true")]
+    pub plugin_rss: bool,
+    #[serde(default = "default_true")]
+    pub plugin_freshrss: bool,
+    #[serde(default = "default_true")]
+    pub plugin_matrix: bool,
     /// Dossier de destination par défaut au déplacement (`compte` → nom dossier)
     #[serde(default)]
     pub default_move: std::collections::BTreeMap<String, String>,
@@ -159,6 +174,34 @@ pub struct Prefs {
     pub cal_account_labels: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub cal_account_icons: std::collections::BTreeMap<String, String>,
+    /// Langue UI : `fr` | `en`
+    #[serde(default = "default_locale")]
+    pub locale: String,
+    /// Flux RSS (intégrés, hors plugins git)
+    #[serde(default)]
+    pub rss_feeds: Vec<RssFeed>,
+    /// FreshRSS — URL API greader.php (ou host ; normalisé côté serveur)
+    #[serde(default)]
+    pub freshrss_url: String,
+    #[serde(default)]
+    pub freshrss_user: String,
+    /// Mot de passe API FreshRSS (pas le mot de passe web)
+    #[serde(default)]
+    pub freshrss_api_password: String,
+    /// URL client Matrix (Element, etc.) — ouverture externe
+    #[serde(default)]
+    pub matrix_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RssFeed {
+    #[serde(default)]
+    pub title: String,
+    pub url: String,
+}
+
+fn default_locale() -> String {
+    "fr".into()
 }
 
 fn default_true() -> bool {
@@ -236,6 +279,13 @@ impl Default for Prefs {
             conversations: true,
             side_widget: false,
             side_widget_events: default_side_events(),
+            side_show_calendar: true,
+            side_show_tasks: true,
+            side_show_contacts: true,
+            plugin_ntfy: true,
+            plugin_rss: true,
+            plugin_freshrss: true,
+            plugin_matrix: true,
             default_move: Default::default(),
             imap_copy_move: Default::default(),
             ui_font_scale: default_font_scale(),
@@ -268,6 +318,12 @@ impl Default for Prefs {
             cal_account_colors: Default::default(),
             cal_account_labels: Default::default(),
             cal_account_icons: Default::default(),
+            locale: default_locale(),
+            rss_feeds: vec![],
+            freshrss_url: String::new(),
+            freshrss_user: String::new(),
+            freshrss_api_password: String::new(),
+            matrix_url: String::new(),
         }
     }
 }
@@ -395,6 +451,9 @@ impl Prefs {
     }
 
     pub fn ntfy_order_keys(&self) -> Vec<String> {
+        if !self.plugin_ntfy {
+            return vec![];
+        }
         let enabled: Vec<&NtfySource> = self
             .ntfy_sources
             .iter()

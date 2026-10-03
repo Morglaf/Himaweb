@@ -46,6 +46,10 @@ struct SidebarTemplate {
     pub show_merged_inbox: bool,
     pub merged_inbox_active: bool,
     pub merged_inbox_unread: u64,
+    pub merged_inbox_label: String,
+    pub all_accounts_label: String,
+    pub default_label: String,
+    pub no_account_label: String,
     pub pinned: Vec<MailboxRow>,
     pub mailboxes: Vec<MailboxRow>,
     pub current: String,
@@ -497,12 +501,17 @@ async fn sidebar(
         }
     }
 
+    let loc = crate::i18n::normalize_locale(&prefs_snap.locale);
     render(SidebarTemplate {
         accounts,
         all_selected,
         show_merged_inbox,
         merged_inbox_active,
         merged_inbox_unread,
+        merged_inbox_label: crate::i18n::t(loc, "mail.all_inboxes"),
+        all_accounts_label: crate::i18n::t(loc, "mail.all_accounts"),
+        default_label: crate::i18n::t(loc, "mail.default"),
+        no_account_label: crate::i18n::t(loc, "mail.no_account"),
         pinned,
         mailboxes,
         current,

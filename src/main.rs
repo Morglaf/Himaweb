@@ -13,6 +13,8 @@ mod config_backup;
 mod config_fix;
 mod contacts_import;
 mod form_util;
+mod i18n;
+mod freshrss;
 mod plugins;
 mod prefs;
 mod routes;
@@ -20,6 +22,7 @@ mod sanitize;
 mod state;
 mod thunderbird;
 mod tray;
+mod updates;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

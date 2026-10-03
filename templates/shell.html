@@ -26,17 +26,17 @@
       <i data-lucide="mountain"></i>
     </a>
     <nav class="top-nav">
-      <a href="/" class="tab {% if active_tab == "mail" %}tab-active{% endif %}" title="Mail"><i data-lucide="mail"></i><span class="tab-label">Mail</span> <span id="unread-badge" class="nav-badge" hidden>0</span></a>
-      <a href="/search" class="tab {% if active_tab == "search" %}tab-active{% endif %}" title="Recherche"><i data-lucide="search"></i><span class="tab-label">Recherche</span></a>
-      <a href="/contacts" class="tab {% if active_tab == "contacts" %}tab-active{% endif %}" title="Contacts"><i data-lucide="contact"></i><span class="tab-label">Contacts</span></a>
-      <a href="/calendar" class="tab {% if active_tab == "calendar" %}tab-active{% endif %}" title="Calendrier"><i data-lucide="calendar"></i><span class="tab-label">Calendrier</span></a>
+      <a href="/" class="tab {% if active_tab == "mail" %}tab-active{% endif %}" data-i18n-title="nav.mail" title="Mail"><i data-lucide="mail"></i><span class="tab-label" data-i18n="nav.mail">Mail</span> <span id="unread-badge" class="nav-badge" hidden>0</span></a>
+      <a href="/search" class="tab {% if active_tab == "search" %}tab-active{% endif %}" data-i18n-title="nav.search" title="Recherche"><i data-lucide="search"></i><span class="tab-label" data-i18n="nav.search">Recherche</span></a>
+      <a href="/contacts" class="tab {% if active_tab == "contacts" %}tab-active{% endif %}" data-i18n-title="nav.contacts" title="Contacts"><i data-lucide="contact"></i><span class="tab-label" data-i18n="nav.contacts">Contacts</span></a>
+      <a href="/calendar" class="tab {% if active_tab == "calendar" %}tab-active{% endif %}" data-i18n-title="nav.calendar" title="Calendrier"><i data-lucide="calendar"></i><span class="tab-label" data-i18n="nav.calendar">Calendrier</span></a>
     </nav>
     <div class="top-right">
       <div class="top-status">
-        {% if offline %}<span class="badge-offline">Hors-ligne</span>{% endif %}
-        {% if !himalaya_available %}<span class="badge-warn">Himalaya absent</span>{% endif %}
+        {% if offline %}<span class="badge-offline" data-i18n="badge.offline">Hors-ligne</span>{% endif %}
+        {% if !himalaya_available %}<span class="badge-warn" data-i18n="badge.himalaya_missing">Himalaya absent</span>{% endif %}
       </div>
-      <a href="/settings" class="tab tab-settings {% if active_tab == "settings" %}tab-active{% endif %}" title="Paramètres"><i data-lucide="settings"></i><span class="tab-label">Paramètres</span></a>
+      <a href="/settings" class="tab tab-settings {% if active_tab == "settings" %}tab-active{% endif %}" data-i18n-title="nav.settings" title="Paramètres"><i data-lucide="settings"></i><span class="tab-label" data-i18n="nav.settings">Paramètres</span></a>
     </div>
   </header>
 

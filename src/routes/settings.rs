@@ -113,6 +113,13 @@ struct SettingsTemplate {
     pub conversations: bool,
     pub side_widget: bool,
     pub side_widget_events: u16,
+    pub side_show_calendar: bool,
+    pub side_show_tasks: bool,
+    pub side_show_contacts: bool,
+    pub plugin_ntfy: bool,
+    pub plugin_rss: bool,
+    pub plugin_freshrss: bool,
+    pub plugin_matrix: bool,
     pub calendula_available: bool,
     pub cardamum_available: bool,
     pub ortie_available: bool,
@@ -146,12 +153,21 @@ struct SettingsTemplate {
     pub ai_message: Option<String>,
     pub cal_color_accounts: Vec<ColorAccountRow>,
     pub backup_message: Option<String>,
+    pub locale: String,
+    pub rss_feeds_text: String,
+    pub freshrss_url: String,
+    pub freshrss_user: String,
+    pub freshrss_api_password_set: bool,
+    pub freshrss_web_url: String,
+    pub matrix_url: String,
+    pub app_version: String,
 }
 
 pub struct PluginRow {
     pub id: String,
     pub name: String,
     pub description: String,
+    pub hooks_label: String,
 }
 
 pub struct MoveDefaultRow {
@@ -581,6 +597,13 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         conversations: prefs_snap.conversations,
         side_widget: prefs_snap.side_widget,
         side_widget_events: prefs_snap.side_widget_events.clamp(1, 12),
+        side_show_calendar: prefs_snap.side_show_calendar,
+        side_show_tasks: prefs_snap.side_show_tasks,
+        side_show_contacts: prefs_snap.side_show_contacts,
+        plugin_ntfy: prefs_snap.plugin_ntfy,
+        plugin_rss: prefs_snap.plugin_rss,
+        plugin_freshrss: prefs_snap.plugin_freshrss,
+        plugin_matrix: prefs_snap.plugin_matrix,
         calendula_available: state.calendula_available,
         cardamum_available: state.cardamum_available,
         ortie_available: state.ortie_available,
@@ -596,10 +619,22 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
             .unwrap_or_else(|_| "(indisponible)".into()),
         plugins: crate::plugins::list_plugins()
             .into_iter()
-            .map(|p| PluginRow {
-                id: p.id,
-                name: p.name,
-                description: p.description,
+            .map(|p| {
+                let hooks_label = if p.hooks.is_empty() {
+                    String::new()
+                } else {
+                    p.hooks
+                        .iter()
+                        .map(|h| h.kind.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                PluginRow {
+                    id: p.id,
+                    name: p.name,
+                    description: p.description,
+                    hooks_label,
+                }
             })
             .collect(),
         plugins_message: flash.plugins_message,
@@ -626,6 +661,29 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         ai_message: flash.ai_message,
         cal_color_accounts,
         backup_message: flash.backup_message,
+        locale: crate::i18n::normalize_locale(&prefs_snap.locale).to_string(),
+        rss_feeds_text: prefs_snap
+            .rss_feeds
+            .iter()
+            .map(|f| {
+                if f.title.trim().is_empty() {
+                    f.url.clone()
+                } else {
+                    format!("{}|{}", f.title.trim(), f.url)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        matrix_url: prefs_snap.matrix_url.clone(),
+        freshrss_url: prefs_snap.freshrss_url.clone(),
+        freshrss_user: prefs_snap.freshrss_user.clone(),
+        freshrss_api_password_set: !prefs_snap.freshrss_api_password.is_empty(),
+        freshrss_web_url: if prefs_snap.freshrss_url.trim().is_empty() {
+            String::new()
+        } else {
+            crate::freshrss::web_ui_url(&prefs_snap.freshrss_url)
+        },
+        app_version: crate::updates::current_version().to_string(),
     };
 
     let content = match inner.render() {
@@ -1058,6 +1116,9 @@ pub struct NotifyForm {
     pub conversations: Option<String>,
     pub side_widget: Option<String>,
     pub side_widget_events: Option<u16>,
+    pub side_show_calendar: Option<String>,
+    pub side_show_tasks: Option<String>,
+    pub side_show_contacts: Option<String>,
     pub confirm_delete: Option<String>,
 }
 
@@ -1067,19 +1128,18 @@ async fn save_notify(
     Form(form): Form<NotifyForm>,
 ) -> impl IntoResponse {
     let quiet = headers.get("HX-Request").is_some();
+    let on = |v: &Option<String>| v.as_deref() == Some("1") || v.as_deref() == Some("on");
     {
         let mut prefs = state.prefs.lock().await;
-        prefs.notifications =
-            form.notifications.as_deref() == Some("1") || form.notifications.as_deref() == Some("on");
-        prefs.merged_inbox =
-            form.merged_inbox.as_deref() == Some("1") || form.merged_inbox.as_deref() == Some("on");
-        prefs.conversations = form.conversations.as_deref() == Some("1")
-            || form.conversations.as_deref() == Some("on");
-        prefs.side_widget =
-            form.side_widget.as_deref() == Some("1") || form.side_widget.as_deref() == Some("on");
+        prefs.notifications = on(&form.notifications);
+        prefs.merged_inbox = on(&form.merged_inbox);
+        prefs.conversations = on(&form.conversations);
+        prefs.side_widget = on(&form.side_widget);
+        prefs.side_show_calendar = on(&form.side_show_calendar);
+        prefs.side_show_tasks = on(&form.side_show_tasks);
+        prefs.side_show_contacts = on(&form.side_show_contacts);
         // Checkbox absente = décochée (formulaire autosave envoie tous les champs visibles)
-        prefs.confirm_delete = form.confirm_delete.as_deref() == Some("1")
-            || form.confirm_delete.as_deref() == Some("on");
+        prefs.confirm_delete = on(&form.confirm_delete);
         if let Some(n) = form.side_widget_events {
             prefs.side_widget_events = n.clamp(1, 12);
         }

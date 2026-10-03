@@ -5,7 +5,7 @@ use axum::extract::{Path, Query, State};
 use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::{Form, Router};
-use chrono::{Datelike, Duration, Local, NaiveDate, Weekday};
+use chrono::{Datelike, Duration, Local, NaiveDate};
 use serde::Deserialize;
 
 use crate::state::AppState;
@@ -63,6 +63,8 @@ struct CalendarTemplate {
     pub view: String,
     pub title_label: String,
     pub month_name: String,
+    pub dow: Vec<String>,
+    pub all_calendars_label: String,
     pub prev_year: i32,
     pub prev_month: u32,
     pub prev_day: u32,
@@ -148,22 +150,6 @@ pub struct EventRow {
     pub ev_json: String,
 }
 
-const MONTHS_FR: &[&str] = &[
-    "",
-    "janvier",
-    "février",
-    "mars",
-    "avril",
-    "mai",
-    "juin",
-    "juillet",
-    "août",
-    "septembre",
-    "octobre",
-    "novembre",
-    "décembre",
-];
-
 async fn calendar_page(
     State(state): State<Arc<AppState>>,
     Query(q): Query<CalQuery>,
@@ -193,15 +179,12 @@ async fn calendar_page(
         });
     }
 
-    let selected = NaiveDate::from_ymd_opt(year, month, day).unwrap_or(now);
-    let (prev, next, title_label) = nav_for_view(&view, selected);
-    let month_name = MONTHS_FR
-        .get(month as usize)
-        .copied()
-        .unwrap_or("")
-        .to_string();
-
     let prefs = state.prefs.lock().await.clone();
+    let loc = crate::i18n::normalize_locale(&prefs.locale);
+    let selected = NaiveDate::from_ymd_opt(year, month, day).unwrap_or(now);
+    let (prev, next, title_label) = nav_for_view(&view, selected, loc);
+    let month_name = crate::i18n::month_name(loc, month);
+    let dow: Vec<String> = (0..7).map(|i| crate::i18n::dow_short(loc, i)).collect();
     let events: Vec<EventRow> = events
         .into_iter()
         .map(|e| with_maps(e, &prefs.maps_provider, &prefs.home_address))
@@ -213,7 +196,7 @@ async fn calendar_page(
         vec![]
     };
     let week_days = if view == "week" {
-        build_week_cols(selected, &events)
+        build_week_cols(selected, &events, loc)
     } else {
         vec![]
     };
@@ -260,6 +243,8 @@ async fn calendar_page(
         view: view.clone(),
         title_label,
         month_name,
+        dow,
+        all_calendars_label: crate::i18n::t(loc, "cal.all_calendars"),
         prev_year: prev.year(),
         prev_month: prev.month(),
         prev_day: prev.day(),
@@ -338,14 +323,14 @@ async fn events_fragment(
     }
 }
 
-fn nav_for_view(view: &str, selected: NaiveDate) -> (NaiveDate, NaiveDate, String) {
+fn nav_for_view(view: &str, selected: NaiveDate, locale: &str) -> (NaiveDate, NaiveDate, String) {
     match view {
         "day" => {
             let label = format!(
                 "{} {} {}",
-                weekday_fr(selected.weekday()),
+                crate::i18n::weekday_name(locale, selected.weekday()),
                 selected.day(),
-                MONTHS_FR[selected.month() as usize]
+                crate::i18n::month_name(locale, selected.month())
             );
             (
                 selected - Duration::days(1),
@@ -358,11 +343,12 @@ fn nav_for_view(view: &str, selected: NaiveDate) -> (NaiveDate, NaiveDate, Strin
                 - Duration::days(selected.weekday().num_days_from_monday() as i64);
             let sunday = monday + Duration::days(6);
             let label = format!(
-                "Semaine du {} {} — {} {}",
+                "{} {} {} — {} {}",
+                crate::i18n::t(locale, "cal.week_of"),
                 monday.day(),
-                MONTHS_FR[monday.month() as usize],
+                crate::i18n::month_name(locale, monday.month()),
                 sunday.day(),
-                MONTHS_FR[sunday.month() as usize]
+                crate::i18n::month_name(locale, sunday.month())
             );
             (
                 monday - Duration::days(7),
@@ -373,7 +359,7 @@ fn nav_for_view(view: &str, selected: NaiveDate) -> (NaiveDate, NaiveDate, Strin
         _ => {
             let label = format!(
                 "{} {}",
-                MONTHS_FR[selected.month() as usize],
+                crate::i18n::month_name(locale, selected.month()),
                 selected.year()
             );
             let prev = if selected.month() == 1 {
@@ -388,18 +374,6 @@ fn nav_for_view(view: &str, selected: NaiveDate) -> (NaiveDate, NaiveDate, Strin
             };
             (prev, next, label)
         }
-    }
-}
-
-fn weekday_fr(w: Weekday) -> &'static str {
-    match w {
-        Weekday::Mon => "lundi",
-        Weekday::Tue => "mardi",
-        Weekday::Wed => "mercredi",
-        Weekday::Thu => "jeudi",
-        Weekday::Fri => "vendredi",
-        Weekday::Sat => "samedi",
-        Weekday::Sun => "dimanche",
     }
 }
 
@@ -1025,9 +999,8 @@ fn build_month_grid(year: i32, month: u32, selected_day: u32, events: &[EventRow
     cells
 }
 
-fn build_week_cols(selected: NaiveDate, events: &[EventRow]) -> Vec<WeekDayCol> {
+fn build_week_cols(selected: NaiveDate, events: &[EventRow], locale: &str) -> Vec<WeekDayCol> {
     let monday = selected - Duration::days(selected.weekday().num_days_from_monday() as i64);
-    let labels = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
     (0..7)
         .map(|i| {
             let d = monday + Duration::days(i);
@@ -1037,7 +1010,7 @@ fn build_week_cols(selected: NaiveDate, events: &[EventRow]) -> Vec<WeekDayCol> 
                 .cloned()
                 .collect();
             WeekDayCol {
-                label: format!("{} {}", labels[i as usize], d.day()),
+                label: format!("{} {}", crate::i18n::dow_short(locale, i as usize), d.day()),
                 day: d.day(),
                 month: d.month(),
                 year: d.year(),

@@ -7,18 +7,19 @@
   mapsProvider: '{{ maps_provider }}'
 })">
   <div class="side-widget-head">
-    <span>Aperçu</span>
-    <button type="button" class="icon-btn" title="Replier" onclick="window.HimaWeb && HimaWeb.toggleSideWidget(false)">
+    <span data-i18n="side.preview">Aperçu</span>
+    <button type="button" class="icon-btn" data-i18n-title="side.collapse" title="Replier" onclick="window.HimaWeb && HimaWeb.toggleSideWidget(false)">
       <i data-lucide="panel-right-close"></i>
     </button>
   </div>
 
+  {% if show_calendar %}
   <section class="side-block">
     <div class="side-block-title">
-      <i data-lucide="calendar"></i> Prochains RDV
+      <i data-lucide="calendar"></i> <span data-i18n="side.upcoming">Prochains RDV</span>
     </div>
     {% if events.is_empty() %}
-    <p class="muted tiny">Aucun événement à venir</p>
+    <p class="muted tiny" data-i18n="side.no_events">Aucun événement à venir</p>
     {% else %}
     <ul class="side-event-list">
       {% for e in events %}
@@ -29,7 +30,7 @@
         <span class="side-ev-loc muted tiny">
           <i data-lucide="map-pin"></i> {{ e.location }}
           {% if !e.maps_url.is_empty() %}
-          <a class="icon-btn" href="{{ e.maps_url }}" target="_blank" rel="noopener" title="Itinéraire"
+          <a class="icon-btn" href="{{ e.maps_url }}" target="_blank" rel="noopener" data-i18n-title="side.route" title="Itinéraire"
              onclick="event.stopPropagation()">
             <i data-lucide="route"></i>
           </a>
@@ -40,17 +41,18 @@
       {% endfor %}
     </ul>
     {% endif %}
-    <button type="button" class="btn secondary sm side-cta" @click="openCreate()" {% if calendars.is_empty() %}disabled{% endif %}>
-      Créer un RDV
-    </button>
+    <button type="button" class="btn secondary sm side-cta" @click="openCreate()" {% if calendars.is_empty() %}disabled{% endif %}
+            data-i18n="side.create_event">Créer un RDV</button>
   </section>
+  {% endif %}
 
+  {% if show_tasks %}
   <section class="side-block">
     <div class="side-block-title">
-      <i data-lucide="check-square"></i> Tâches
+      <i data-lucide="check-square"></i> <span data-i18n="side.tasks">Tâches</span>
     </div>
     {% if todos.is_empty() %}
-    <p class="muted tiny">Aucune tâche</p>
+    <p class="muted tiny" data-i18n="side.no_tasks">Aucune tâche ouverte</p>
     {% else %}
     <ul class="todo-list side-todo-list">
       {% for t in todos %}
@@ -76,7 +78,7 @@
     </ul>
     {% endif %}
     <details class="todo-create mt-2">
-      <summary class="btn secondary sm">Nouvelle tâche</summary>
+      <summary class="btn secondary sm" data-i18n="side.new_task">Nouvelle tâche</summary>
       <form method="post" action="/calendar/todo/create" class="space-y-2 mt-2"
             hx-post="/calendar/todo/create" hx-target="#htmx-sink" hx-swap="innerHTML">
         <input type="hidden" name="stay" value="1" />
@@ -85,23 +87,68 @@
           <option value="{{ c.id }}" {% if c.id == default_calendar %}selected{% endif %}>{{ c.name }}</option>
           {% endfor %}
         </select>
-        <input class="input w-full" name="summary" required placeholder="Titre…" />
+        <input class="input w-full" name="summary" required data-i18n-placeholder="side.task_title" placeholder="Titre…" />
         <input class="input w-full" type="date" name="due" />
-        <button type="submit" class="btn sm">Créer</button>
+        <button type="submit" class="btn sm" data-i18n="side.create">Créer</button>
       </form>
     </details>
   </section>
+  {% endif %}
 
+  {% if show_contacts %}
   <section class="side-block">
     <div class="side-block-title">
-      <i data-lucide="contact"></i> Contacts
+      <i data-lucide="contact"></i> <span data-i18n="side.contacts">Contacts</span>
     </div>
     <input class="input w-full" type="search" id="side-contact-q"
-           placeholder="Rechercher…" autocomplete="off"
+           data-i18n-placeholder="side.contacts_search" placeholder="Rechercher…" autocomplete="off"
            oninput="window.HimaWeb && HimaWeb.sideContactSearch(this.value)" />
     <ul class="side-contact-list" id="side-contact-results"></ul>
-    <a class="btn secondary sm side-cta" href="/contacts">Ouvrir contacts</a>
+    <a class="btn secondary sm side-cta" href="/contacts" data-i18n="side.open_contacts">Ouvrir contacts</a>
   </section>
+  {% endif %}
+
+  {% if has_rss %}
+  <section class="side-block" x-data="sideRss()" x-init="load()">
+    <div class="side-block-title">
+      <i data-lucide="rss"></i>
+      {% if has_freshrss %}
+      <span data-i18n="side.freshrss">FreshRSS</span>
+      {% else %}
+      <span data-i18n="side.rss">Flux RSS</span>
+      {% endif %}
+    </div>
+    <p class="muted tiny" x-show="busy" data-i18n="side.loading">Chargement…</p>
+    <p class="muted tiny" x-show="error" x-text="error"></p>
+    <ul class="side-rss-list" x-show="!busy">
+      <template x-for="it in items" :key="it.link + it.title">
+        <li>
+          <a :href="it.link" target="_blank" rel="noopener" x-text="it.title"></a>
+          <span class="muted tiny" x-text="it.feed"></span>
+        </li>
+      </template>
+    </ul>
+    <a class="btn secondary sm side-cta" href="/settings#plugins" data-i18n="side.configure">Configurer</a>
+  </section>
+  {% endif %}
+
+  {% for panel in plugin_panels %}
+  <section class="side-block plugin-panel">
+    <div class="side-block-title">
+      <i data-lucide="puzzle"></i> {{ panel.title }}
+    </div>
+    <div class="plugin-panel-body">{{ panel.html|safe }}</div>
+  </section>
+  {% endfor %}
+
+  {% if !matrix_url.is_empty() %}
+  <section class="side-block">
+    <div class="side-block-title">
+      <i data-lucide="messages-square"></i> <span data-i18n="side.matrix">Matrix</span>
+    </div>
+    <a class="btn secondary sm side-cta" href="{{ matrix_url }}" target="_blank" rel="noopener" data-i18n="side.open_matrix">Ouvrir le client</a>
+  </section>
+  {% endif %}
 
   <div class="modal-backdrop" x-show="modalOpen" x-cloak
        @keydown.escape.window="modalOpen && closeModal()"
@@ -109,7 +156,7 @@
     <div class="modal-panel event-modal-panel" role="dialog" aria-modal="true" @click.stop>
       <div class="modal-head">
         <h2 class="font-display text-xl compose-title" x-text="displayTitle"></h2>
-        <button type="button" class="icon-btn" @click="closeModal()" title="Fermer"><i data-lucide="x"></i></button>
+        <button type="button" class="icon-btn" @click="closeModal()" data-i18n-title="common.close" title="Fermer"><i data-lucide="x"></i></button>
       </div>
 
       <form method="post" action="/calendar/create" class="compose-form event-form"
@@ -162,7 +209,7 @@
           <div class="cal-location-row grow">
             <input class="input grow" name="location" x-model="location" placeholder="Adresse ou lieu…" />
             <a class="icon-btn" x-show="mapsLink()" x-cloak :href="mapsLink()" target="_blank" rel="noopener"
-               title="Itinéraire / temps de trajet">
+               data-i18n-title="side.route" title="Itinéraire / temps de trajet">
               <i data-lucide="route"></i>
             </a>
           </div>
@@ -183,10 +230,14 @@
                     placeholder="Description…"></textarea>
         </div>
         <div class="btn-row compose-actions">
-          <button type="submit" class="btn" :disabled="busy">Créer</button>
-          <button type="button" class="btn ghost" @click="closeModal()">Annuler</button>
+          <button type="submit" class="btn" :disabled="busy" data-i18n="side.create">Créer</button>
+          <button type="button" class="btn ghost" @click="closeModal()" data-i18n="common.cancel">Annuler</button>
         </div>
       </form>
     </div>
   </div>
 </div>
+<script>
+  if (window.lucide) lucide.createIcons();
+  if (window.HimaWeb && HimaWeb.applyI18n) HimaWeb.applyI18n(document.querySelector('.side-widget-inner'));
+</script>

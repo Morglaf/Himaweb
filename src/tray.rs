@@ -36,6 +36,7 @@ fn run_tray(url: String) -> Result<(), String> {
     let icon = make_icon().map_err(|e| e.to_string())?;
 
     let open_item = MenuItem::with_id("open", "Ouvrir HimaWeb", true, None);
+    let updates_item = MenuItem::with_id("updates", "Vérifier les mises à jour", true, None);
     let autostart_item = CheckMenuItem::with_id(
         "autostart",
         "Lancer au démarrage",
@@ -48,6 +49,7 @@ fn run_tray(url: String) -> Result<(), String> {
 
     let menu = Menu::new();
     menu.append(&open_item).map_err(|e| e.to_string())?;
+    menu.append(&updates_item).map_err(|e| e.to_string())?;
     menu.append(&PredefinedMenuItem::separator())
         .map_err(|e| e.to_string())?;
     menu.append(&autostart_item).map_err(|e| e.to_string())?;
@@ -80,6 +82,10 @@ fn run_tray(url: String) -> Result<(), String> {
             match event.id.0.as_str() {
                 "open" => {
                     let _ = open::that(url.as_str());
+                }
+                "updates" => {
+                    let u = format!("{}/settings#updates", url.trim_end_matches('/'));
+                    let _ = open::that(u);
                 }
                 "autostart" => {
                     let next = !is_autostart_enabled();

@@ -1,150 +1,176 @@
 <section class="settings-page">
-  <h1 class="font-display text-2xl mb-4">Paramètres</h1>
+  <h1 class="font-display text-2xl mb-4" data-i18n="settings.title">Paramètres</h1>
 
   <div class="settings-layout">
     <nav class="settings-nav" aria-label="Sections">
-      <a href="#apparence">Apparence</a>
-      <a href="#accounts">Mail</a>
-      <a href="#folders">Dossiers</a>
-      <a href="#contacts">Contacts</a>
-      <a href="#calendar">Calendrier</a>
-      <a href="#sync">Sync &amp; OAuth</a>
-      <a href="#plugins">Plugins</a>
-      <a href="#ai">IA</a>
-      <a href="#backup">Sauvegarde</a>
+      <a href="#apparence" data-i18n="settings.nav.apparence">Apparence</a>
+      <a href="#accounts" data-i18n="settings.nav.mail">Mail</a>
+      <a href="#folders" data-i18n="settings.nav.folders">Dossiers</a>
+      <a href="#contacts" data-i18n="settings.nav.contacts">Contacts</a>
+      <a href="#calendar" data-i18n="settings.nav.calendar">Calendrier</a>
+      <a href="#sync" data-i18n="settings.nav.sync">Sync &amp; OAuth</a>
+      <a href="#plugins" data-i18n="settings.nav.plugins">Plugins</a>
+      <a href="#ai" data-i18n="settings.nav.ai">IA</a>
+      <a href="#updates" data-i18n="settings.nav.updates">Mises à jour</a>
+      <a href="#backup" data-i18n="settings.nav.backup">Sauvegarde</a>
     </nav>
 
     <div class="settings-grid">
-      <p class="settings-group-label settings-span" id="apparence">Apparence</p>
+      <p class="settings-group-label settings-span" id="apparence" data-i18n="settings.group.apparence">Apparence</p>
       <section class="settings-card">
-        <h2>Thème et disposition</h2>
+        <h2 data-i18n="settings.theme_layout">Thème et disposition</h2>
         <form method="post" action="/settings/ui" class="settings-autosave"
               hx-post="/settings/ui" hx-trigger="change delay:200ms" hx-swap="none"
               hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event); const m=this.querySelector('[name=topbar_mode]'); if(m) document.documentElement.dataset.topbar=m.value; const th=this.querySelector('[name=theme]'); if(th) document.documentElement.dataset.theme=th.value; const lay=this.querySelector('[name=layout]'); if(lay) document.documentElement.dataset.layout=lay.value;">
           <label class="settings-row">
-            <span class="label">Thème</span>
+            <span class="label" data-i18n="settings.theme">Thème</span>
             <select name="theme" class="select w-full">
-              <option value="light" {% if theme == "light" %}selected{% endif %}>Clair</option>
-              <option value="dark" {% if theme == "dark" %}selected{% endif %}>Sombre</option>
+              <option value="light" {% if theme == "light" %}selected{% endif %} data-i18n="settings.theme.light">Clair</option>
+              <option value="dark" {% if theme == "dark" %}selected{% endif %} data-i18n="settings.theme.dark">Sombre</option>
             </select>
           </label>
           <label class="settings-row">
-            <span class="label">Disposition mail</span>
+            <span class="label" data-i18n="settings.layout">Disposition mail</span>
             <select name="layout" class="select w-full">
-              <option value="classic" {% if layout == "classic" %}selected{% endif %}>Classique (3 colonnes)</option>
-              <option value="compact" {% if layout == "compact" %}selected{% endif %}>Compacte</option>
-              <option value="wide-read" {% if layout == "wide-read" %}selected{% endif %}>Lecture large</option>
+              <option value="classic" {% if layout == "classic" %}selected{% endif %} data-i18n="settings.layout.classic">Classique (3 colonnes)</option>
+              <option value="compact" {% if layout == "compact" %}selected{% endif %} data-i18n="settings.layout.compact">Compacte</option>
+              <option value="wide-read" {% if layout == "wide-read" %}selected{% endif %} data-i18n="settings.layout.wide">Lecture large</option>
             </select>
           </label>
           <label class="settings-row">
-            <span class="label">Barre du haut</span>
+            <span class="label" data-i18n="settings.topbar">Barre du haut</span>
             <select name="topbar_mode" class="select w-full">
-              <option value="icon-text" {% if topbar_mode == "icon-text" %}selected{% endif %}>Icône et texte</option>
-              <option value="icon" {% if topbar_mode == "icon" %}selected{% endif %}>Icône seule</option>
-              <option value="text" {% if topbar_mode == "text" %}selected{% endif %}>Texte seul</option>
+              <option value="icon-text" {% if topbar_mode == "icon-text" %}selected{% endif %} data-i18n="settings.icon_text" data-i18n="settings.icon_text">Icône et texte</option>
+              <option value="icon" {% if topbar_mode == "icon" %}selected{% endif %} data-i18n="settings.icon_only" data-i18n="settings.icon_only">Icône seule</option>
+              <option value="text" {% if topbar_mode == "text" %}selected{% endif %} data-i18n="settings.text_only" data-i18n="settings.text_only">Texte seul</option>
             </select>
           </label>
           <label class="settings-row">
-            <span class="label">Barre d’outils rédaction</span>
+            <span class="label" data-i18n="settings.compose_toolbar">Barre d’outils rédaction</span>
             <select name="compose_toolbar_mode" class="select w-full">
-              <option value="icon-text" {% if compose_toolbar_mode == "icon-text" %}selected{% endif %}>Icône et texte</option>
-              <option value="icon" {% if compose_toolbar_mode == "icon" %}selected{% endif %}>Icône seule</option>
-              <option value="text" {% if compose_toolbar_mode == "text" %}selected{% endif %}>Texte seul</option>
+              <option value="icon-text" {% if compose_toolbar_mode == "icon-text" %}selected{% endif %} data-i18n="settings.icon_text">Icône et texte</option>
+              <option value="icon" {% if compose_toolbar_mode == "icon" %}selected{% endif %} data-i18n="settings.icon_only">Icône seule</option>
+              <option value="text" {% if compose_toolbar_mode == "text" %}selected{% endif %} data-i18n="settings.text_only">Texte seul</option>
             </select>
           </label>
           <label class="settings-row">
-            <span class="label" data-ui-label="ui_font_scale">Taille du texte ({{ ui_font_scale }})</span>
+            <span class="label" data-ui-label="ui_font_scale" data-i18n-base="settings.font_scale">Taille du texte ({{ ui_font_scale }})</span>
             <input class="input w-full" type="range" name="ui_font_scale" min="0.8" max="1.4" step="0.05" value="{{ ui_font_scale }}" />
           </label>
           <label class="settings-row">
-            <span class="label" data-ui-label="ui_radius">Coins arrondis ({{ ui_radius }} px)</span>
+            <span class="label" data-ui-label="ui_radius" data-i18n-base="settings.radius">Coins arrondis ({{ ui_radius }} px)</span>
             <input class="input w-full" type="range" name="ui_radius" min="0" max="28" step="1" value="{{ ui_radius }}" />
           </label>
           <label class="settings-row">
-            <span class="label" data-ui-label="ui_space">Densité / marges ({{ ui_space }})</span>
+            <span class="label" data-ui-label="ui_space" data-i18n-base="settings.space">Densité / marges ({{ ui_space }})</span>
             <input class="input w-full" type="range" name="ui_space" min="0.75" max="1.4" step="0.05" value="{{ ui_space }}" />
           </label>
           <div class="ui-preview" aria-hidden="true">
-            <span class="ui-preview-title">Aperçu</span>
+            <span class="ui-preview-title" data-i18n="settings.preview">Aperçu</span>
             <div class="ui-preview-row">
-              <button type="button" class="btn primary" tabindex="-1">Bouton</button>
-              <button type="button" class="btn secondary" tabindex="-1">Secondaire</button>
-              <input class="input" type="text" value="Champ texte" readonly tabindex="-1" />
+              <button type="button" class="btn primary" tabindex="-1" data-i18n="settings.btn">Bouton</button>
+              <button type="button" class="btn secondary" tabindex="-1" data-i18n="settings.btn_secondary">Secondaire</button>
+              <input class="input" type="text" data-i18n-value="settings.text_field" value="Champ texte" readonly tabindex="-1" />
             </div>
-            <div class="ui-preview-card">
+            <div class="ui-preview-card" data-i18n="settings.preview_card">
               Carte / panneau — la rondeur et les marges suivent les curseurs.
             </div>
           </div>
           <div class="settings-grid" style="grid-template-columns:1fr 1fr;gap:0.75rem">
             <label class="settings-row">
-              <span class="label">Colonne dossiers (px)</span>
+              <span class="label" data-i18n="settings.col_rail">Colonne dossiers (px)</span>
               <input class="input w-full" type="number" name="ui_rail" min="160" max="420" value="{{ ui_rail }}" />
             </label>
             <label class="settings-row">
-              <span class="label">Colonne liste (px)</span>
+              <span class="label" data-i18n="settings.col_list">Colonne liste (px)</span>
               <input class="input w-full" type="number" name="ui_list" min="240" max="560" value="{{ ui_list }}" />
             </label>
           </div>
           <label class="toggle-row">
-            <span>Ouvrir le navigateur au démarrage</span>
+            <span data-i18n="settings.open_browser">Ouvrir le navigateur au démarrage</span>
             <input class="toggle" type="checkbox" name="open_browser_on_start" value="1" {% if open_browser_on_start %}checked{% endif %} />
           </label>
-          <p class="muted tiny">Enregistré automatiquement. Vous pouvez aussi glisser les séparateurs dans Mail.</p>
-          <p class="settings-saved muted tiny" hidden>Enregistré</p>
+          <p class="muted tiny" data-i18n="settings.autosave_hint">Enregistré automatiquement. Vous pouvez aussi glisser les séparateurs dans Mail.</p>
+          <p class="settings-saved muted tiny" hidden data-i18n="settings.saved">Enregistré</p>
+        </form>
+        <form method="post" action="/settings/locale" class="mt-3"
+              onsubmit="try{localStorage.setItem('himaweb-locale', this.locale.value);}catch(_){}">
+          <label class="settings-row">
+            <span class="label" data-i18n="settings.language">Langue de l’interface</span>
+            <div class="btn-row" style="flex:1;gap:0.5rem;align-items:center">
+              <select name="locale" class="select" style="flex:1">
+                <option value="fr" {% if locale == "fr" %}selected{% endif %}>Français</option>
+                <option value="en" {% if locale == "en" %}selected{% endif %}>English</option>
+              </select>
+              <button type="submit" class="btn secondary" data-i18n="settings.language.apply">Appliquer</button>
+            </div>
+          </label>
         </form>
       </section>
 
       <section class="settings-card" id="mail-prefs">
-        <h2>Mail &amp; affichage</h2>
+        <h2 data-i18n="settings.mail_display">Mail &amp; affichage</h2>
         <p class="muted text-sm mb-3">
-          Notifications, conversations et panneau latéral.
+          <span data-i18n="settings.mail_display_hint">Notifications, conversations et panneau latéral.</span>
         </p>
         <form method="post" action="/settings/notify" class="settings-autosave"
               hx-post="/settings/notify" hx-trigger="change delay:200ms" hx-swap="none"
               hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
           <label class="toggle-row">
-            <span>Notifications navigateur pour nouveaux non-lus</span>
+            <span data-i18n="settings.notifications">Notifications navigateur pour nouveaux non-lus</span>
             <input class="toggle" type="checkbox" name="notifications" value="1" {% if notifications %}checked{% endif %} />
           </label>
           <label class="toggle-row">
-            <span>Demander confirmation avant suppression de messages</span>
+            <span data-i18n="settings.confirm_delete">Demander confirmation avant suppression de messages</span>
             <input class="toggle" type="checkbox" name="confirm_delete" value="1" {% if confirm_delete %}checked{% endif %} />
           </label>
           <label class="toggle-row">
-            <span>Afficher « Toutes les Inbox » en tête (mode tous les comptes)</span>
+            <span data-i18n="settings.merged_inbox">Afficher « Toutes les Inbox » en tête (mode tous les comptes)</span>
             <input class="toggle" type="checkbox" name="merged_inbox" value="1" {% if merged_inbox %}checked{% endif %} />
           </label>
           <label class="toggle-row">
-            <span>Afficher les mails en conversations (groupés)</span>
+            <span data-i18n="settings.conversations">Afficher les mails en conversations (groupés)</span>
             <input class="toggle" type="checkbox" name="conversations" value="1" {% if conversations %}checked{% endif %} />
           </label>
           <label class="toggle-row">
-            <span>Panneau latéral (prochains RDV + contacts)</span>
+            <span data-i18n="settings.side_widget">Panneau latéral</span>
             <input class="toggle" type="checkbox" name="side_widget" value="1" {% if side_widget %}checked{% endif %} />
           </label>
-          <label class="settings-row">
-            <span class="label" data-ui-label="side_widget_events">Nombre de RDV affichés ({{ side_widget_events }})</span>
-            <input class="input w-full" type="range" name="side_widget_events" min="1" max="12" step="1" value="{{ side_widget_events }}"
-                   oninput="const l=this.form.querySelector('[data-ui-label=side_widget_events]'); if(l) l.textContent='Nombre de RDV affichés ('+this.value+')'" />
+          <label class="toggle-row">
+            <span data-i18n="settings.side_calendar">Afficher le calendrier (prochains RDV)</span>
+            <input class="toggle" type="checkbox" name="side_show_calendar" value="1" {% if side_show_calendar %}checked{% endif %} />
           </label>
-          <p class="settings-saved muted tiny" hidden>Enregistré</p>
+          <label class="toggle-row">
+            <span data-i18n="settings.side_tasks">Afficher les tâches</span>
+            <input class="toggle" type="checkbox" name="side_show_tasks" value="1" {% if side_show_tasks %}checked{% endif %} />
+          </label>
+          <label class="toggle-row">
+            <span data-i18n="settings.side_contacts">Afficher les contacts</span>
+            <input class="toggle" type="checkbox" name="side_show_contacts" value="1" {% if side_show_contacts %}checked{% endif %} />
+          </label>
+          <label class="settings-row">
+            <span class="label" data-ui-label="side_widget_events"><span data-i18n="settings.side_events_count">Nombre de RDV affichés</span> ({{ side_widget_events }})</span>
+            <input class="input w-full" type="range" name="side_widget_events" min="1" max="12" step="1" value="{{ side_widget_events }}"
+                   oninput="const l=this.form.querySelector('[data-ui-label=side_widget_events]'); if(l){const t=(window.HimaWeb&&HimaWeb.t('settings.side_events_count'))||'Nombre de RDV affichés'; l.textContent=t+' ('+this.value+')'}" />
+          </label>
+          <p class="settings-saved muted tiny" hidden data-i18n="settings.saved">Enregistré</p>
         </form>
       </section>
 
-      <p class="settings-group-label settings-span" id="accounts">Mail</p>
+      <p class="settings-group-label settings-span" id="accounts" data-i18n="settings.group.mail">Mail</p>
       <section class="settings-card settings-span" id="accounts-layout"
                x-data="accountOrderList(JSON.parse(document.getElementById('acct-order-boot').textContent))">
         <script type="application/json" id="acct-order-boot">{{ rail_order_boot|safe }}</script>
-        <h2>Comptes — actif &amp; ordre</h2>
+        <h2 data-i18n="settings.accounts_order">Comptes — actif &amp; ordre</h2>
         <p class="muted text-sm mb-3">
-          Config : <code>{{ config_path }}</code>
-          {% if config_exists %}<span class="ok"> (présent)</span>{% else %}<span class="badge-warn"> absent</span>{% endif %}
-          · Glisser pour réordonner · cliquer pour choisir le compte affiché.
+          <span data-i18n="settings.config">Config</span> : <code>{{ config_path }}</code>
+          {% if config_exists %}<span class="ok" data-i18n="settings.present"> (présent)</span>{% else %}<span class="badge-warn" data-i18n="settings.absent"> absent</span>{% endif %}
+          · <span data-i18n="settings.drag_reorder">Glisser pour réordonner · cliquer pour choisir le compte affiché.</span>
         </p>
 
         {% if !config_exists %}
         <div class="error-banner mb-3">
-          Aucun compte. Importez Thunderbird ci-dessous, ou lancez :
+          <span data-i18n="settings.no_accounts_banner">Aucun compte. Importez Thunderbird ci-dessous, ou lancez :</span>
           <code>himalaya configure</code>
         </div>
         {% endif %}
@@ -152,18 +178,18 @@
         <form method="post" action="/settings/accounts/layout" class="space-y-3"
               @submit="syncHidden()">
           <label class="toggle-row">
-            <span>Fusionner les boîtes NTFY en une seule entrée</span>
+            <span data-i18n="settings.merge_ntfy">Fusionner les boîtes NTFY en une seule entrée</span>
             <input class="toggle" type="checkbox" value="1"
                    x-model="ntfyMerged" @change="rebuildNtfySlots()" />
           </label>
 
-          <div class="acct-active-picks" role="radiogroup" aria-label="Compte actif">
+          <div class="acct-active-picks" role="radiogroup" aria-label="Compte actif" data-i18n-aria="settings.active_account">
             <button type="button" class="acct-active-chip"
                     :class="{ 'is-on': selected === '__all__' }"
-                    @click="selected = '__all__'">Tous les comptes</button>
+                    @click="selected = '__all__'" data-i18n="settings.all_accounts">Tous les comptes</button>
             <button type="button" class="acct-active-chip"
                     :class="{ 'is-on': selected === '' }"
-                    @click="selected = ''">Défaut Himalaya</button>
+                    @click="selected = ''" data-i18n="settings.himalaya_default">Défaut Himalaya</button>
           </div>
 
           <ul class="acct-order-list" @dragover.prevent>
@@ -176,7 +202,7 @@
                   @drop.prevent="onDrop(idx)"
                   @dragend="onDragEnd()"
                   @click="selected = item.id">
-                <span class="acct-order-grip" title="Glisser" aria-hidden="true">
+                <span class="acct-order-grip" data-i18n-title="settings.drag" title="Glisser" aria-hidden="true">
                   <i data-lucide="grip-vertical"></i>
                 </span>
                 <span class="acct-order-ico" :style="{ color: item.color }">
@@ -186,23 +212,23 @@
                   <strong x-text="item.label"></strong>
                   <span class="muted tiny" x-text="item.kind === 'ntfy' ? 'NTFY' : item.id"></span>
                 </span>
-                <span class="acct-order-badge" x-show="selected === item.id">actif</span>
+                <span class="acct-order-badge" x-show="selected === item.id" data-i18n="settings.active">actif</span>
               </li>
             </template>
           </ul>
-          <p class="muted tiny" x-show="!items.length">Aucun compte à ordonner.</p>
+          <p class="muted tiny" x-show="!items.length" data-i18n="settings.no_accounts_order">Aucun compte à ordonner.</p>
 
           <input type="hidden" name="account" :value="selected" />
           <input type="hidden" name="order" :value="orderValue" />
           <input type="hidden" name="ntfy_merged" :value="ntfyMerged ? '1' : '0'" />
-          <button type="submit" class="btn">Enregistrer l’ordre et le compte actif</button>
+          <button type="submit" class="btn" data-i18n="settings.save_order">Enregistrer l’ordre et le compte actif</button>
         </form>
       </section>
 
       <section class="settings-card settings-span">
-        <h2>Apparence des comptes</h2>
+        <h2 data-i18n="settings.accounts_look">Apparence des comptes</h2>
         <form method="post" action="/settings/account/colors" class="space-y-3">
-          <p class="muted tiny mb-2">Nom affiché + icône Lucide + couleur (mail et NTFY). Le nom technique reste inchangé en coulisses.</p>
+          <p class="muted tiny mb-2" data-i18n="settings.look_hint">Nom affiché + icône Lucide + couleur (mail et NTFY). Le nom technique reste inchangé en coulisses.</p>
           <div class="color-accounts">
             {% for a in color_accounts %}
             <div class="acct-identity-row"
@@ -216,7 +242,7 @@
                 </button>
                 <div class="icon-picker-panel" x-show="open" x-cloak
                      @click.outside="open = false" @keydown.escape.window="open = false">
-                  <input type="search" class="input w-full" placeholder="Rechercher une icône Lucide…"
+                  <input type="search" class="input w-full" data-i18n-placeholder="settings.search_icon" placeholder="Rechercher une icône Lucide…"
                          x-model="q" @input.debounce.80ms="filter()" />
                   <div class="icon-picker-grid">
                     <template x-for="name in shown" :key="name">
@@ -231,109 +257,109 @@
                 </div>
               </div>
               <input type="color" name="color" :value="color"
-                     @input="color = $event.target.value" title="Couleur" />
+                     @input="color = $event.target.value" data-i18n-title="settings.color" title="Couleur" />
               <input class="input" type="text" name="label" value="{{ a.label }}"
-                     placeholder="{{ a.name }}" title="Nom affiché" />
+                     placeholder="{{ a.name }}" data-i18n-title="settings.display_name" title="Nom affiché" />
               <span class="muted tiny acct-tech-name">
                 {% if a.kind == "ntfy" %}<span class="acct-kind-badge">NTFY</span>{% endif %}
                 {{ a.name }}
               </span>
               {% if a.kind == "mail" %}
               <label class="block acct-ai-preprompt" style="grid-column: 1 / -1">
-                <span class="label">Préprompt IA (propriétaire / style)</span>
+                <span class="label" data-i18n="settings.ai_preprompt_account">Préprompt IA (propriétaire / style)</span>
                 <textarea class="input w-full" name="ai_preprompt" rows="2"
-                          placeholder="Ex. : Je suis …, je signe …, ton …">{{ a.ai_preprompt }}</textarea>
+                          data-i18n-placeholder="settings.ai_preprompt_ph" placeholder="Ex. : Je suis …, je signe …, ton …">{{ a.ai_preprompt }}</textarea>
               </label>
               {% else %}
               <input type="hidden" name="ai_preprompt" value="" />
               {% endif %}
             </div>
             {% else %}
-            <p class="muted tiny">Aucun compte.</p>
+            <p class="muted tiny" data-i18n="settings.no_account">Aucun compte.</p>
             {% endfor %}
           </div>
-          <button type="submit" class="btn secondary">Enregistrer l’apparence</button>
+          <button type="submit" class="btn secondary" data-i18n="settings.save_look">Enregistrer l’apparence</button>
         </form>
       </section>
 
       <section class="settings-card settings-span" id="edit-accounts">
-        <h2>Modifier un compte</h2>
-        <p class="muted text-sm mb-3">Modifie directement <code>config.toml</code> Himalaya — laissez un mot de passe vide pour ne pas le changer.</p>
+        <h2 data-i18n="settings.edit_account">Modifier un compte</h2>
+        <p class="muted text-sm mb-3"><span data-i18n="settings.edit_hint">Modifie directement config.toml Himalaya — laissez un mot de passe vide pour ne pas le changer.</span></p>
 
         {% if editable.is_empty() %}
-        <p class="muted">Aucun compte éditable — importez Thunderbird ou créez un config.toml.</p>
+        <p class="muted" data-i18n="settings.no_editable">Aucun compte éditable — importez Thunderbird ou créez un config.toml.</p>
         {% else %}
           {% for a in editable %}
           <details class="account-edit" {% if loop.first %}open{% endif %}>
             <summary>
               <strong>{{ a.name }}</strong>
-              {% if a.is_default %}<span class="muted tiny">défaut</span>{% endif %}
+              {% if a.is_default %}<span class="muted tiny" data-i18n="settings.default">défaut</span>{% endif %}
               <span class="muted tiny">{{ a.email }}</span>
             </summary>
             <form method="post" action="/settings/account/edit" class="account-edit-form space-y-3" id="acct-edit-{{ loop.index }}">
               <input type="hidden" name="name" value="{{ a.name }}" />
               <div class="form-row">
                 <label class="block">
-                  <span class="label">Email</span>
+                  <span class="label" data-i18n="settings.email">Email</span>
                   <input class="input w-full" name="email" value="{{ a.email }}" />
                 </label>
                 <label class="block">
-                  <span class="label">Nom affiché</span>
+                  <span class="label" data-i18n="settings.display_name">Nom affiché</span>
                   <input class="input w-full" name="display_name" value="{{ a.display_name }}" />
                 </label>
               </div>
               <div class="form-row">
                 <label class="block">
-                  <span class="label">IMAP serveur</span>
+                  <span class="label" data-i18n="settings.imap_server">IMAP serveur</span>
                   <input class="input w-full" name="imap_server" value="{{ a.imap_server }}" />
                 </label>
                 <label class="block">
-                  <span class="label">IMAP utilisateur</span>
+                  <span class="label" data-i18n="settings.imap_user">IMAP utilisateur</span>
                   <input class="input w-full" name="imap_user" value="{{ a.imap_user }}" />
                 </label>
                 <label class="block">
-                  <span class="label">IMAP mot de passe{% if a.has_imap_password %} <span class="ok">(défini)</span>{% endif %}</span>
-                  <input class="input w-full" type="password" name="imap_password" autocomplete="new-password" placeholder="Laisser vide pour ne pas changer" />
+                  <span class="label"><span data-i18n="settings.imap_pass">IMAP mot de passe</span>{% if a.has_imap_password %} <span class="ok" data-i18n="settings.defined">(défini)</span>{% endif %}</span>
+                  <input class="input w-full" type="password" name="imap_password" autocomplete="new-password" data-i18n-placeholder="settings.leave_blank" placeholder="Laisser vide pour ne pas changer" />
                 </label>
               </div>
               <div class="form-row">
                 <label class="block">
-                  <span class="label">SMTP serveur</span>
+                  <span class="label" data-i18n="settings.smtp_server">SMTP serveur</span>
                   <input class="input w-full" name="smtp_server" value="{{ a.smtp_server }}" />
                 </label>
                 <label class="block">
-                  <span class="label">SMTP utilisateur</span>
+                  <span class="label" data-i18n="settings.smtp_user">SMTP utilisateur</span>
                   <input class="input w-full" name="smtp_user" value="{{ a.smtp_user }}" />
                 </label>
                 <label class="block">
-                  <span class="label">SMTP mot de passe{% if a.has_smtp_password %} <span class="ok">(défini)</span>{% endif %}</span>
+                  <span class="label"><span data-i18n="settings.smtp_pass">SMTP mot de passe</span>{% if a.has_smtp_password %} <span class="ok" data-i18n="settings.defined">(défini)</span>{% endif %}</span>
                   <input class="input w-full" type="password" name="smtp_password" autocomplete="new-password" placeholder="Laisser vide pour ne pas changer" />
                 </label>
               </div>
-              <p class="muted tiny">Alias de dossiers (noms IMAP) — la poubelle est requise pour supprimer un message</p>
+              <p class="muted tiny" data-i18n="settings.folder_aliases">Alias de dossiers (noms IMAP) — la poubelle est requise pour supprimer un message</p>
               <div class="form-row">
                 <label class="block">
-                  <span class="label">Poubelle</span>
+                  <span class="label" data-i18n="settings.trash">Poubelle</span>
                   <select class="select w-full" name="trash_alias">
-                    <option value="">(non défini)</option>
+                    <option value="" data-i18n="settings.undefined">(non défini)</option>
                     {% for m in a.mailboxes %}
                     <option value="{{ m.name }}" {% if m.is_trash %}selected{% endif %}>{{ m.name }}</option>
                     {% endfor %}
                   </select>
                 </label>
                 <label class="block">
-                  <span class="label">Envoyés</span>
+                  <span class="label" data-i18n="settings.sent">Envoyés</span>
                   <select class="select w-full" name="sent_alias">
-                    <option value="">(non défini)</option>
+                    <option value="" data-i18n="settings.undefined">(non défini)</option>
                     {% for m in a.mailboxes %}
                     <option value="{{ m.name }}" {% if m.is_sent %}selected{% endif %}>{{ m.name }}</option>
                     {% endfor %}
                   </select>
                 </label>
                 <label class="block">
-                  <span class="label">Brouillons</span>
+                  <span class="label" data-i18n="settings.drafts">Brouillons</span>
                   <select class="select w-full" name="drafts_alias">
-                    <option value="">(non défini)</option>
+                    <option value="" data-i18n="settings.undefined">(non défini)</option>
                     {% for m in a.mailboxes %}
                     <option value="{{ m.name }}" {% if m.is_drafts %}selected{% endif %}>{{ m.name }}</option>
                     {% endfor %}
@@ -341,21 +367,21 @@
                 </label>
               </div>
               <label class="toggle-row">
-                <span>Compte par défaut</span>
+                <span data-i18n="settings.default_account">Compte par défaut</span>
                 <input class="toggle" type="checkbox" name="make_default" value="1" {% if a.is_default %}checked{% endif %} />
               </label>
               <label class="toggle-row" title="Pour les serveurs IMAP qui refusent UID MOVE (ex. EHESS / rosa.ehess.fr)">
-                <span>Déplacer / archiver / supprimer via COPY (pas de UID MOVE)</span>
+                <span data-i18n="settings.copy_move">Déplacer / archiver / supprimer via COPY (pas de UID MOVE)</span>
                 <input class="toggle" type="checkbox" name="copy_move" value="1" {% if a.copy_move %}checked{% endif %} />
               </label>
-              <p class="muted tiny">À activer si les déplacements échouent avec « command not permitted with UID ».</p>
+              <p class="muted tiny" data-i18n="settings.copy_move_hint">À activer si les déplacements échouent avec « command not permitted with UID ».</p>
             </form>
             <div class="account-actions-row">
-              <button type="submit" class="btn" form="acct-edit-{{ loop.index }}">Enregistrer</button>
+              <button type="submit" class="btn" form="acct-edit-{{ loop.index }}" data-i18n="common.save">Enregistrer</button>
               <form method="post" action="/settings/account/delete"
                     onsubmit="return confirm('Supprimer le compte {{ a.name }} ?');">
                 <input type="hidden" name="name" value="{{ a.name }}" />
-                <button type="submit" class="btn secondary">Supprimer le compte</button>
+                <button type="submit" class="btn secondary" data-i18n="settings.delete_account">Supprimer le compte</button>
               </form>
             </div>
           </details>
@@ -368,19 +394,19 @@
       </section>
 
       <section class="settings-card settings-span" id="folders">
-        <h2>Dossiers — épingler / masquer / surveiller</h2>
-        <p class="muted text-sm mb-3">
+        <h2 data-i18n="settings.folders_title">Dossiers — épingler / masquer / surveiller</h2>
+        <p class="muted text-sm mb-3" data-i18n="settings.folders_hint">
           Épinglés en tête · non-système dans « Plus » · Masquer retire des menus.
           Surveiller active le compteur / notifications (par défaut : toutes les Inbox si rien n’est coché).
         </p>
 
         {% if folder_groups.is_empty() %}
-        <p class="muted">Aucun dossier listé (compte / config requis).</p>
+        <p class="muted" data-i18n="settings.no_folders_listed">Aucun dossier listé (compte / config requis).</p>
         {% else %}
         <div class="folder-groups">
           {% for g in folder_groups %}
           <details class="folder-account">
-            <summary>{% if g.account == "__ntfy__" %}Ntfy{% else %}{{ g.account }}{% endif %} <span class="muted tiny">({{ g.folders.len() }} dossiers)</span></summary>
+            <summary>{% if g.account == "__ntfy__" %}Ntfy{% else %}{{ g.account }}{% endif %} <span class="muted tiny">({{ g.folders.len() }} <span data-i18n="settings.n_folders">dossiers</span>)</span></summary>
             <form method="post" action="/settings/folders" class="settings-autosave folder-pref-form"
                   hx-post="/settings/folders" hx-trigger="change" hx-swap="none"
                   hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
@@ -389,34 +415,34 @@
               <div class="folder-pref-row">
                 <code class="folder-pref-name">{{ f.label }}</code>
                 <label class="toggle-mini" title="Épingler">
-                  <span>Épingler</span>
+                  <span data-i18n="settings.pin">Épingler</span>
                   <input class="toggle" type="checkbox" name="pinned" value="{{ f.key }}" {% if f.pinned %}checked{% endif %} />
                 </label>
                 <label class="toggle-mini" title="Masquer">
-                  <span>Masquer</span>
+                  <span data-i18n="settings.hide">Masquer</span>
                   <input class="toggle" type="checkbox" name="hidden" value="{{ f.key }}" {% if f.hidden %}checked{% endif %} />
                 </label>
                 <label class="toggle-mini" title="Surveiller (badge sur le dossier)">
-                  <span>Surveiller</span>
+                  <span data-i18n="settings.watch">Surveiller</span>
                   <input class="toggle" type="checkbox" name="watched" value="{{ f.key }}" {% if f.watched %}checked{% endif %} />
                 </label>
                 <label class="toggle-mini" title="Inclure dans le badge non-lus de la barre du haut">
-                  <span>Total</span>
+                  <span data-i18n="settings.total">Total</span>
                   <input class="toggle" type="checkbox" name="count_total" value="{{ f.key }}" {% if f.count_in_total %}checked{% endif %} />
                 </label>
               </div>
               {% endfor %}
-              <p class="settings-saved muted tiny" hidden>Enregistré</p>
+              <p class="settings-saved muted tiny" hidden data-i18n="settings.saved">Enregistré</p>
             </form>
           </details>
           {% endfor %}
         </div>
         {% endif %}
 
-        <h3 class="settings-subhead">Destination par défaut (déplacer)</h3>
-        <p class="muted tiny mb-3">Pré-sélectionné dans le menu « Déplacer » pour chaque compte.</p>
+        <h3 class="settings-subhead" data-i18n="settings.move_default">Destination par défaut (déplacer)</h3>
+        <p class="muted tiny mb-3" data-i18n="settings.move_default_hint">Pré-sélectionné dans le menu « Déplacer » pour chaque compte.</p>
         {% if move_defaults.is_empty() %}
-        <p class="muted tiny">Aucun compte.</p>
+        <p class="muted tiny" data-i18n="settings.no_account">Aucun compte.</p>
         {% else %}
         <form method="post" action="/settings/move-defaults" class="settings-autosave"
               hx-post="/settings/move-defaults" hx-trigger="change delay:200ms" hx-swap="none"
@@ -426,30 +452,30 @@
             <span class="label" title="{{ d.account }}">{{ d.account_label }}</span>
             <input type="hidden" name="account" value="{{ d.account }}" />
             <select name="folder" class="select">
-              <option value="">(aucun)</option>
+              <option value="" data-i18n="settings.none">(aucun)</option>
               {% for o in d.options %}
               <option value="{{ o.name }}" {% if o.selected %}selected{% endif %}>{{ o.name }}</option>
               {% endfor %}
             </select>
           </div>
           {% endfor %}
-          <p class="settings-saved muted tiny" hidden>Enregistré</p>
+          <p class="settings-saved muted tiny" hidden data-i18n="settings.saved">Enregistré</p>
         </form>
         {% endif %}
       </section>
 
       <section class="settings-card settings-span" id="thunderbird-mail" x-data="tbImportForm()">
-        <h2>Import Thunderbird (mail)</h2>
-        <p class="muted text-sm mb-3">
-          Lit <code>prefs.js</code> (IMAP/SMTP). Les mots de passe ne sont pas importés.
+        <h2 data-i18n="settings.tb_import">Import Thunderbird (mail)</h2>
+        <p class="muted text-sm mb-3" data-i18n="settings.tb_import_hint">
+          Lit prefs.js (IMAP/SMTP). Les mots de passe ne sont pas importés.
         </p>
 
         {% if thunderbird_profiles.is_empty() %}
-        <p class="muted">Aucun profil Thunderbird trouvé.</p>
+        <p class="muted" data-i18n="settings.no_tb_profile">Aucun profil Thunderbird trouvé.</p>
         {% else %}
         <form method="post" action="/settings/thunderbird/import" class="compose-form">
           <label class="settings-row">
-            <span class="label">Profil</span>
+            <span class="label" data-i18n="settings.profile">Profil</span>
             <select name="profile" class="select w-full" x-model="profile" @change="loadAccounts()">
               {% for p in thunderbird_profiles %}
               <option value="{{ p }}">{{ p }}</option>
@@ -457,7 +483,7 @@
             </select>
           </label>
           <div class="settings-row">
-            <span class="label">Comptes à importer</span>
+            <span class="label" data-i18n="settings.accounts_to_import">Comptes à importer</span>
             <p class="muted tiny" x-show="loading">Chargement…</p>
             <p class="muted tiny" x-show="error" x-text="error"></p>
             <ul class="tb-account-list" x-show="!loading && accounts.length">
@@ -474,15 +500,15 @@
               </template>
             </ul>
             <div class="btn-row" x-show="accounts.length">
-              <button type="button" class="linkish" @click="selected = accounts.map(a => a.name)">Tout</button>
-              <button type="button" class="linkish" @click="selected = []">Aucun</button>
+              <button type="button" class="linkish" @click="selected = accounts.map(a => a.name)" data-i18n="settings.all">Tout</button>
+              <button type="button" class="linkish" @click="selected = []" data-i18n="settings.none_btn">Aucun</button>
             </div>
           </div>
           <label class="toggle-row">
-            <span>Ajouter au <code>config.toml</code> existant (fusion, Gmail → Ortie OAuth si dispo)</span>
+            <span data-i18n="settings.tb_merge">Ajouter au config.toml existant (fusion, Gmail → Ortie OAuth si dispo)</span>
             <input class="toggle" type="checkbox" name="write" value="1" />
           </label>
-          <button type="submit" class="btn" :disabled="!selected.length">Importer / prévisualiser</button>
+          <button type="submit" class="btn" :disabled="!selected.length" data-i18n="settings.import_preview">Importer / prévisualiser</button>
         </form>
         {% endif %}
 
@@ -494,23 +520,23 @@
         {% endif %}
       </section>
 
-      <p class="settings-group-label settings-span" id="contacts">Contacts</p>
+      <p class="settings-group-label settings-span" id="contacts" data-i18n="settings.group.contacts">Contacts</p>
       <section class="settings-card settings-span">
-        <h2>Contacts (Cardamum)</h2>
+        <h2 data-i18n="settings.contacts_cardamum">Contacts (Cardamum)</h2>
         <p class="muted text-sm mb-3">
-          Config : <code>{{ cardamum_path }}</code>
-          {% if cardamum_exists %}<span class="ok"> (présent)</span>{% else %}<span class="badge-warn"> absent</span>{% endif %}
-          {% if !cardamum_available %}<span class="badge-warn"> — binaire cardamum introuvable</span>{% endif %}
+          <span data-i18n="settings.config">Config</span> : <code>{{ cardamum_path }}</code>
+          {% if cardamum_exists %}<span class="ok" data-i18n="settings.present"> (présent)</span>{% else %}<span class="badge-warn" data-i18n="settings.absent"> absent</span>{% endif %}
+          {% if !cardamum_available %}<span class="badge-warn" data-i18n="settings.binary_missing"> — binaire cardamum introuvable</span>{% endif %}
         </p>
-        <p class="muted text-sm mb-3">
-          Importez les carnets CardDAV Thunderbird, et/ou chargez les contacts locaux (<code>abook*.sqlite</code>)
+        <p class="muted text-sm mb-3" data-i18n="settings.contacts_import_hint">
+          Importez les carnets CardDAV Thunderbird, et/ou chargez les contacts locaux (abook*.sqlite)
           dans le cache pour l’autocomplete — sans mot de passe.
         </p>
 
         {% if !thunderbird_profiles.is_empty() %}
         <form method="post" action="/settings/contacts/import" class="space-y-3 mb-4">
           <label class="block">
-            <span class="label">Profil Thunderbird</span>
+            <span class="label" data-i18n="settings.tb_profile">Profil Thunderbird</span>
             <select name="profile" class="select w-full">
               {% for p in thunderbird_profiles %}
               <option value="{{ p }}">{{ p }}</option>
@@ -518,73 +544,73 @@
             </select>
           </label>
           <label class="toggle-row">
-            <span>Écrire / écraser <code>cardamum/config.toml</code></span>
+            <span data-i18n="settings.write_cardamum">Écrire / écraser cardamum/config.toml</span>
             <input class="toggle" type="checkbox" name="write_cardamum" value="1" />
           </label>
           <label class="toggle-row">
-            <span>Importer contacts locaux (abook) vers le cache autocomplete</span>
+            <span data-i18n="settings.import_local_abook">Importer contacts locaux (abook) vers le cache autocomplete</span>
             <input class="toggle" type="checkbox" name="import_local" value="1" checked />
           </label>
-          <button type="submit" class="btn">Importer contacts</button>
+          <button type="submit" class="btn" data-i18n="settings.import_contacts">Importer contacts</button>
         </form>
         {% endif %}
 
         {% if !cardamum_accounts.is_empty() %}
-        <h3 class="settings-subhead">Mots de passe CardDAV</h3>
+        <h3 class="settings-subhead" data-i18n="settings.carddav_passwords">Mots de passe CardDAV</h3>
         {% for a in cardamum_accounts %}
         <div class="account-edit mb-2">
           <div class="form-row" style="align-items:end">
             <div>
               <strong>{{ a.name }}</strong>
-              {% if a.is_default %}<span class="muted tiny">défaut</span>{% endif %}
-              {% if a.has_password %}<span class="ok tiny">mdp défini</span>{% else %}<span class="badge-warn tiny">mdp manquant</span>{% endif %}
+              {% if a.is_default %}<span class="muted tiny" data-i18n="settings.default">défaut</span>{% endif %}
+              {% if a.has_password %}<span class="ok tiny" data-i18n="settings.pwd_set">mdp défini</span>{% else %}<span class="badge-warn tiny" data-i18n="settings.pwd_missing">mdp manquant</span>{% endif %}
               <div class="muted tiny">{{ a.username }} · {{ a.uri }}</div>
             </div>
             <form method="post" action="/settings/contacts/password" class="creds-actions-row" style="flex:1;align-items:end">
               <input type="hidden" name="name" value="{{ a.name }}" />
               <label class="block" style="flex:1;min-width:10rem">
-                <span class="label">Nouveau mot de passe</span>
+                <span class="label" data-i18n="settings.new_password">Nouveau mot de passe</span>
                 <input class="input w-full" type="password" name="password" autocomplete="new-password" required />
               </label>
-              <button type="submit" class="btn secondary">Enregistrer</button>
+              <button type="submit" class="btn secondary" data-i18n="common.save">Enregistrer</button>
             </form>
             <form method="post" action="/settings/contacts/delete"
                   onsubmit="return confirm('Supprimer le carnet {{ a.name }} ?');">
               <input type="hidden" name="name" value="{{ a.name }}" />
-              <button type="submit" class="btn secondary">Supprimer</button>
+              <button type="submit" class="btn secondary" data-i18n="common.delete">Supprimer</button>
             </form>
           </div>
         </div>
         {% endfor %}
         {% endif %}
 
-        <h3 class="settings-subhead">Ajouter un compte CardDAV</h3>
+        <h3 class="settings-subhead" data-i18n="settings.add_carddav">Ajouter un compte CardDAV</h3>
         <form method="post" action="/settings/contacts/add" class="space-y-3">
           <div class="form-row">
             <label class="block">
-              <span class="label">Nom</span>
+              <span class="label" data-i18n="settings.name">Nom</span>
               <input class="input w-full" name="name" required placeholder="perso" />
             </label>
             <label class="block">
-              <span class="label">URL (home ou serveur)</span>
+              <span class="label" data-i18n="settings.url_home">URL (home ou serveur)</span>
               <input class="input w-full" name="uri" required placeholder="https://mail.exemple.com/SOGo/dav/user@domaine/Contacts/personal/" />
             </label>
           </div>
           <div class="form-row">
             <label class="block">
-              <span class="label">Utilisateur</span>
+              <span class="label" data-i18n="settings.username">Utilisateur</span>
               <input class="input w-full" name="username" required />
             </label>
             <label class="block">
-              <span class="label">Mot de passe</span>
+              <span class="label" data-i18n="settings.password">Mot de passe</span>
               <input class="input w-full" type="password" name="password" required autocomplete="new-password" />
             </label>
           </div>
           <label class="toggle-row">
-            <span>Compte contacts par défaut</span>
+            <span data-i18n="settings.default_contacts">Compte contacts par défaut</span>
             <input class="toggle" type="checkbox" name="make_default" value="1" checked />
           </label>
-          <button type="submit" class="btn">Enregistrer CardDAV</button>
+          <button type="submit" class="btn" data-i18n="settings.save_carddav">Enregistrer CardDAV</button>
         </form>
 
         {% if let Some(msg) = contacts_message %}
@@ -595,15 +621,15 @@
         {% endif %}
       </section>
 
-      <p class="settings-group-label settings-span" id="calendar">Calendrier</p>
+      <p class="settings-group-label settings-span" id="calendar" data-i18n="settings.group.calendar">Calendrier</p>
       <section class="settings-card settings-span">
-        <h2>Calendrier (Calendula)</h2>
+        <h2 data-i18n="settings.calendar_calendula">Calendrier (Calendula)</h2>
         <p class="muted text-sm mb-3">
-          Config : <code>{{ calendula_path }}</code>
-          {% if calendula_exists %}<span class="ok"> (présent)</span>{% else %}<span class="badge-warn"> absent</span>{% endif %}
-          {% if !calendula_available %}<span class="badge-warn"> — binaire calendula introuvable</span>{% endif %}
+          <span data-i18n="settings.config">Config</span> : <code>{{ calendula_path }}</code>
+          {% if calendula_exists %}<span class="ok" data-i18n="settings.present"> (présent)</span>{% else %}<span class="badge-warn" data-i18n="settings.absent"> absent</span>{% endif %}
+          {% if !calendula_available %}<span class="badge-warn" data-i18n="settings.binary_missing_cal"> — binaire calendula introuvable</span>{% endif %}
         </p>
-        <p class="muted text-sm mb-3">
+        <p class="muted text-sm mb-3" data-i18n="settings.cal_import_hint">
           Thunderbird n’exporte souvent qu’un agenda local (« storage »). S’il n’y a pas de CalDAV,
           ajoutez un compte manuellement ou générez une proposition depuis les comptes mail.
         </p>
@@ -611,7 +637,7 @@
         {% if !thunderbird_profiles.is_empty() %}
         <form method="post" action="/settings/calendar/import" class="space-y-3 mb-4">
           <label class="block">
-            <span class="label">Profil Thunderbird</span>
+            <span class="label" data-i18n="settings.tb_profile">Profil Thunderbird</span>
             <select name="profile" class="select w-full">
               {% for p in thunderbird_profiles %}
               <option value="{{ p }}">{{ p }}</option>
@@ -619,73 +645,73 @@
             </select>
           </label>
           <label class="toggle-row">
-            <span>Proposer CalDAV depuis les comptes mail (si pas de CalDAV dans TB)</span>
+            <span data-i18n="settings.propose_caldav">Proposer CalDAV depuis les comptes mail (si pas de CalDAV dans TB)</span>
             <input class="toggle" type="checkbox" name="from_mail" value="1" />
           </label>
           <label class="toggle-row">
-            <span>Écrire / écraser <code>calendula/config.toml</code></span>
+            <span data-i18n="settings.write_calendula">Écrire / écraser calendula/config.toml</span>
             <input class="toggle" type="checkbox" name="write" value="1" />
           </label>
-          <button type="submit" class="btn">Importer agendas / prévisualiser</button>
+          <button type="submit" class="btn" data-i18n="settings.import_calendars">Importer agendas / prévisualiser</button>
         </form>
         {% endif %}
 
         {% if !calendula_accounts.is_empty() %}
-        <h3 class="settings-subhead">Mots de passe CalDAV</h3>
+        <h3 class="settings-subhead" data-i18n="settings.caldav_passwords">Mots de passe CalDAV</h3>
         {% for a in calendula_accounts %}
         <div class="account-edit mb-2">
           <div class="form-row" style="align-items:end">
             <div>
               <strong>{{ a.name }}</strong>
-              {% if a.is_default %}<span class="muted tiny">défaut</span>{% endif %}
-              {% if a.has_password %}<span class="ok tiny">mdp défini</span>{% else %}<span class="badge-warn tiny">mdp manquant</span>{% endif %}
+              {% if a.is_default %}<span class="muted tiny" data-i18n="settings.default">défaut</span>{% endif %}
+              {% if a.has_password %}<span class="ok tiny" data-i18n="settings.pwd_set">mdp défini</span>{% else %}<span class="badge-warn tiny" data-i18n="settings.pwd_missing">mdp manquant</span>{% endif %}
               <div class="muted tiny">{{ a.username }} · {{ a.server }}</div>
             </div>
             <form method="post" action="/settings/calendar/password" class="creds-actions-row" style="flex:1;align-items:end">
               <input type="hidden" name="name" value="{{ a.name }}" />
               <label class="block" style="flex:1;min-width:10rem">
-                <span class="label">Nouveau mot de passe</span>
+                <span class="label" data-i18n="settings.new_password">Nouveau mot de passe</span>
                 <input class="input w-full" type="password" name="password" autocomplete="new-password" required />
               </label>
-              <button type="submit" class="btn secondary">Enregistrer</button>
+              <button type="submit" class="btn secondary" data-i18n="common.save">Enregistrer</button>
             </form>
             <form method="post" action="/settings/calendar/delete"
                   onsubmit="return confirm('Supprimer le calendrier {{ a.name }} ?');">
               <input type="hidden" name="name" value="{{ a.name }}" />
-              <button type="submit" class="btn secondary">Supprimer</button>
+              <button type="submit" class="btn secondary" data-i18n="common.delete">Supprimer</button>
             </form>
           </div>
         </div>
         {% endfor %}
         {% endif %}
 
-        <h3 class="settings-subhead">Ajouter un compte CalDAV</h3>
+        <h3 class="settings-subhead" data-i18n="settings.add_caldav">Ajouter un compte CalDAV</h3>
         <form method="post" action="/settings/calendar/add" class="space-y-3">
           <div class="form-row">
             <label class="block">
-              <span class="label">Nom</span>
+              <span class="label" data-i18n="settings.name">Nom</span>
               <input class="input w-full" name="name" required placeholder="perso" />
             </label>
             <label class="block">
-              <span class="label">URL serveur</span>
+              <span class="label" data-i18n="settings.server_url">URL serveur</span>
               <input class="input w-full" name="server" required placeholder="https://mail.exemple.com/SOGo/dav/user@domaine/Calendar/" />
             </label>
           </div>
           <div class="form-row">
             <label class="block">
-              <span class="label">Utilisateur</span>
+              <span class="label" data-i18n="settings.username">Utilisateur</span>
               <input class="input w-full" name="username" required />
             </label>
             <label class="block">
-              <span class="label">Mot de passe</span>
+              <span class="label" data-i18n="settings.password">Mot de passe</span>
               <input class="input w-full" type="password" name="password" required autocomplete="new-password" />
             </label>
           </div>
           <label class="toggle-row">
-            <span>Compte calendrier par défaut</span>
+            <span data-i18n="settings.default_calendar_acct">Compte calendrier par défaut</span>
             <input class="toggle" type="checkbox" name="make_default" value="1" checked />
           </label>
-          <button type="submit" class="btn">Enregistrer CalDAV</button>
+          <button type="submit" class="btn" data-i18n="settings.save_caldav">Enregistrer CalDAV</button>
         </form>
 
         {% if let Some(msg) = calendar_message %}
@@ -697,8 +723,8 @@
       </section>
 
       <section class="settings-card settings-span" id="cal-appearance">
-        <h2>Apparence des agendas</h2>
-        <p class="muted tiny mb-2">Nom affiché + icône Lucide + couleur pour chaque compte Calendula.</p>
+        <h2 data-i18n="settings.cal_look">Apparence des agendas</h2>
+        <p class="muted tiny mb-2" data-i18n="settings.cal_look_hint">Nom affiché + icône Lucide + couleur pour chaque compte Calendula.</p>
         <form method="post" action="/settings/calendar/colors" class="space-y-3">
           <div class="color-accounts">
             {% for a in cal_color_accounts %}
@@ -713,7 +739,7 @@
                 </button>
                 <div class="icon-picker-panel" x-show="open" x-cloak
                      @click.outside="open = false" @keydown.escape.window="open = false">
-                  <input type="search" class="input w-full" placeholder="Rechercher une icône…"
+                  <input type="search" class="input w-full" data-i18n-placeholder="settings.search_icon_short" placeholder="Rechercher une icône…"
                          x-model="q" @input.debounce.80ms="filter()" />
                   <div class="icon-picker-grid">
                     <template x-for="name in shown" :key="name">
@@ -733,29 +759,29 @@
               <span class="muted tiny acct-tech-name">{{ a.name }}</span>
             </div>
             {% else %}
-            <p class="muted tiny">Aucun compte Calendula.</p>
+            <p class="muted tiny" data-i18n="settings.no_calendula">Aucun compte Calendula.</p>
             {% endfor %}
           </div>
-          <button type="submit" class="btn secondary">Enregistrer l’apparence agendas</button>
+          <button type="submit" class="btn secondary" data-i18n="settings.save_cal_look">Enregistrer l’apparence agendas</button>
         </form>
       </section>
 
-      <p class="settings-group-label settings-span" id="sync">Sync &amp; OAuth</p>
+      <p class="settings-group-label settings-span" id="sync" data-i18n="settings.group.sync">Sync &amp; OAuth</p>
       <section class="settings-card" id="gmail">
-        <h2>Gmail / Ortie</h2>
-        <p class="muted text-sm mb-2">
+        <h2 data-i18n="settings.gmail_ortie">Gmail / Ortie</h2>
+        <p class="muted text-sm mb-2" data-i18n="settings.ortie_hint">
           Après import Thunderbird d’un Gmail, HimaWeb prépare Himalaya (oauthbearer) + Ortie.
-          Lancez ensuite OAuth avec le <strong>nom de compte Himalaya</strong> (ex. <code>myaccount-gmail-com</code>).
+          Lancez ensuite OAuth avec le nom de compte Himalaya (ex. myaccount-gmail-com).
         </p>
         <p class="muted tiny mb-3">
-          Ortie : {% if ortie_available %}<span class="ok">disponible</span>{% else %}<span class="badge-warn">binaire introuvable</span>{% endif %}
+          <span data-i18n="settings.ortie_label">Ortie :</span> {% if ortie_available %}<span class="ok" data-i18n="settings.available">disponible</span>{% else %}<span class="badge-warn" data-i18n="settings.bin_missing">binaire introuvable</span>{% endif %}
         </p>
         <form method="post" action="/settings/ortie/auth" class="space-y-3">
           <label class="block">
-            <span class="label">Compte Ortie (= nom Himalaya)</span>
+            <span class="label" data-i18n="settings.ortie_account">Compte Ortie (= nom Himalaya)</span>
             <input class="input w-full" name="account" placeholder="myaccount-gmail-com" {% if !ortie_available %}disabled{% endif %} />
           </label>
-          <button type="submit" class="btn" {% if !ortie_available %}disabled{% endif %}>Lancer OAuth Ortie</button>
+          <button type="submit" class="btn" {% if !ortie_available %}disabled{% endif %} data-i18n="settings.ortie_oauth">Lancer OAuth Ortie</button>
         </form>
         {% if let Some(msg) = ortie_message %}
         <div class="offline-strip mt-3">{{ msg }}</div>
@@ -763,17 +789,17 @@
       </section>
 
       <section class="settings-card">
-        <h2>Neverest — sync mail</h2>
-        <p class="muted text-sm mb-2">Synchronisation / backup via Neverest (CLI Pimalaya).</p>
+        <h2 data-i18n="settings.neverest">Neverest — sync mail</h2>
+        <p class="muted text-sm mb-2" data-i18n="settings.neverest_hint">Synchronisation / backup via Neverest (CLI Pimalaya).</p>
         <p class="muted tiny mb-3">
-          Neverest : {% if neverest_available %}<span class="ok">disponible</span>{% else %}<span class="badge-warn">binaire introuvable</span>{% endif %}
+          <span data-i18n="settings.neverest_label">Neverest :</span> {% if neverest_available %}<span class="ok" data-i18n="settings.available">disponible</span>{% else %}<span class="badge-warn" data-i18n="settings.bin_missing">binaire introuvable</span>{% endif %}
         </p>
         <form method="post" action="/settings/neverest/sync" class="space-y-3">
           <label class="block">
-            <span class="label">Compte (optionnel)</span>
-            <input class="input w-full" name="account" placeholder="(défaut)" {% if !neverest_available %}disabled{% endif %} />
+            <span class="label" data-i18n="settings.account_optional">Compte (optionnel)</span>
+            <input class="input w-full" name="account" data-i18n-placeholder="settings.default_ph" placeholder="(défaut)" {% if !neverest_available %}disabled{% endif %} />
           </label>
-          <button type="submit" class="btn" {% if !neverest_available %}disabled{% endif %}>Lancer une sync</button>
+          <button type="submit" class="btn" {% if !neverest_available %}disabled{% endif %} data-i18n="settings.run_sync">Lancer une sync</button>
         </form>
         {% if let Some(msg) = neverest_message %}
         <div class="offline-strip mt-3">{{ msg }}</div>
@@ -781,41 +807,70 @@
       </section>
 
       <section class="settings-card settings-span">
-        <h2>Mirador — watch</h2>
-        <p class="muted text-sm mb-2">
+        <h2 data-i18n="settings.mirador">Mirador — watch</h2>
+        <p class="muted text-sm mb-2" data-i18n="settings.mirador_hint">
           Watch des boîtes pour badges live. Sans Mirador, HimaWeb conserve le poll navigateur (~60 s).
         </p>
         <p class="muted tiny mb-3">
-          Mirador : {% if mirador_available %}<span class="ok">disponible</span>{% else %}<span class="badge-warn">binaire introuvable — poll actif</span>{% endif %}
+          <span data-i18n="settings.mirador_label">Mirador :</span> {% if mirador_available %}<span class="ok" data-i18n="settings.available">disponible</span>{% else %}<span class="badge-warn" data-i18n="settings.bin_poll">binaire introuvable — poll actif</span>{% endif %}
         </p>
         <form method="post" action="/settings/mirador/watch" class="space-y-3">
           <label class="toggle-row">
-            <span>Activer le watch Mirador (complète le poll)</span>
+            <span data-i18n="settings.mirador_enable">Activer le watch Mirador (complète le poll)</span>
             <input class="toggle" type="checkbox" name="enabled" value="1" {% if mirador_enabled %}checked{% endif %} {% if !mirador_available %}disabled{% endif %} />
           </label>
-          <button type="submit" class="btn secondary" {% if !mirador_available %}disabled{% endif %}>Enregistrer</button>
+          <button type="submit" class="btn secondary" {% if !mirador_available %}disabled{% endif %} data-i18n="common.save">Enregistrer</button>
         </form>
         {% if let Some(msg) = mirador_message %}
         <div class="offline-strip mt-3">{{ msg }}</div>
         {% endif %}
       </section>
 
-      <p class="settings-group-label settings-span" id="plugins">Plugins</p>
+      <p class="settings-group-label settings-span" id="plugins" data-i18n="settings.group.plugins">Plugins</p>
       <section class="settings-card settings-span">
-        <h2>Store de plugins</h2>
+        <h2 data-i18n="plugins.builtin">Plugins intégrés</h2>
+        <p class="muted text-sm mb-3" data-i18n="plugins.builtin_hint">
+          Activez ou désactivez les intégrations embarquées. La config (URL, clés) est conservée.
+        </p>
+        <form method="post" action="/settings/builtin-plugins" class="space-y-2 mb-4 settings-autosave"
+              hx-post="/settings/builtin-plugins" hx-trigger="change delay:200ms" hx-swap="none"
+              hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
+          <label class="toggle-row">
+            <span data-i18n="plugins.enable_ntfy">NTFY (notifications push)</span>
+            <input class="toggle" type="checkbox" name="plugin_ntfy" value="1" {% if plugin_ntfy %}checked{% endif %} />
+          </label>
+          <label class="toggle-row">
+            <span data-i18n="plugins.enable_freshrss">FreshRSS</span>
+            <input class="toggle" type="checkbox" name="plugin_freshrss" value="1" {% if plugin_freshrss %}checked{% endif %} />
+          </label>
+          <label class="toggle-row">
+            <span data-i18n="plugins.enable_rss">Flux RSS locaux</span>
+            <input class="toggle" type="checkbox" name="plugin_rss" value="1" {% if plugin_rss %}checked{% endif %} />
+          </label>
+          <label class="toggle-row">
+            <span data-i18n="plugins.enable_matrix">Matrix</span>
+            <input class="toggle" type="checkbox" name="plugin_matrix" value="1" {% if plugin_matrix %}checked{% endif %} />
+          </label>
+          <p class="settings-saved muted tiny" hidden data-i18n="settings.saved">Enregistré</p>
+        </form>
+
+        <h2 data-i18n="plugins.store">Store de plugins (git)</h2>
+        <p class="muted text-sm mb-3" data-i18n="plugins.store_hint">
+          Dossier vide = aucun plugin git installé (normal). Les fonctions intégrées ci-dessus ne sont pas des fichiers dans ce dossier.
+        </p>
         <p class="muted text-sm mb-3">
-          Plugins installés depuis un dépôt git sous <code>{{ plugins_dir }}</code>.
-          Manifest attendu : <code>himaweb-plugin.toml</code> (name, description, hooks).
+          <span data-i18n="settings.plugins_git_hint">Plugins installés depuis un dépôt git sous</span> <code>{{ plugins_dir }}</code>.
+          <span data-i18n="settings.plugins_manifest">Manifest attendu : himaweb-plugin.toml (name, description, hooks).</span>
         </p>
         <form method="post" action="/settings/plugins/install" class="space-y-3 mb-4">
           <label class="block">
-            <span class="label">URL git du plugin</span>
+            <span class="label" data-i18n="settings.plugin_git_url">URL git du plugin</span>
             <input class="input w-full" name="repo" required placeholder="https://github.com/exemple/himaweb-ntfy.git" />
           </label>
-          <button type="submit" class="btn">Installer / mettre à jour</button>
+          <button type="submit" class="btn" data-i18n="settings.plugin_install">Installer / mettre à jour</button>
         </form>
         {% if plugins.is_empty() %}
-        <p class="muted">Aucun plugin installé.</p>
+        <p class="muted" data-i18n="settings.no_plugins">Aucun plugin installé.</p>
         {% else %}
         <ul class="plugin-list">
           {% for p in plugins %}
@@ -823,12 +878,12 @@
             <div>
               <strong>{{ p.name }}</strong>
               <div class="muted tiny">{{ p.description }}</div>
-              <div class="muted tiny"><code>{{ p.id }}</code></div>
+              <div class="muted tiny"><code>{{ p.id }}</code>{% if !p.hooks_label.is_empty() %} · hooks : {{ p.hooks_label }}{% endif %}</div>
             </div>
             <form method="post" action="/settings/plugins/remove"
                   onsubmit="return confirm('Retirer {{ p.name }} ?');">
               <input type="hidden" name="id" value="{{ p.id }}" />
-              <button type="submit" class="btn secondary">Retirer</button>
+              <button type="submit" class="btn secondary" data-i18n="settings.remove">Retirer</button>
             </form>
           </li>
           {% endfor %}
@@ -838,10 +893,10 @@
         <div class="offline-strip mt-3">{{ msg }}</div>
         {% endif %}
 
-        <h3 class="settings-subhead">Plugin NTFY (intégré)</h3>
-        <p class="muted text-sm mb-2">
+        <h3 class="settings-subhead" data-i18n="settings.ntfy_plugin">Plugin NTFY (intégré)</h3>
+        <p class="muted text-sm mb-2" data-i18n="settings.ntfy_hint">
           Push hors navigateur + boîtes virtuelles dans la barre latérale.
-          Fusion / ordre : section <a href="#accounts">Comptes</a>. Apparence : même section.
+          Fusion / ordre : section Comptes. Apparence : même section.
         </p>
 
         {% if !ntfy_sources.is_empty() %}
@@ -851,25 +906,25 @@
             <form method="post" action="/settings/ntfy/update" class="ntfy-source-row">
               <input type="hidden" name="id" value="{{ s.id }}" />
               <label class="toggle-row" style="margin:0">
-                <span class="muted tiny">Actif</span>
+                <span class="muted tiny" data-i18n="settings.enabled">Actif</span>
                 <input class="toggle" type="checkbox" name="enabled" value="1" {% if s.enabled %}checked{% endif %} />
               </label>
               <label class="block" style="min-width:8rem;flex:1">
-                <span class="label">Serveur</span>
+                <span class="label" data-i18n="settings.server">Serveur</span>
                 <input class="input w-full" name="server" value="{{ s.server }}" />
               </label>
               <label class="block" style="min-width:8rem;flex:1">
-                <span class="label">Topic</span>
+                <span class="label" data-i18n="settings.topic">Topic</span>
                 <input class="input w-full" name="topic" value="{{ s.topic }}" />
               </label>
               <div class="creds-actions-row">
-                <button type="submit" class="btn secondary">Enregistrer</button>
+                <button type="submit" class="btn secondary" data-i18n="common.save">Enregistrer</button>
               </div>
             </form>
             <form method="post" action="/settings/ntfy/delete"
                   onsubmit="return confirm('Supprimer la source {{ s.topic }} ?');">
               <input type="hidden" name="id" value="{{ s.id }}" />
-              <button type="submit" class="btn secondary">Supprimer</button>
+              <button type="submit" class="btn secondary" data-i18n="common.delete">Supprimer</button>
             </form>
           </div>
           {% endfor %}
@@ -877,27 +932,86 @@
         {% endif %}
 
         <form method="post" action="/settings/ntfy/add" class="space-y-3">
-          <h4 class="settings-subhead" style="margin-top:0">Ajouter une source</h4>
+          <h4 class="settings-subhead" style="margin-top:0" data-i18n="settings.add_source">Ajouter une source</h4>
           <label class="toggle-row">
-            <span>Activer dès l’ajout</span>
+            <span data-i18n="settings.enable_on_add">Activer dès l’ajout</span>
             <input class="toggle" type="checkbox" name="enabled" value="1" checked />
           </label>
           <label class="block">
-            <span class="label">Serveur</span>
+            <span class="label" data-i18n="settings.server">Serveur</span>
             <input class="input w-full" name="server" value="{{ ntfy_server }}" placeholder="https://ntfy.sh" />
           </label>
           <label class="block">
-            <span class="label">Topic</span>
+            <span class="label" data-i18n="settings.topic">Topic</span>
             <input class="input w-full" name="topic" value="" placeholder="himaweb-perso" required />
           </label>
-          <button type="submit" class="btn">Ajouter NTFY</button>
+          <button type="submit" class="btn" data-i18n="settings.add_ntfy">Ajouter NTFY</button>
+        </form>
+
+        <h3 class="settings-subhead" data-i18n="plugins.freshrss_title">FreshRSS</h3>
+        <p class="muted text-sm mb-2" data-i18n="plugins.freshrss_hint">
+          Connexion à votre serveur FreshRSS (API Google Reader). Activez l’accès API et utilisez le mot de passe API (pas le mot de passe compte).
+        </p>
+        <form method="post" action="/settings/freshrss" class="space-y-2 mb-4">
+          <label class="block">
+            <span class="label" data-i18n="plugins.freshrss_url">URL API (greader.php)</span>
+            <input class="input w-full" name="freshrss_url" value="{{ freshrss_url }}"
+                   data-i18n-placeholder="plugins.freshrss_url_ph"
+                   placeholder="https://freshrss.exemple.net/api/greader.php" />
+          </label>
+          <label class="block">
+            <span class="label" data-i18n="plugins.freshrss_user">Utilisateur</span>
+            <input class="input w-full" name="freshrss_user" value="{{ freshrss_user }}" autocomplete="username" />
+          </label>
+          <label class="block">
+            <span class="label" data-i18n="plugins.freshrss_pass">Mot de passe API</span>
+            <input class="input w-full" type="password" name="freshrss_api_password" value=""
+                   autocomplete="current-password"
+                   placeholder="{% if freshrss_api_password_set %}•••••••• (inchangé si vide){% else %}{% endif %}" />
+          </label>
+          <div class="btn-row">
+            <button type="submit" class="btn secondary" data-i18n="plugins.freshrss_save">Enregistrer FreshRSS</button>
+            {% if !freshrss_web_url.is_empty() %}
+            <a class="btn" href="{{ freshrss_web_url }}" target="_blank" rel="noopener" data-i18n="plugins.freshrss_open">Ouvrir FreshRSS</a>
+            {% endif %}
+            {% if freshrss_api_password_set || !freshrss_url.is_empty() %}
+            <button type="submit" name="clear" value="1" class="btn secondary" data-i18n="plugins.freshrss_clear"
+                    onclick="return confirm('Effacer la config FreshRSS ?');">Effacer</button>
+            {% endif %}
+          </div>
+        </form>
+
+        <h3 class="settings-subhead" data-i18n="plugins.rss_title">Flux RSS locaux</h3>
+        <p class="muted text-sm mb-2" data-i18n="plugins.rss_hint">
+          Une URL par ligne. Optionnel : <code>Titre|https://…/feed.xml</code>.
+          Complète FreshRSS dans le panneau latéral.
+        </p>
+        <form method="post" action="/settings/rss" class="space-y-2">
+          <textarea class="input w-full" name="feeds" rows="4"
+                    placeholder="Le Monde|https://www.lemonde.fr/rss/une.xml">{{ rss_feeds_text }}</textarea>
+          <button type="submit" class="btn secondary" data-i18n="plugins.rss_save">Enregistrer les flux</button>
+        </form>
+
+        <h3 class="settings-subhead" data-i18n="plugins.matrix_title">Matrix</h3>
+        <p class="muted text-sm mb-2" data-i18n="plugins.matrix_hint">
+          Lien vers un client Matrix (Element Web, etc.) — ouverture externe, hors cœur Pimalaya.
+        </p>
+        <form method="post" action="/settings/matrix" class="space-y-2">
+          <input class="input w-full" name="matrix_url" value="{{ matrix_url }}"
+                 placeholder="https://app.element.io/" />
+          <div class="btn-row">
+            <button type="submit" class="btn secondary" data-i18n="plugins.matrix_save">Enregistrer</button>
+            {% if !matrix_url.is_empty() %}
+            <a class="btn" href="{{ matrix_url }}" target="_blank" rel="noopener" data-i18n="plugins.matrix_open">Ouvrir Matrix</a>
+            {% endif %}
+          </div>
         </form>
       </section>
 
-      <p class="settings-group-label settings-span" id="ai">IA</p>
+      <p class="settings-group-label settings-span" id="ai" data-i18n="settings.group.ai">IA</p>
       <section class="settings-card settings-span">
-        <h2>Assistant</h2>
-        <p class="muted text-sm mb-3">
+        <h2 data-i18n="settings.ai_assistant">Assistant</h2>
+        <p class="muted text-sm mb-3" data-i18n="settings.ai_hint">
           Rédaction de mails et proposition d’événements. Validation humaine obligatoire avant envoi / écriture.
         </p>
         <form method="post" action="/settings/ai" class="space-y-3"
@@ -909,56 +1023,56 @@
                 scanError: ''
               })">
           <label class="toggle-row">
-            <span>Activer l’IA</span>
+            <span data-i18n="settings.ai_enable">Activer l’IA</span>
             <input class="toggle" type="checkbox" name="enabled" value="1" {% if ai_enabled %}checked{% endif %} />
           </label>
           <label class="block">
-            <span class="label">Fournisseur</span>
+            <span class="label" data-i18n="settings.provider">Fournisseur</span>
             <select name="provider" class="select w-full" x-model="provider">
-              <option value="ollama" {% if ai_provider == "ollama" %}selected{% endif %}>Ollama (local)</option>
-              <option value="gemini" {% if ai_provider == "gemini" %}selected{% endif %}>Google Gemini</option>
+              <option value="ollama" {% if ai_provider == "ollama" %}selected{% endif %} data-i18n="settings.ollama_local">Ollama (local)</option>
+              <option value="gemini" {% if ai_provider == "gemini" %}selected{% endif %} data-i18n="settings.gemini">Google Gemini</option>
             </select>
           </label>
           <div x-show="provider === 'ollama'" x-cloak class="space-y-3">
             <label class="block">
-              <span class="label">Endpoint Ollama</span>
+              <span class="label" data-i18n="settings.ollama_endpoint">Endpoint Ollama</span>
               <input class="input w-full" name="endpoint" value="{{ ai_endpoint }}" placeholder="http://127.0.0.1:11434" />
             </label>
             <label class="block">
-              <span class="label">Modèle Ollama</span>
+              <span class="label" data-i18n="settings.ollama_model">Modèle Ollama</span>
               <input class="input w-full" name="model" value="{{ ai_model }}" placeholder="llama3.2" />
             </label>
             <label class="block">
-              <span class="label">Raisonnement / réflexion</span>
+              <span class="label" data-i18n="settings.thinking">Raisonnement / réflexion</span>
               <select name="ollama_think" class="select w-full">
-                <option value="default" {% if ai_ollama_think == "default" %}selected{% endif %}>Défaut du modèle</option>
-                <option value="off" {% if ai_ollama_think == "off" %}selected{% endif %}>Désactivé</option>
-                <option value="low" {% if ai_ollama_think == "low" %}selected{% endif %}>Faible</option>
-                <option value="medium" {% if ai_ollama_think == "medium" %}selected{% endif %}>Moyen</option>
-                <option value="high" {% if ai_ollama_think == "high" %}selected{% endif %}>Élevé</option>
+                <option value="default" {% if ai_ollama_think == "default" %}selected{% endif %} data-i18n="settings.think_default">Défaut du modèle</option>
+                <option value="off" {% if ai_ollama_think == "off" %}selected{% endif %} data-i18n="settings.think_off">Désactivé</option>
+                <option value="low" {% if ai_ollama_think == "low" %}selected{% endif %} data-i18n="settings.think_low">Faible</option>
+                <option value="medium" {% if ai_ollama_think == "medium" %}selected{% endif %} data-i18n="settings.think_med">Moyen</option>
+                <option value="high" {% if ai_ollama_think == "high" %}selected{% endif %} data-i18n="settings.think_high">Élevé</option>
               </select>
-              <span class="muted tiny">Désactive ou réduit le raisonnement si le modèle le prend en charge (ex. Qwen3, DeepSeek R1, GPT-OSS).</span>
+              <span class="muted tiny" data-i18n="settings.think_hint">Désactive ou réduit le raisonnement si le modèle le prend en charge (ex. Qwen3, DeepSeek R1, GPT-OSS).</span>
             </label>
             <label class="block">
-              <span class="label">Température</span>
+              <span class="label" data-i18n="settings.temperature">Température</span>
               <input class="input w-full" type="number" name="ollama_temperature" min="0" max="2" step="0.1"
                      value="{{ ai_ollama_temperature }}" placeholder="défaut modèle (ex. 0.7)" />
             </label>
             <label class="block">
-              <span class="label">Fallback distant (optionnel)</span>
+              <span class="label" data-i18n="settings.remote_fallback">Fallback distant (optionnel)</span>
               <input class="input w-full" name="remote_endpoint" value="{{ ai_remote_endpoint }}" placeholder="https://…" />
             </label>
           </div>
           <div x-show="provider === 'gemini'" x-cloak class="space-y-3">
             <label class="block">
-              <span class="label">Clé API Gemini</span>
+              <span class="label" data-i18n="settings.gemini_key">Clé API Gemini</span>
               <input class="input w-full" type="password" name="api_key" x-ref="apiKey"
                      value="" autocomplete="off"
                      placeholder="{% if ai_api_key_set %}•••• (laisser vide pour conserver){% else %}AIza…{% endif %}" />
             </label>
             <div class="flex gap-2 items-end">
               <label class="block" style="flex:1">
-                <span class="label">Modèle Gemini</span>
+                <span class="label" data-i18n="settings.gemini_model">Modèle Gemini</span>
                 <input type="hidden" name="gemini_model" :value="model" />
                 <select class="select w-full" x-model="model" x-show="models.length > 0">
                   <template x-for="m in models" :key="m">
@@ -969,23 +1083,23 @@
                        placeholder="gemini-2.5-flash" />
               </label>
               <button type="button" class="btn secondary" @click="scanModels()" :disabled="scanning"
-                      x-text="scanning ? 'Scan…' : 'Scanner les modèles'"></button>
+                      x-text="scanning ? 'Scan…' : ((window.HimaWeb&&HimaWeb.t('settings.scan_models'))||'Scanner les modèles')"></button>
             </div>
             <p class="muted tiny" x-show="scanError" x-text="scanError"></p>
           </div>
           <label class="block">
-            <span class="label">Préprompt global (style / persona)</span>
+            <span class="label" data-i18n="settings.global_preprompt">Préprompt global (style / persona)</span>
             <textarea class="input w-full" name="ollama_preprompt" rows="3" placeholder="Ex. : Je m’appelle …, ton professionnel, français…">{{ ai_ollama_preprompt }}</textarea>
-            <span class="muted tiny">Appliqué à Ollama et Gemini. Complété par le préprompt par compte (Apparence des comptes).</span>
+            <span class="muted tiny" data-i18n="settings.global_preprompt_hint">Appliqué à Ollama et Gemini. Complété par le préprompt par compte (Apparence des comptes).</span>
           </label>
           <label class="block">
-            <span class="label">Adresse domicile</span>
+            <span class="label" data-i18n="settings.home_address">Adresse domicile</span>
             <input class="input w-full" name="home_address" value="{{ home_address }}"
                    placeholder="12 rue …, Paris" />
-            <span class="muted tiny">Contexte calendrier IA et trajets.</span>
+            <span class="muted tiny" data-i18n="settings.home_hint">Contexte calendrier IA et trajets.</span>
           </label>
           <label class="block">
-            <span class="label">Cartes (trajet)</span>
+            <span class="label" data-i18n="settings.maps">Cartes (trajet)</span>
             <select name="maps_provider" class="select w-full">
               <option value="google" {% if maps_provider == "google" %}selected{% endif %}>Google Maps</option>
               <option value="osm" {% if maps_provider == "osm" %}selected{% endif %}>OpenStreetMap</option>
@@ -993,45 +1107,78 @@
             </select>
           </label>
           <label class="block">
-            <span class="label">Préprompt calendrier</span>
+            <span class="label" data-i18n="settings.cal_preprompt">Préprompt calendrier</span>
             <textarea class="input w-full" name="calendar_preprompt" rows="2"
                       placeholder="Ex. : préfère les RDV le matin, fuseau Europe/Paris…">{{ ai_calendar_preprompt }}</textarea>
           </label>
           <label class="toggle-row">
-            <span>Journal de rédaction IA</span>
+            <span data-i18n="settings.ai_log">Journal de rédaction IA</span>
             <input class="toggle" type="checkbox" name="ai_log_enabled" value="1" {% if ai_log_enabled %}checked{% endif %} />
           </label>
-          <p class="muted tiny">Si activé : enregistre prompts / réponses dans <code>%LOCALAPPDATA%\HimaWeb\ai-log.jsonl</code> (désactivé = zéro I/O).</p>
-          <button type="submit" class="btn">Enregistrer IA</button>
+          <p class="muted tiny" data-i18n="settings.ai_log_hint">Si activé : enregistre prompts / réponses dans %LOCALAPPDATA%\HimaWeb\ai-log.jsonl (désactivé = zéro I/O).</p>
+          <button type="submit" class="btn" data-i18n="settings.save_ai">Enregistrer IA</button>
         </form>
         <form method="post" action="/settings/ai/log/clear" class="mt-2"
               onsubmit="return confirm('Effacer le journal IA ?');">
-          <button type="submit" class="btn secondary">Effacer le journal IA</button>
+          <button type="submit" class="btn secondary" data-i18n="settings.clear_ai_log">Effacer le journal IA</button>
         </form>
         {% if let Some(msg) = ai_message %}
         <div class="offline-strip mt-3">{{ msg }}</div>
         {% endif %}
       </section>
 
-      <p class="settings-group-label settings-span" id="backup">Sauvegarde</p>
+      <p class="settings-group-label settings-span" id="updates" data-i18n="settings.group.updates">Mises à jour</p>
+      <section class="settings-card settings-span" x-data="updateChecker()">
+        <h2 data-i18n="updates.title">Mises à jour</h2>
+        <p class="muted text-sm mb-3" data-i18n="updates.hint">
+          Canal recommandé : <strong>Winget</strong> / UniGet (<code>Morglaf.HimaWeb</code>).
+          Aucun téléchargement silencieux dans HimaWeb.
+        </p>
+        <p class="mb-2"><span data-i18n="updates.installed">Version installée</span> : <strong>{{ app_version }}</strong></p>
+        <div class="btn-row mb-3">
+          <button type="button" class="btn" @click="check(true)" :disabled="busy"
+                  x-text="busy ? (window.HimaWeb && HimaWeb.t('updates.checking')) : (window.HimaWeb && HimaWeb.t('updates.check'))"></button>
+        </div>
+        <template x-if="info">
+          <div class="space-y-2">
+            <p x-show="info.error" class="error-banner" x-text="info.error"></p>
+            <p x-show="!info.error && info.newer" class="offline-strip">
+              <span data-i18n="updates.available">Mise à jour disponible</span> : <strong x-text="info.latest"></strong>
+            </p>
+            <p x-show="!info.error && !info.newer" class="muted" data-i18n="updates.up_to_date">Vous êtes à jour.</p>
+            <p class="muted tiny" x-show="info.checked_at">Vérifié le <span x-text="info.checked_at"></span></p>
+            <label class="block" x-show="info.winget_cmd">
+              <span class="label" data-i18n="updates.winget_cmd">Commande Winget</span>
+              <input class="input w-full" type="text" readonly :value="info.winget_cmd"
+                     onclick="this.select()" />
+            </label>
+            <div class="btn-row">
+              <a class="btn secondary" x-show="info.release_url" :href="info.release_url"
+                 target="_blank" rel="noopener" data-i18n="updates.release_notes">Notes de version</a>
+            </div>
+          </div>
+        </template>
+      </section>
+
+      <p class="settings-group-label settings-span" id="backup" data-i18n="settings.group.backup">Sauvegarde</p>
       <section class="settings-card settings-span">
-        <h2>Exporter / importer la config</h2>
-        <p class="muted text-sm mb-3">
+        <h2 data-i18n="settings.backup_title">Exporter / importer la config</h2>
+        <p class="muted text-sm mb-3" data-i18n="settings.backup_hint">
           Archive ZIP : préférences HimaWeb, comptes Himalaya / Cardamum / Calendula, Ortie (tokens inclus).
-          <strong>Contient des secrets</strong> (mots de passe, clés API) — à stocker en lieu sûr.
+          Contient des secrets (mots de passe, clés API) — à stocker en lieu sûr.
         </p>
         <div class="btn-row" style="gap:0.75rem;flex-wrap:wrap">
           <a class="btn" href="/settings/backup/export">
-            <i data-lucide="download"></i> Exporter
+            <i data-lucide="download"></i> <span data-i18n="settings.export">Exporter</span>
           </a>
         </div>
         <form method="post" action="/settings/backup/import" enctype="multipart/form-data" class="mt-4 space-y-3">
           <label class="block">
-            <span class="label">Importer un ZIP</span>
+            <span class="label" data-i18n="settings.import_zip">Importer un ZIP</span>
             <input class="input w-full" type="file" name="backup" accept=".zip,application/zip" required />
           </label>
           <button type="submit" class="btn secondary">
-            <i data-lucide="upload"></i> Importer
+            <i data-lucide="upload"></i> <span data-i18n="settings.import">Importer</span>
           </button>
         </form>
         {% if let Some(msg) = backup_message %}

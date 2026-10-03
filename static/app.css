@@ -2621,6 +2621,37 @@ input.toggle:checked::after {
   margin-bottom: 0.45rem;
 }
 .side-block-title i { width: 14px; height: 14px; }
+.side-rss-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.side-rss-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 0.85rem;
+}
+.side-rss-list a {
+  color: var(--ink);
+  text-decoration: none;
+}
+.side-rss-list a:hover { color: var(--accent); }
+.plugin-panel-body {
+  font-size: 0.85rem;
+  overflow: auto;
+  max-height: 12rem;
+}
+.update-toast {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  margin: 0;
+  border-radius: 0;
+}
 .side-event-list, .side-contact-list {
   list-style: none;
   margin: 0 0 0.5rem;
