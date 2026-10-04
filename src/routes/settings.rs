@@ -227,6 +227,8 @@ pub struct EditableAccountRow {
     pub mailboxes: Vec<MailboxAliasChoice>,
     /// Pref HimaWeb : pas de UID MOVE (COPY + purge)
     pub copy_move: bool,
+    pub signature: String,
+    pub signature_html: String,
 }
 
 pub struct MailboxAliasChoice {
@@ -269,6 +271,8 @@ impl EditableAccountRow {
             has_smtp_password: a.has_smtp_password,
             mailboxes,
             copy_move,
+            signature: a.signature,
+            signature_html: a.signature_html,
         }
     }
 }
@@ -976,6 +980,8 @@ pub struct EditAccountForm {
     pub sent_alias: Option<String>,
     pub drafts_alias: Option<String>,
     pub copy_move: Option<String>,
+    pub signature: Option<String>,
+    pub signature_html: Option<String>,
 }
 
 async fn edit_account(
@@ -1011,6 +1017,8 @@ async fn edit_account(
         form.trash_alias.as_deref(),
         form.sent_alias.as_deref(),
         form.drafts_alias.as_deref(),
+        Some(form.signature.as_deref().unwrap_or("")),
+        Some(form.signature_html.as_deref().unwrap_or("")),
     ) {
         Ok(()) => {
             {

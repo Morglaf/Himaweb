@@ -591,6 +591,47 @@ function composeForm() {
         .map((line) => line.replace(/^(?:>\s?)+/, ''))
         .join('\n');
     },
+    /** Signature hors Quill : aperçu + concat à l’envoi (évite l’expurgation des tableaux). */
+    looksLikeHtml(s) {
+      const t = (s || '').trim();
+      return /<\s*(table|div|p|br|img|a|span|h[1-6])\b/i.test(t);
+    },
+    accountSignatureHtml(acct) {
+      if (!acct) return '';
+      const html = (acct.signatureHtml || '').trim();
+      if (html) return html;
+      // HTML collé par erreur dans le champ texte
+      const plain = (acct.signature || '').trim();
+      if (this.looksLikeHtml(plain)) return plain;
+      return '';
+    },
+    get hasHtmlSignature() {
+      return !!this.accountSignatureHtml(this.selectedAccount);
+    },
+    get hasSignature() {
+      const a = this.selectedAccount;
+      if (!a) return false;
+      return !!(
+        (a.signature && String(a.signature).trim()) ||
+        (a.signatureHtml && String(a.signatureHtml).trim())
+      );
+    },
+    get signaturePreviewPlain() {
+      const a = this.selectedAccount;
+      if (!a || this.hasHtmlSignature) return '';
+      const text = (a.signature || '').replace(/\s+$/, '');
+      if (!text) return '';
+      return '-- \n' + text;
+    },
+    get signaturePreviewHtml() {
+      return this.htmlSignatureBlock(this.selectedAccount);
+    },
+    preferHtmlForSignature() {
+      // Signature HTML ⇒ composer en HTML pour l’envoi + l’aperçu rendu.
+      if (this.hasHtmlSignature && this.bodyMode !== 'html') {
+        this.setBodyMode('html');
+      }
+    },
     boot() {
       try {
         const saved = sessionStorage.getItem('himaweb-compose-window');
@@ -635,6 +676,9 @@ function composeForm() {
       this.body = draftBody;
       this.previousQuote = previous;
       this.quoteExpanded = false;
+      // Compte avec signature HTML : forcer le mode HTML (sinon aperçu texte illisible).
+      if (this.hasHtmlSignature) this.bodyMode = 'html';
+      if (this.bodyMode === 'html') this.syncHtmlFromPlain();
       this.$nextTick(() => {
         if (window.lucide) lucide.createIcons();
         if (this.bodyMode === 'html') this.initQuill();
@@ -644,6 +688,7 @@ function composeForm() {
       if (!a) return;
       this.account = a.name;
       this.fromOpen = false;
+      this.preferHtmlForSignature();
       this.$nextTick(() => {
         if (window.lucide) lucide.createIcons();
       });
@@ -669,6 +714,47 @@ function composeForm() {
       try {
         sessionStorage.setItem('himaweb-compose-body-mode', this.bodyMode);
       } catch (_) {}
+    },
+    stripHtmlToText(html) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = html || '';
+      return ((tmp.innerText || tmp.textContent || '') + '').replace(/\n$/, '');
+    },
+    plainSignatureBlock(acct) {
+      if (!acct) return '';
+      // Si la signature est du HTML, alternative texte compacte (pas le dump d’espaces du tableau).
+      const html = this.accountSignatureHtml(acct);
+      if (html) {
+        const compact = this.stripHtmlToText(html)
+          .replace(/[ \t]+\n/g, '\n')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+        if (!compact) return '';
+        return '\n\n-- \n' + compact;
+      }
+      const text = (acct.signature || '').replace(/\s+$/, '');
+      if (!text) return '';
+      return '\n\n-- \n' + text;
+    },
+    htmlSignatureBlock(acct) {
+      if (!acct) return '';
+      // HTML brut — ne jamais passer par Quill (tables / styles détruits).
+      let html = this.accountSignatureHtml(acct);
+      if (!html) {
+        const plain = (acct.signature || '').replace(/\s+$/, '');
+        if (!plain) return '';
+        html = plain
+          .split('\n')
+          .map((line) => {
+            const esc = line
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;');
+            return '<p>' + (esc || '<br>') + '</p>';
+          })
+          .join('');
+      }
+      return '<div class="himaweb-sig"><br><div>--</div>' + html + '</div>';
     },
     currentBodyText() {
       if (this.bodyMode === 'html') {
@@ -745,23 +831,42 @@ function composeForm() {
       return draft + '\n\n' + quote;
     },
     mergeQuoteIntoBody() {
+      // Compat : assemblage complet (brouillon + signature + citation)
+      this.assembleBodyForSend();
+    },
+    assembleBodyForSend() {
+      const acct = this.selectedAccount;
       const quote = (this.previousQuote || '').trim();
-      if (!quote) return;
-      const draftPlain =
-        this.bodyMode === 'html' && this.quill
-          ? (this.quill.getText() || '').replace(/\n$/, '')
-          : (this.body || '').replace(/\n$/, '');
-      this.body = draftPlain ? draftPlain + '\n\n' + quote : quote;
+      const sigPlain = this.plainSignatureBlock(acct);
+      const sigHtml = this.htmlSignatureBlock(acct);
+
       if (this.bodyMode === 'html') {
-        const draftHtml =
+        let draftHtml =
           (this.quill ? this.quill.root.innerHTML : this.bodyHtml) || '';
-        const esc = quote
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/\n/g, '<br>');
-        const sep = draftHtml.trim() ? '<p><br></p>' : '';
-        this.bodyHtml = draftHtml + sep + '<pre>' + esc + '</pre>';
+        let draftPlain =
+          this.quill
+            ? (this.quill.getText() || '').replace(/\n$/, '')
+            : (this.body || '').replace(/\n$/, '');
+        let html = draftHtml;
+        if (sigHtml) html += sigHtml;
+        if (quote) {
+          const esc = quote
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/\n/g, '<br>');
+          html += (html.trim() ? '<p><br></p>' : '') + '<pre>' + esc + '</pre>';
+        }
+        this.bodyHtml = html;
+        let plain = draftPlain.replace(/\n+$/, '');
+        if (sigPlain) plain = plain + sigPlain;
+        if (quote) plain = plain ? plain + '\n\n' + quote : quote;
+        this.body = plain;
+      } else {
+        let plain = (this.body || '').replace(/\n+$/, '');
+        if (sigPlain) plain = plain + sigPlain;
+        if (quote) plain = plain ? plain + '\n\n' + quote : quote;
+        this.body = plain;
       }
       // Sync immédiat des champs formulaire (évite une course avec le scheduler Alpine)
       const ta = document.querySelector('textarea.compose-plain[name="body"]');
@@ -880,14 +985,95 @@ function composeForm() {
         wrap.innerHTML = '<div id="compose-quill" class="compose-quill"></div>';
       }
     },
-    onSubmit(ev) {
+    async onSubmit(ev) {
+      ev.preventDefault();
+      if (this._composeSubmitting) return;
       const submitter = ev.submitter;
-      this.draftBusy = !!(submitter && submitter.name === 'save_draft');
-      if (this.bodyMode === 'html' && this.quill) {
-        this.bodyHtml = this.quill.root.innerHTML || '';
-        this.body = this.quill.getText().replace(/\n$/, '');
+      const isDraft = !!(submitter && submitter.name === 'save_draft');
+      this.draftBusy = isDraft;
+      this._composeSubmitting = true;
+      try {
+        if (this.bodyMode === 'html' && this.quill) {
+          this.bodyHtml = this.quill.root.innerHTML || '';
+          this.body = this.quill.getText().replace(/\n$/, '');
+        }
+        this.assembleBodyForSend();
+
+        if (!isDraft && !(this.to || '').trim()) {
+          await (window.HimaWeb && HimaWeb.alertDialog
+            ? HimaWeb.alertDialog(
+                (window.HimaWeb.t && HimaWeb.t('compose.need_to')) ||
+                  'Indiquez au moins un destinataire (name@domaine).',
+              )
+            : Promise.resolve());
+          return;
+        }
+
+        const form = ev.target;
+        const fd = new FormData(form);
+        // Forcer les champs Alpine (parfois absents du FormData natif)
+        fd.set('account', this.account || '');
+        fd.set('html', this.bodyMode === 'html' ? '1' : '0');
+        fd.set('body_html', this.bodyHtml || '');
+        fd.set('body', this.body || '');
+        fd.set('to', this.to || '');
+        fd.set('cc', this.cc || '');
+        fd.set('bcc', this.bcc || '');
+        fd.set('reply_to', this.replyTo || '');
+        fd.set('subject', this.subject || '');
+
+        const action =
+          (submitter && submitter.getAttribute('formaction')) ||
+          form.getAttribute('action') ||
+          '/compose/send';
+        const res = await fetch(action, {
+          method: 'POST',
+          body: fd,
+          redirect: 'manual',
+          headers: { Accept: 'application/json' },
+        });
+
+        // Succès = redirection (302/303) vers la boîte
+        if (
+          res.type === 'opaqueredirect' ||
+          (res.status >= 300 && res.status < 400)
+        ) {
+          const loc = res.headers.get('Location') || '/';
+          if (window.HimaWeb && HimaWeb.closeComposeOverlay) {
+            HimaWeb.closeComposeOverlay();
+          }
+          window.location.href = loc;
+          return;
+        }
+
+        let msg =
+          (window.HimaWeb && HimaWeb.t && HimaWeb.t('common.error')) || 'Erreur';
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        if (ct.includes('application/json')) {
+          const data = await res.json().catch(() => ({}));
+          if (data && data.error) msg = data.error;
+        } else {
+          const text = await res.text();
+          const m = text.match(/class="error"[^>]*>([^<]+)/i);
+          if (m) msg = m[1].trim();
+          else if (text.trim()) msg = text.trim().slice(0, 400);
+        }
+        if (window.HimaWeb && HimaWeb.alertDialog) {
+          await HimaWeb.alertDialog(msg);
+        } else {
+          alert(msg);
+        }
+      } catch (e) {
+        const msg = (e && e.message) || String(e);
+        if (window.HimaWeb && HimaWeb.alertDialog) {
+          await HimaWeb.alertDialog(msg);
+        } else {
+          alert(msg);
+        }
+      } finally {
+        this._composeSubmitting = false;
+        this.draftBusy = false;
       }
-      this.mergeQuoteIntoBody();
     },
     onFilesChange(ev) {
       const incoming = [...((ev.target && ev.target.files) || [])];
@@ -1335,6 +1521,47 @@ function accountOrderList(boot) {
   };
 }
 
+function signatureEditor() {
+  return {
+    mode: 'plain',
+    plain: '',
+    html: '',
+    draft: '',
+    looksLikeHtml(s) {
+      return /<\s*(table|div|p|br|img|a|span|h[1-6])\b/i.test((s || '').trim());
+    },
+    boot() {
+      const p = this.$refs.plainSeed;
+      const h = this.$refs.htmlSeed;
+      this.plain = p ? p.value || '' : '';
+      this.html = h ? h.value || '' : '';
+      // HTML collé dans le champ texte → basculer en HTML
+      if (!this.html.trim() && this.looksLikeHtml(this.plain)) {
+        this.html = this.plain;
+        this.plain = '';
+      }
+      if (this.html.trim()) {
+        this.mode = 'html';
+        this.draft = this.html;
+      } else {
+        this.mode = 'plain';
+        this.draft = this.plain;
+      }
+    },
+    setMode(m) {
+      if (m !== 'plain' && m !== 'html') return;
+      if (m === this.mode) return;
+      this.syncDraft();
+      this.mode = m;
+      this.draft = m === 'html' ? this.html : this.plain;
+    },
+    syncDraft() {
+      if (this.mode === 'html') this.html = this.draft;
+      else this.plain = this.draft;
+    },
+  };
+}
+
 function accountAppearance(opts) {
   opts = opts || {};
   return {
@@ -1550,6 +1777,7 @@ function messageView(opts) {
 document.addEventListener('alpine:init', () => {
   if (window.Alpine) {
     Alpine.data('composeForm', composeForm);
+    Alpine.data('signatureEditor', signatureEditor);
     Alpine.data('accountAppearance', accountAppearance);
     Alpine.data('accountOrderList', accountOrderList);
     Alpine.data('quickEventModal', quickEventModal);
@@ -1814,15 +2042,19 @@ window.HimaWeb = {
           if (!info || !info.newer || info.error) return;
           const bar = document.createElement('div');
           bar.className = 'offline-strip update-toast';
+          const current = String(info.current || '').replace(/</g, '');
           const latest = String(info.latest || '').replace(/</g, '');
           const cmd = String(info.winget_cmd || 'winget upgrade Morglaf.HimaWeb').replace(/</g, '');
           const toast = this.t('updates.toast');
           const settings = this.t('updates.open_settings');
+          const versions = current
+            ? '<strong>' + current + '</strong> → <strong>' + latest + '</strong>'
+            : '<strong>' + latest + '</strong>';
           bar.innerHTML =
             toast +
-            ' (<strong>' +
-            latest +
-            '</strong>) — <a href="/settings#updates">' +
+            ' (' +
+            versions +
+            ') — <a href="/settings#updates">' +
             settings +
             '</a> ou <code>' +
             cmd +
@@ -2100,6 +2332,51 @@ window.HimaWeb = {
       if (window.lucide) lucide.createIcons();
       const yes = backdrop.querySelector('[data-confirm="yes"]');
       if (yes) yes.focus();
+    });
+  },
+
+  /** Modal d’alerte (erreurs compose, etc.) — ne quitte pas la page. */
+  alertDialog(message, title) {
+    return new Promise((resolve) => {
+      let backdrop = document.getElementById('himaweb-alert');
+      if (backdrop) backdrop.remove();
+      backdrop = document.createElement('div');
+      backdrop.id = 'himaweb-alert';
+      backdrop.className = 'confirm-backdrop';
+      const heading = title || this.t('common.error') || 'Erreur';
+      const okLabel = this.t('common.close') || 'Fermer';
+      backdrop.innerHTML = `
+        <div class="modal-panel confirm-panel" role="alertdialog" aria-modal="true" aria-labelledby="alert-title">
+          <h2 id="alert-title" class="font-display text-xl"></h2>
+          <p class="confirm-message"></p>
+          <div class="btn-row confirm-actions">
+            <button type="button" class="btn" data-alert="ok"></button>
+          </div>
+        </div>`;
+      backdrop.querySelector('#alert-title').textContent = heading;
+      backdrop.querySelector('.confirm-message').textContent = message || '';
+      backdrop.querySelector('[data-alert="ok"]').textContent = okLabel;
+      const finish = () => {
+        backdrop.remove();
+        resolve();
+      };
+      backdrop.addEventListener('click', (ev) => {
+        if (ev.target === backdrop) finish();
+      });
+      backdrop.querySelector('[data-alert="ok"]').onclick = () => finish();
+      document.addEventListener(
+        'keydown',
+        function onKey(ev) {
+          if (ev.key === 'Escape' || ev.key === 'Enter') {
+            document.removeEventListener('keydown', onKey);
+            finish();
+          }
+        },
+        { once: true }
+      );
+      document.body.appendChild(backdrop);
+      const ok = backdrop.querySelector('[data-alert="ok"]');
+      if (ok) ok.focus();
     });
   },
 

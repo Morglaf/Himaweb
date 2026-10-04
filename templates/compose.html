@@ -182,6 +182,12 @@
           <div x-show="bodyMode === 'html'" x-cloak class="compose-quill-wrap">
             <div id="compose-quill" class="compose-quill"></div>
           </div>
+          {# Signature hors Quill : aperçu HTML si signature-html, sinon texte #}
+          <div class="compose-signature" x-show="hasSignature" x-cloak>
+            <div class="compose-signature-label" data-i18n="compose.signature">Signature</div>
+            <div class="compose-signature-html" x-show="hasHtmlSignature" x-html="signaturePreviewHtml"></div>
+            <pre class="compose-signature-plain" x-show="!hasHtmlSignature" x-text="signaturePreviewPlain"></pre>
+          </div>
           <div class="compose-quote" x-show="previousQuote" x-cloak>
             <button type="button" class="compose-quote-toggle" @click="toggleQuote()"
                     :class="quoteExpanded && 'is-open'"

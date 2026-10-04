@@ -20,6 +20,10 @@ pub struct AccountEdit {
     pub trash_alias: String,
     pub sent_alias: String,
     pub drafts_alias: String,
+    /// Signature texte (clé Himalaya / himalaya-tui)
+    pub signature: String,
+    /// Signature HTML (extension HimaWeb)
+    pub signature_html: String,
 }
 
 pub fn list_editable_accounts() -> Result<Vec<AccountEdit>, String> {
@@ -63,6 +67,8 @@ pub fn list_editable_accounts() -> Result<Vec<AccountEdit>, String> {
             trash_alias: get_str(t, &["mailbox", "alias", "trash"]),
             sent_alias: get_str(t, &["mailbox", "alias", "sent"]),
             drafts_alias: get_str(t, &["mailbox", "alias", "drafts"]),
+            signature: get_str(t, &["signature"]),
+            signature_html: get_str(t, &["signature-html"]),
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -83,6 +89,8 @@ pub fn update_account(
     trash_alias: Option<&str>,
     sent_alias: Option<&str>,
     drafts_alias: Option<&str>,
+    signature: Option<&str>,
+    signature_html: Option<&str>,
 ) -> Result<(), String> {
     let path = prefs::himalaya_config_path();
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
@@ -166,11 +174,35 @@ pub fn update_account(
         if make_default {
             account.insert("default", Item::Value(Value::from(true)));
         }
+        set_optional_string(account, &["signature"], signature);
+        set_optional_string(account, &["signature-html"], signature_html);
+        // Delim RFC 3676 si une signature (texte ou HTML) est présente
+        let has_sig = signature.map(str::trim).filter(|s| !s.is_empty()).is_some()
+            || signature_html
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_some();
+        if has_sig {
+            if get_str(account, &["signature-delim"]).is_empty() {
+                set_path(account, &["signature-delim"], "-- \n");
+            }
+        } else if signature.is_some() || signature_html.is_some() {
+            remove_path(account, &["signature-delim"]);
+        }
     }
 
     let bak = PathBuf::from(format!("{}.bak", path.display()));
     let _ = std::fs::copy(&path, &bak);
     std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())
+}
+
+/// Écrit ou efface une clé string (None = ne pas toucher ; Some("") = supprimer).
+fn set_optional_string(account: &mut Table, path: &[&str], value: Option<&str>) {
+    match value {
+        None => {}
+        Some(v) if v.trim().is_empty() => remove_path(account, path),
+        Some(v) => set_path(account, path, v),
+    }
 }
 
 /// Lit `mailbox.alias.<key>` pour un compte (ex. trash).

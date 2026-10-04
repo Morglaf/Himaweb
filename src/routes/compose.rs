@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::extract::{Multipart, Query, State};
+use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
-use axum::Router;
+use axum::{Json, Router};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Deserialize;
+use serde_json::json;
 
 use crate::cli::himalaya::ComposeKind;
 use crate::prefs::ACCOUNT_ALL;
@@ -54,6 +56,8 @@ pub struct AccountOpt {
     pub selected: bool,
     pub icon: String,
     pub color: String,
+    pub signature: String,
+    pub signature_html: String,
 }
 
 #[derive(Template)]
@@ -212,6 +216,8 @@ async fn compose_get(
             "email": a.email,
             "icon": a.icon,
             "color": a.color,
+            "signature": a.signature,
+            "signatureHtml": a.signature_html,
         })).collect::<Vec<_>>(),
     })
     .to_string();
@@ -286,8 +292,8 @@ async fn load_account_opts(state: &AppState, preferred: &str) -> Vec<AccountOpt>
             .collect()
     } else {
         editable
-            .into_iter()
-            .map(|a| (a.name, a.is_default, a.email))
+            .iter()
+            .map(|a| (a.name.clone(), a.is_default, a.email.clone()))
             .collect()
     };
 
@@ -302,12 +308,19 @@ async fn load_account_opts(state: &AppState, preferred: &str) -> Vec<AccountOpt>
             };
             let icon = prefs.account_icon(&name);
             let color = prefs.account_color(&name);
+            let (signature, signature_html) = editable
+                .iter()
+                .find(|e| e.name == name)
+                .map(|e| (e.signature.clone(), e.signature_html.clone()))
+                .unwrap_or_default();
             AccountOpt {
                 name,
                 email,
                 selected,
                 icon,
                 color,
+                signature,
+                signature_html,
             }
         })
         .collect()
@@ -432,17 +445,22 @@ async fn parse_compose_multipart(mut multipart: Multipart) -> Result<ParsedCompo
     Ok(out)
 }
 
+/// Erreur compose → JSON (modal côté client), plus de page blanche.
+fn compose_fail(msg: impl AsRef<str>) -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "error": msg.as_ref() })),
+    )
+        .into_response()
+}
+
 async fn compose_send(
     State(state): State<Arc<AppState>>,
     multipart: Multipart,
 ) -> impl IntoResponse {
     let form = match parse_compose_multipart(multipart).await {
         Ok(f) => f,
-        Err(e) => {
-            return Html(format!(r#"<div class="error">{e}</div>
-               <p><a href="javascript:history.back()">Retour</a></p>"#))
-                .into_response();
-        }
+        Err(e) => return compose_fail(e),
     };
     finish_send(state, form).await
 }
@@ -450,31 +468,19 @@ async fn compose_send(
 async fn finish_send(state: Arc<AppState>, form: ParsedCompose) -> axum::response::Response {
     let to = match crate::cli::himalaya::smtp_address_list(&form.to) {
         Ok(t) => t,
-        Err(e) => {
-            return Html(format!(r#"<div class="error">Destinataire : {e}</div>
-               <p><a href="javascript:history.back()">Retour</a></p>"#))
-                .into_response();
-        }
+        Err(e) => return compose_fail(format!("Destinataire : {e}")),
     };
     let cc = match form.cc.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(raw) => match crate::cli::himalaya::smtp_address_list(raw) {
             Ok(c) => Some(c),
-            Err(e) => {
-                return Html(format!(r#"<div class="error">Cc : {e}</div>
-               <p><a href="javascript:history.back()">Retour</a></p>"#))
-                    .into_response();
-            }
+            Err(e) => return compose_fail(format!("Cc : {e}")),
         },
         None => None,
     };
     let bcc = match form.bcc.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(raw) => match crate::cli::himalaya::smtp_address_list(raw) {
             Ok(c) => Some(c),
-            Err(e) => {
-                return Html(format!(r#"<div class="error">Cci : {e}</div>
-               <p><a href="javascript:history.back()">Retour</a></p>"#))
-                    .into_response();
-            }
+            Err(e) => return compose_fail(format!("Cci : {e}")),
         },
         None => None,
     };
@@ -591,11 +597,7 @@ async fn finish_send(state: Arc<AppState>, form: ParsedCompose) -> axum::respons
             mark_source_answered(&state, &form, account.as_deref()).await;
             Redirect::to("/").into_response()
         }
-        Err(e) => Html(format!(
-            r#"<div class="error">Envoi échoué : {e}</div>
-               <p><a href="javascript:history.back()">Retour</a></p>"#
-        ))
-        .into_response(),
+        Err(e) => compose_fail(format!("Envoi échoué : {e}")),
     }
 }
 
@@ -685,11 +687,7 @@ async fn compose_draft(
 ) -> impl IntoResponse {
     let form = match parse_compose_multipart(multipart).await {
         Ok(f) => f,
-        Err(e) => {
-            return Html(format!(r#"<div class="error">{e}</div>
-               <p><a href="javascript:history.back()">Retour</a></p>"#))
-                .into_response();
-        }
+        Err(e) => return compose_fail(e),
     };
     finish_draft(state, form).await
 }
@@ -697,31 +695,19 @@ async fn compose_draft(
 async fn finish_draft(state: Arc<AppState>, form: ParsedCompose) -> axum::response::Response {
     let to = match crate::cli::himalaya::smtp_address_list(&form.to) {
         Ok(t) => t,
-        Err(e) => {
-            return Html(format!(r#"<div class="error">Destinataire : {e}</div>
-               <p><a href="javascript:history.back()">Retour</a></p>"#))
-                .into_response();
-        }
+        Err(e) => return compose_fail(format!("Destinataire : {e}")),
     };
     let cc = match form.cc.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(raw) => match crate::cli::himalaya::smtp_address_list(raw) {
             Ok(c) => Some(c),
-            Err(e) => {
-                return Html(format!(r#"<div class="error">Cc : {e}</div>
-               <p><a href="javascript:history.back()">Retour</a></p>"#))
-                    .into_response();
-            }
+            Err(e) => return compose_fail(format!("Cc : {e}")),
         },
         None => None,
     };
     let bcc = match form.bcc.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(raw) => match crate::cli::himalaya::smtp_address_list(raw) {
             Ok(c) => Some(c),
-            Err(e) => {
-                return Html(format!(r#"<div class="error">Cci : {e}</div>
-               <p><a href="javascript:history.back()">Retour</a></p>"#))
-                    .into_response();
-            }
+            Err(e) => return compose_fail(format!("Cci : {e}")),
         },
         None => None,
     };
@@ -804,11 +790,7 @@ async fn finish_draft(state: Arc<AppState>, form: ParsedCompose) -> axum::respon
 
     match saved {
         Ok(()) => Redirect::to("/").into_response(),
-        Err(e) => Html(format!(
-            r#"<div class="error">Brouillon échoué : {e}</div>
-               <p><a href="javascript:history.back()">Retour</a></p>"#
-        ))
-        .into_response(),
+        Err(e) => compose_fail(format!("Brouillon échoué : {e}")),
     }
 }
 

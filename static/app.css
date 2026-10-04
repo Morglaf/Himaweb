@@ -1468,6 +1468,11 @@ html[data-topbar="text"] .tab > i { display: none; }
   box-shadow: none;
 }
 .settings-span { grid-column: 1 / -1; }
+.settings-version {
+  margin: 1.25rem 0 0;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
 .settings-card h2 { margin: 0 0 0.85rem; font-size: 1.05rem; }
 .ui-preview {
   margin-top: 1rem;
@@ -1715,11 +1720,14 @@ html[data-topbar="text"] .tab > i { display: none; }
 .confirm-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 90;
+  z-index: 100;
   display: grid;
   place-items: center;
   padding: 1rem;
   background: color-mix(in srgb, #000 45%, transparent);
+}
+#himaweb-alert .confirm-panel {
+  border-top: 3px solid var(--danger, #b91c1c);
 }
 .confirm-panel {
   width: min(24rem, 94vw);
@@ -2003,6 +2011,31 @@ html[data-topbar="text"] .tab > i { display: none; }
   background: var(--accent-soft);
   color: var(--accent);
 }
+.signature-editor {
+  margin-top: 0.25rem;
+}
+.signature-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+  flex-wrap: wrap;
+}
+.signature-editor-head .label {
+  margin: 0;
+}
+.signature-editor .mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.signature-editor textarea.input {
+  min-height: 8rem;
+  font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", Consolas, monospace;
+  font-size: 0.85rem;
+}
 .compose-quill-wrap {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -2022,6 +2055,40 @@ html[data-topbar="text"] .tab > i { display: none; }
   min-height: 14rem;
   max-height: min(50vh, 28rem);
   overflow-y: auto;
+}
+.compose-signature {
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.45rem;
+}
+.compose-signature-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.compose-signature-html {
+  max-height: min(40vh, 20rem);
+  overflow: auto;
+  font-size: medium;
+}
+.compose-signature-html img {
+  max-width: 100%;
+  height: auto;
+}
+.compose-signature-plain {
+  margin: 0;
+  padding: 0.5rem 0.65rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
 }
 .compose-quote {
   margin-top: 0.5rem;

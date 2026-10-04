@@ -369,6 +369,29 @@
                   </select>
                 </label>
               </div>
+              <div class="block signature-editor"
+                   x-data="signatureEditor()"
+                   x-init="boot()">
+                <div class="signature-editor-head">
+                  <span class="label" data-i18n="settings.signature">Signature</span>
+                  <div class="mode-toggle" role="group" aria-label="Format signature">
+                    <button type="button" class="mode-btn" :class="mode === 'plain' && 'is-active'"
+                            @click="setMode('plain')" data-i18n="settings.signature_mode_plain">Texte</button>
+                    <button type="button" class="mode-btn" :class="mode === 'html' && 'is-active'"
+                            @click="setMode('html')" data-i18n="settings.signature_mode_html">HTML</button>
+                  </div>
+                </div>
+                <textarea class="sr-only" x-ref="plainSeed" readonly tabindex="-1" aria-hidden="true">{{ a.signature }}</textarea>
+                <textarea class="sr-only" x-ref="htmlSeed" readonly tabindex="-1" aria-hidden="true">{{ a.signature_html }}</textarea>
+                <input type="hidden" name="signature" :value="plain" />
+                <input type="hidden" name="signature_html" :value="html" />
+                <textarea class="input w-full" rows="6" x-model="draft" @input="syncDraft()"
+                          :placeholder="mode === 'html'
+                            ? 'HTML de signature (tableaux, images…)'
+                            : 'Texte brut ajouté après le message'"
+                          :data-i18n-placeholder="mode === 'html' ? 'settings.signature_html_ph' : 'settings.signature_ph'"></textarea>
+                <p class="muted tiny" data-i18n="settings.signature_hint">À l’envoi : après votre texte, avant la citation. Le format actif (texte / HTML) est celui enregistré pour ce compte.</p>
+              </div>
               <label class="toggle-row">
                 <span data-i18n="settings.default_account">Compte par défaut</span>
                 <input class="toggle" type="checkbox" name="make_default" value="1" {% if a.is_default %}checked{% endif %} />
@@ -1194,6 +1217,8 @@
         <div class="offline-strip mt-3">{{ msg }}</div>
         {% endif %}
       </section>
+
+      <p class="settings-version settings-span muted tiny">HimaWeb {{ app_version }}</p>
     </div>
   </div>
 </section>

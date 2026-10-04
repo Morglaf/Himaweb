@@ -154,6 +154,24 @@ async fn main() {
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8787));
     let url = format!("http://{addr}");
+
+    // Bind avant d’ouvrir le navigateur : sinon un 2ᵉ lancement ouvre l’UI
+    // de l’instance déjà présente (ex. binaire de dev) puis plante en silence.
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            tracing::warn!(
+                "port 8787 déjà pris — ouverture de l’instance existante ({url})"
+            );
+            let _ = open::that(&url);
+            return;
+        }
+        Err(e) => {
+            tracing::error!("impossible d’écouter sur {url}: {e}");
+            std::process::exit(1);
+        }
+    };
+
     tracing::info!("HimaWeb écoute sur {url}");
     tray::spawn(url.clone());
     if open_browser {
@@ -161,10 +179,6 @@ async fn main() {
     } else {
         tracing::info!("ouverture navigateur désactivée (préférence)");
     }
-
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("bind 127.0.0.1:8787");
 
     let server = axum::serve(listener, app);
     tokio::select! {
