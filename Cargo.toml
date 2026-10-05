@@ -1,6 +1,6 @@
 [package]
 name = "himaweb"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 description = "Local web GUI for Himalaya (and Cardamum/Calendula)"
 license = "GPL-3.0-only"
