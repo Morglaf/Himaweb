@@ -16,6 +16,12 @@
       <a href="/attachments?mailbox={{ mailbox_enc }}&message_id={{ message_id }}&attachment_id={{ a.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}" target="_blank" rel="noopener">{{ a.filename }}</a>
       {% endif %}
       <span class="muted tiny">{{ a.mime }} · {{ a.size_label }}</span>
+      {% if a.is_calendar %}
+      <button type="button" class="icon-btn att-ics" title="Ajouter au calendrier" data-i18n-title="mail.ics_add"
+              data-mailbox="{{ mailbox }}" data-message-id="{{ message_id }}" data-attachment-id="{{ a.id }}"
+              {% if !account.is_empty() %}data-account="{{ account }}"{% endif %}
+              onclick="HimaWeb.importIcsFromAttachment(this)"><i data-lucide="calendar-plus"></i></button>
+      {% endif %}
       <a class="icon-btn att-dl" title="Télécharger"
          href="/attachments?mailbox={{ mailbox_enc }}&message_id={{ message_id }}&attachment_id={{ a.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}"
          download="{{ a.filename }}" target="_blank" rel="noopener"><i data-lucide="download"></i></a>

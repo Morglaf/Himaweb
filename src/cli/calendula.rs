@@ -614,6 +614,33 @@ impl CalendulaClient {
             .unwrap_or_default())
     }
 
+    /// `calendula item create -k CAL -` — iCal brut (VEVENT / VTODO / VJOURNAL).
+    pub async fn create_item(&self, calendar_ref: &str, ical: &[u8]) -> CliResult<String> {
+        let (account, cal_id) = split_cal_ref(calendar_ref);
+        let mut args = Vec::new();
+        if let Some(a) = account.as_deref() {
+            args.push("--account".into());
+            args.push(a.to_string());
+        }
+        args.extend([
+            "item".into(),
+            "create".into(),
+            "-k".into(),
+            cal_id,
+            "-".into(),
+        ]);
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let v = self.runner.run_with_stdin(&self.bin, &refs, ical).await?;
+        Ok(v
+            .get("id")
+            .map(|x| match x {
+                Value::String(s) => s.clone(),
+                Value::Number(n) => n.to_string(),
+                _ => String::new(),
+            })
+            .unwrap_or_default())
+    }
+
     pub async fn update_event(
         &self,
         calendar_ref: &str,

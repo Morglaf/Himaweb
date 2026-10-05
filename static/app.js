@@ -1089,15 +1089,11 @@ function composeForm() {
         }
         if (window.HimaWeb && HimaWeb.alertDialog) {
           await HimaWeb.alertDialog(msg);
-        } else {
-          alert(msg);
         }
       } catch (e) {
         const msg = (e && e.message) || String(e);
         if (window.HimaWeb && HimaWeb.alertDialog) {
           await HimaWeb.alertDialog(msg);
-        } else {
-          alert(msg);
         }
       } finally {
         if (!keepLocked) {
@@ -1384,8 +1380,17 @@ function eventModal(opts) {
     },
     confirmDelete() {
       if (!this.id) return;
-      if (!confirm('Supprimer cet événement ?')) return;
-      if (this.$refs.delForm) this.$refs.delForm.submit();
+      const msg =
+        (window.HimaWeb && HimaWeb.t && HimaWeb.t('cal.delete_event')) ||
+        'Supprimer cet événement ?';
+      if (!window.HimaWeb || !HimaWeb.confirmDialog) return;
+      HimaWeb.confirmDialog(msg, {
+        danger: true,
+        confirmLabel: (HimaWeb.t && HimaWeb.t('common.delete')) || 'Supprimer',
+      }).then((ok) => {
+        if (!ok) return;
+        if (this.$refs.delForm) this.$refs.delForm.submit();
+      });
     },
     async fillAi() {
       if (!this.ai || this.aiBusy) return;
@@ -2413,6 +2418,108 @@ window.HimaWeb = {
     });
   },
 
+  /** Confirmation générique (sans « ne plus demander »). */
+  confirmDialog(message, opts = {}) {
+    return new Promise((resolve) => {
+      let backdrop = document.getElementById('himaweb-confirm-dlg');
+      if (backdrop) backdrop.remove();
+      backdrop = document.createElement('div');
+      backdrop.id = 'himaweb-confirm-dlg';
+      backdrop.className = 'confirm-backdrop';
+      const title = opts.title || this.t('common.confirm') || 'Confirmation';
+      const cancelLabel = opts.cancelLabel || this.t('common.cancel') || 'Annuler';
+      const confirmLabel = opts.confirmLabel || this.t('common.confirm') || 'OK';
+      const danger = !!opts.danger;
+      backdrop.innerHTML = `
+        <div class="modal-panel confirm-panel" role="dialog" aria-modal="true" aria-labelledby="confirm-dlg-title">
+          <h2 id="confirm-dlg-title" class="font-display text-xl"></h2>
+          <p class="confirm-message"></p>
+          <div class="btn-row confirm-actions">
+            <button type="button" class="btn ghost" data-confirm="no"></button>
+            <button type="button" class="btn${danger ? ' danger' : ''}" data-confirm="yes"></button>
+          </div>
+        </div>`;
+      backdrop.querySelector('#confirm-dlg-title').textContent = title;
+      backdrop.querySelector('.confirm-message').textContent = message || '';
+      backdrop.querySelector('[data-confirm="no"]').textContent = cancelLabel;
+      backdrop.querySelector('[data-confirm="yes"]').textContent = confirmLabel;
+      const finish = (ok) => {
+        backdrop.remove();
+        resolve(ok);
+      };
+      backdrop.addEventListener('click', (ev) => {
+        if (ev.target === backdrop) finish(false);
+      });
+      backdrop.querySelector('[data-confirm="no"]').onclick = () => finish(false);
+      backdrop.querySelector('[data-confirm="yes"]').onclick = () => finish(true);
+      document.addEventListener(
+        'keydown',
+        function onKey(ev) {
+          if (ev.key === 'Escape') {
+            document.removeEventListener('keydown', onKey);
+            finish(false);
+          } else if (ev.key === 'Enter') {
+            document.removeEventListener('keydown', onKey);
+            finish(true);
+          }
+        },
+        { once: true }
+      );
+      document.body.appendChild(backdrop);
+      const yes = backdrop.querySelector('[data-confirm="yes"]');
+      if (yes) yes.focus();
+    });
+  },
+
+  /** Intercepte un submit de formulaire → modale, puis resoumet si OK. */
+  confirmSubmit(ev, message, opts) {
+    const form = ev && ev.target;
+    if (!form || form.tagName !== 'FORM') return false;
+    if (form.dataset.himaConfirmed === '1') {
+      delete form.dataset.himaConfirmed;
+      return true;
+    }
+    ev.preventDefault();
+    const o = Object.assign(
+      {
+        danger: true,
+        confirmLabel: this.t('common.delete') || 'Supprimer',
+      },
+      opts || {}
+    );
+    this.confirmDialog(message, o).then((ok) => {
+      if (!ok) return;
+      form.dataset.himaConfirmed = '1';
+      if (typeof form.requestSubmit === 'function') form.requestSubmit();
+      else form.submit();
+    });
+    return false;
+  },
+
+  /** Intercepte un clic (ex. submit name=clear) → modale, puis reclic si OK. */
+  confirmClick(ev, message, opts) {
+    const el = ev && (ev.currentTarget || ev.target);
+    if (!el) return false;
+    if (el.dataset.himaConfirmed === '1') {
+      delete el.dataset.himaConfirmed;
+      return true;
+    }
+    ev.preventDefault();
+    const o = Object.assign(
+      {
+        danger: true,
+        confirmLabel: this.t('common.delete') || 'Supprimer',
+      },
+      opts || {}
+    );
+    this.confirmDialog(message, o).then((ok) => {
+      if (!ok) return;
+      el.dataset.himaConfirmed = '1';
+      el.click();
+    });
+    return false;
+  },
+
   pushMailUndo(entry) {
     if (!entry || !entry.items || !entry.items.length) return;
     const usable = entry.items.filter(
@@ -2491,7 +2598,7 @@ window.HimaWeb = {
       const data = await res.json();
       if (data && data.errors && data.errors.length) {
         console.warn('undo errors', data.errors);
-        alert(data.errors.join('\n'));
+        await this.alertDialog(data.errors.join('\n'));
       }
       if (data && data.restored > 0) {
         // Laisser IMAP propager le move avant de recharger la liste
@@ -2508,7 +2615,7 @@ window.HimaWeb = {
       }
     } catch (e) {
       console.error(e);
-      alert('Échec de l’annulation');
+      await this.alertDialog('Échec de l’annulation');
     } finally {
       HWProgress.end();
     }
@@ -2651,6 +2758,171 @@ window.HimaWeb = {
     window.htmx.ajax('GET', u.pathname + u.search, {
       target: '#compose-layer',
       swap: 'innerHTML',
+    });
+  },
+
+  openMailto(href) {
+    let url;
+    try {
+      url = new URL(href);
+    } catch (_) {
+      return;
+    }
+    const path = (url.pathname || '').replace(/^\/+/, '');
+    const addrs = path
+      .split(/[,;]/)
+      .map((s) => decodeURIComponent(s.trim()))
+      .filter(Boolean);
+    const q = url.searchParams;
+    const cc = (q.get('cc') || '')
+      .split(/[,;]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const to = [...addrs, ...cc].join(', ');
+    const compose = new URL('/compose', window.location.origin);
+    if (to) compose.searchParams.set('to', to);
+    const subject = q.get('subject');
+    if (subject) compose.searchParams.set('subject', subject);
+    const body = q.get('body');
+    if (body) compose.searchParams.set('body', body);
+    this.openCompose(compose.pathname + compose.search);
+  },
+
+  isIcsHref(href) {
+    if (!href) return false;
+    if (/^webcal:/i.test(href)) return true;
+    try {
+      const u = new URL(href, window.location.href);
+      return /\.ics($|[?#])/i.test(u.pathname);
+    } catch (_) {
+      return /\.ics($|[?#])/i.test(href);
+    }
+  },
+
+  async importIcsFromAttachment(el) {
+    if (!el) return;
+    const mailbox = el.getAttribute('data-mailbox') || '';
+    const messageId = el.getAttribute('data-message-id') || '';
+    const attachmentId = el.getAttribute('data-attachment-id') || '';
+    const account = el.getAttribute('data-account') || '';
+    if (!mailbox || !messageId || !attachmentId) return;
+    await this.importIcs({
+      mailbox,
+      message_id: messageId,
+      attachment_id: attachmentId,
+      account,
+    });
+  },
+
+  async importIcsFromUrl(href) {
+    let url = (href || '').trim();
+    if (!url) return;
+    if (/^webcal:/i.test(url)) {
+      url = url.replace(/^webcal:/i, 'https:');
+    }
+    await this.importIcs({ url });
+  },
+
+  async importIcs(source) {
+    const calendars = await this.fetchCalendarOptions();
+    if (!calendars || !calendars.length) {
+      await this.alertDialog(
+        this.t('mail.ics_no_calendar') || 'Aucun calendrier disponible',
+        this.t('mail.ics_add') || 'Ajouter au calendrier'
+      );
+      return;
+    }
+    let calendar = calendars[0].id;
+    if (calendars.length > 1) {
+      const picked = await this.pickCalendar(calendars);
+      if (!picked) return;
+      calendar = picked;
+    }
+    const body = new URLSearchParams();
+    body.set('calendar', calendar);
+    Object.keys(source).forEach((k) => {
+      if (source[k]) body.set(k, source[k]);
+    });
+    try {
+      const res = await fetch('/calendar/import-ics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        await this.alertDialog(
+          data.error || this.t('mail.ics_import_fail') || 'Import ICS échoué',
+          this.t('mail.ics_add') || 'Ajouter au calendrier'
+        );
+        return;
+      }
+      const label = data.summary || this.t('mail.ics_imported') || 'Événement ajouté';
+      await this.alertDialog(label, this.t('mail.ics_imported') || 'Événement ajouté');
+    } catch (e) {
+      await this.alertDialog(
+        this.t('mail.ics_import_fail') || 'Import ICS échoué',
+        this.t('mail.ics_add') || 'Ajouter au calendrier'
+      );
+    }
+  },
+
+  async fetchCalendarOptions() {
+    try {
+      const res = await fetch('/calendar/calendars.json');
+      if (!res.ok) return [];
+      const data = await res.json();
+      return Array.isArray(data.calendars) ? data.calendars : [];
+    } catch (_) {
+      return [];
+    }
+  },
+
+  pickCalendar(calendars) {
+    return new Promise((resolve) => {
+      let backdrop = document.getElementById('himaweb-ics-pick');
+      if (backdrop) backdrop.remove();
+      backdrop = document.createElement('div');
+      backdrop.id = 'himaweb-ics-pick';
+      backdrop.className = 'confirm-backdrop';
+      const opts = calendars
+        .map(
+          (c, i) =>
+            `<option value="${String(c.id).replace(/"/g, '&quot;')}"${i === 0 ? ' selected' : ''}>${
+              (c.name || c.id).replace(/</g, '&lt;')
+            }</option>`
+        )
+        .join('');
+      backdrop.innerHTML = `
+        <div class="modal-panel confirm-panel" role="dialog" aria-modal="true">
+          <h2 class="font-display text-xl">${this.t('mail.ics_add') || 'Ajouter au calendrier'}</h2>
+          <p class="confirm-message muted">${this.t('mail.ics_pick_calendar') || 'Choisir un calendrier'}</p>
+          <select class="select w-full" id="ics-cal-select">${opts}</select>
+          <div class="btn-row confirm-actions">
+            <button type="button" class="btn ghost" data-ics="no">${this.t('common.cancel') || 'Annuler'}</button>
+            <button type="button" class="btn" data-ics="yes">${this.t('mail.ics_add') || 'Ajouter'}</button>
+          </div>
+        </div>`;
+      const finish = (val) => {
+        backdrop.remove();
+        resolve(val);
+      };
+      backdrop.addEventListener('click', (ev) => {
+        if (ev.target === backdrop) finish(null);
+      });
+      backdrop.querySelector('[data-ics="no"]').onclick = () => finish(null);
+      backdrop.querySelector('[data-ics="yes"]').onclick = () => {
+        const sel = backdrop.querySelector('#ics-cal-select');
+        finish(sel ? sel.value : null);
+      };
+      document.body.appendChild(backdrop);
+      const onKey = (ev) => {
+        if (ev.key === 'Escape') {
+          document.removeEventListener('keydown', onKey);
+          finish(null);
+        }
+      };
+      document.addEventListener('keydown', onKey);
     });
   },
 
@@ -3495,11 +3767,11 @@ window.HimaWeb = {
       }
       if (data && data.errors && data.errors.length) {
         console.warn('move errors', data.errors);
-        alert(data.errors.join('\n'));
+        await this.alertDialog(data.errors.join('\n'));
       }
     } catch (e) {
       console.error(e);
-      alert('Échec du déplacement');
+      await this.alertDialog('Échec du déplacement');
     } finally {
       HWProgress.end();
       this.setEnvelopesPending(items, false);
@@ -3726,11 +3998,11 @@ window.HimaWeb = {
       }
       if (data && data.errors && data.errors.length) {
         console.warn('delete errors', data.errors);
-        alert(data.errors.join('\n'));
+        await this.alertDialog(data.errors.join('\n'));
       }
     } catch (e) {
       console.error(e);
-      alert('Échec de la suppression');
+      await this.alertDialog('Échec de la suppression');
     } finally {
       HWProgress.end();
       // Les enveloppes supprimées ont disparu ; restaurer celles qui restent.
@@ -4393,19 +4665,25 @@ window.HimaWeb = {
       return;
     }
     if (action === 'cal-delete') {
-      if (!window.confirm('Supprimer cet événement ?')) return;
-      const form = document.createElement('form');
-      form.method = 'post';
-      form.action = '/calendar/delete';
-      form.innerHTML = `<input type="hidden" name="id" value="${String(p.id).replace(
-        /"/g,
-        '&quot;'
-      )}"/><input type="hidden" name="calendar" value="${String(p.calendar || '').replace(
-        /"/g,
-        '&quot;'
-      )}"/>`;
-      document.body.appendChild(form);
-      form.submit();
+      const msg = this.t('cal.delete_event') || 'Supprimer cet événement ?';
+      this.confirmDialog(msg, {
+        danger: true,
+        confirmLabel: this.t('common.delete') || 'Supprimer',
+      }).then((ok) => {
+        if (!ok) return;
+        const form = document.createElement('form');
+        form.method = 'post';
+        form.action = '/calendar/delete';
+        form.innerHTML = `<input type="hidden" name="id" value="${String(p.id).replace(
+          /"/g,
+          '&quot;'
+        )}"/><input type="hidden" name="calendar" value="${String(p.calendar || '').replace(
+          /"/g,
+          '&quot;'
+        )}"/>`;
+        document.body.appendChild(form);
+        form.submit();
+      });
       return;
     }
     if (action === 'contact-mail') {
@@ -4413,19 +4691,24 @@ window.HimaWeb = {
       return;
     }
     if (action === 'contact-delete') {
-      if (!window.confirm(this.t('contacts.delete_confirm'))) return;
-      const form = document.createElement('form');
-      form.method = 'post';
-      form.action = '/contacts/delete';
-      form.innerHTML = `<input type="hidden" name="id" value="${String(p.id || '').replace(
-        /"/g,
-        '&quot;'
-      )}"/><input type="hidden" name="book" value="${String(p.book || '').replace(
-        /"/g,
-        '&quot;'
-      )}"/>`;
-      document.body.appendChild(form);
-      form.submit();
+      this.confirmDialog(this.t('contacts.delete_confirm'), {
+        danger: true,
+        confirmLabel: this.t('common.delete') || 'Supprimer',
+      }).then((ok) => {
+        if (!ok) return;
+        const form = document.createElement('form');
+        form.method = 'post';
+        form.action = '/contacts/delete';
+        form.innerHTML = `<input type="hidden" name="id" value="${String(p.id || '').replace(
+          /"/g,
+          '&quot;'
+        )}"/><input type="hidden" name="book" value="${String(p.book || '').replace(
+          /"/g,
+          '&quot;'
+        )}"/>`;
+        document.body.appendChild(form);
+        form.submit();
+      });
     }
   },
 };
@@ -4559,12 +4842,45 @@ document.addEventListener('htmx:afterSwap', (ev) => {
 document.addEventListener('click', (ev) => {
   const a = ev.target.closest && ev.target.closest('a[href]');
   if (!a || ev.defaultPrevented || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+  const raw = (a.getAttribute('href') || '').trim();
+  if (!raw || raw.startsWith('#') || raw.toLowerCase().startsWith('javascript:')) return;
+
+  // mailto: → Compose HimaWeb (avant target=_blank)
+  if (/^mailto:/i.test(raw)) {
+    if (!document.getElementById('compose-layer')) return;
+    ev.preventDefault();
+    window.HimaWeb.openMailto(raw);
+    return;
+  }
+
+  // .ics / webcal: → import calendrier
+  if (window.HimaWeb.isIcsHref(raw)) {
+    ev.preventDefault();
+    window.HimaWeb.importIcsFromUrl(raw);
+    return;
+  }
+
   if (a.target && a.target !== '_self') return;
-  const href = a.getAttribute('href') || '';
-  if (!href.startsWith('/compose')) return;
-  if (!document.getElementById('compose-layer')) return;
+
+  // /compose → overlay
+  if (raw.startsWith('/compose')) {
+    if (!document.getElementById('compose-layer')) return;
+    ev.preventDefault();
+    window.HimaWeb.openCompose(raw);
+    return;
+  }
+
+  // Liens http(s) hors origine → nouvel onglet
+  let abs;
+  try {
+    abs = new URL(raw, window.location.href);
+  } catch (_) {
+    return;
+  }
+  if (abs.protocol !== 'http:' && abs.protocol !== 'https:') return;
+  if (abs.origin === window.location.origin) return;
   ev.preventDefault();
-  window.HimaWeb.openCompose(href);
+  window.open(abs.href, '_blank', 'noopener,noreferrer');
 }, true);
 
 document.addEventListener('DOMContentLoaded', () => {

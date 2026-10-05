@@ -4,9 +4,10 @@ use askama::Template;
 use axum::extract::{Path, Query, State};
 use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
-use axum::{Form, Router};
+use axum::{Form, Json, Router};
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use serde::Deserialize;
+use serde_json::json;
 
 use crate::state::AppState;
 
@@ -20,6 +21,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/calendar/todo/create", post(create_todo))
         .route("/calendar/todo/toggle", post(toggle_todo))
         .route("/calendar/todo/delete", post(delete_todo))
+        .route("/calendar/calendars.json", get(calendars_json))
+        .route("/calendar/import-ics", post(import_ics))
 }
 
 #[derive(Deserialize)]
@@ -1260,6 +1263,242 @@ fn days_in_month(year: i32, month: u32) -> u32 {
         .day()
 }
 
+/// Réponse HTMX `stay` : modale HimaWeb plutôt que `alert()` navigateur.
+fn stay_alert_html(msg: &str) -> Html<String> {
+    let msg = serde_json::to_string(msg).unwrap_or_else(|_| "\"Erreur\"".into());
+    Html(format!(
+        r#"<script>(function(m){{if(window.HimaWeb&&HimaWeb.alertDialog)HimaWeb.alertDialog(m);}})({msg});</script>"#
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct ImportIcsForm {
+    pub calendar: String,
+    pub mailbox: Option<String>,
+    pub message_id: Option<String>,
+    pub attachment_id: Option<String>,
+    pub account: Option<String>,
+    pub url: Option<String>,
+}
+
+async fn calendars_json(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let prefs = state.prefs.lock().await.clone();
+    let cached = {
+        let cache = state.cache.lock().await;
+        cache.load_calendars().unwrap_or_default()
+    };
+    let rows: Vec<(String, String)> = if !cached.is_empty() {
+        cached
+            .into_iter()
+            .map(|(id, name, _)| (id, name))
+            .collect()
+    } else if let Some(client) = &state.calendula {
+        let _permit = state.cli_limit.acquire().await.ok();
+        match client.list_calendars().await {
+            Ok(list) => list.into_iter().map(|c| (c.id, c.name)).collect(),
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    let calendars: Vec<_> = decorate_calendars(&prefs, rows)
+        .into_iter()
+        .filter(|c| !c.hidden)
+        .map(|c| {
+            json!({
+                "id": c.id,
+                "name": c.name,
+                "color": c.color,
+                "account": c.account,
+            })
+        })
+        .collect();
+    Json(json!({ "calendars": calendars }))
+}
+
+async fn import_ics(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<ImportIcsForm>,
+) -> impl IntoResponse {
+    let cal = form.calendar.trim();
+    if cal.is_empty() || cal == "__all__" {
+        return Json(json!({ "error": "Choisissez un calendrier" })).into_response();
+    }
+    let Some(client) = &state.calendula else {
+        return Json(json!({ "error": "Calendula absent" })).into_response();
+    };
+
+    let ical_bytes = match load_ics_bytes(&state, &form).await {
+        Ok(b) => b,
+        Err(e) => return Json(json!({ "error": e })).into_response(),
+    };
+    if ical_bytes.is_empty() {
+        return Json(json!({ "error": "Fichier ICS vide" })).into_response();
+    }
+
+    let summary = ics_summary_hint(&ical_bytes);
+    let looks_vevent = ical_bytes
+        .windows(12)
+        .any(|w| w.eq_ignore_ascii_case(b"BEGIN:VEVENT"));
+
+    let _permit = state.cli_limit.acquire().await.ok();
+    let created = if looks_vevent {
+        client.create_event(cal, &ical_bytes).await
+    } else {
+        match client.create_item(cal, &ical_bytes).await {
+            Ok(id) => Ok(id),
+            Err(_) => client.create_event(cal, &ical_bytes).await,
+        }
+    };
+
+    match created {
+        Ok(id) => {
+            let now = Local::now();
+            let _ = refresh_calendar_month(&state, now.year(), now.month(), false).await;
+            Json(json!({
+                "ok": true,
+                "id": id,
+                "summary": summary.unwrap_or_else(|| "Événement ajouté".into()),
+            }))
+            .into_response()
+        }
+        Err(e) => Json(json!({ "error": format!("calendula: {e}") })).into_response(),
+    }
+}
+
+async fn load_ics_bytes(state: &AppState, form: &ImportIcsForm) -> Result<Vec<u8>, String> {
+    if let Some(url) = form.url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        return fetch_ics_url(url).await;
+    }
+    let mailbox = form
+        .mailbox
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Pièce jointe ou URL manquante".to_string())?;
+    let message_id = form
+        .message_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "message_id manquant".to_string())?;
+    let attachment_id = form
+        .attachment_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "attachment_id manquant".to_string())?;
+    let account = {
+        let from_form = form
+            .account
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        if from_form.is_some() {
+            from_form
+        } else {
+            state.account().await
+        }
+    };
+
+    let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let _permit = state.cli_limit.acquire().await.ok();
+    let resolved_id = {
+        match state
+            .himalaya
+            .list_attachments(mailbox, message_id, account.as_deref())
+            .await
+        {
+            Ok(list) if !list.is_empty() => {
+                let exact = list.iter().find(|a| a.id == attachment_id);
+                if let Some(a) = exact {
+                    a.id.clone()
+                } else if let Ok(n) = attachment_id.parse::<u64>() {
+                    let as_one = (n + 1).to_string();
+                    if let Some(a) = list.iter().find(|a| a.id == as_one) {
+                        a.id.clone()
+                    } else if let Some(a) = list.get(n as usize) {
+                        a.id.clone()
+                    } else {
+                        attachment_id.to_string()
+                    }
+                } else {
+                    attachment_id.to_string()
+                }
+            }
+            _ => attachment_id.to_string(),
+        }
+    };
+    state
+        .himalaya
+        .download_attachment(
+            mailbox,
+            message_id,
+            &resolved_id,
+            tmp.path().to_str().unwrap_or("."),
+            account.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn fetch_ics_url(raw: &str) -> Result<Vec<u8>, String> {
+    let mut url = raw.trim().to_string();
+    if let Some(rest) = url.strip_prefix("webcal:") {
+        url = format!("https:{rest}");
+    } else if let Some(rest) = url.strip_prefix("WEBCAL:") {
+        url = format!("https:{rest}");
+    }
+    let parsed = reqwest::Url::parse(&url).map_err(|e| format!("URL invalide: {e}"))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("Schéma URL non supporté".into());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let res = client
+        .get(parsed)
+        .header(reqwest::header::ACCEPT, "text/calendar, text/plain, */*")
+        .send()
+        .await
+        .map_err(|e| format!("Téléchargement ICS: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("Téléchargement ICS: HTTP {}", res.status()));
+    }
+    let bytes = res
+        .bytes()
+        .await
+        .map_err(|e| format!("Lecture ICS: {e}"))?;
+    if bytes.len() > 2_000_000 {
+        return Err("Fichier ICS trop volumineux".into());
+    }
+    Ok(bytes.to_vec())
+}
+
+/// Indice UI via tcal (pas un second moteur iCal).
+fn ics_summary_hint(ical: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(ical);
+    match crate::cli::tcal::parse_event_fields(&text) {
+        Ok(f) if !f.summary.trim().is_empty() => Some(f.summary),
+        _ => {
+            for line in text.lines() {
+                let upper = line.to_ascii_uppercase();
+                if upper.starts_with("SUMMARY") {
+                    if let Some((_, v)) = line.split_once(':') {
+                        let s = v.trim();
+                        if !s.is_empty() {
+                            return Some(s.to_string());
+                        }
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct CreateEventForm {
     pub calendar: String,
@@ -1288,17 +1527,13 @@ async fn create_event(
     let cal = form.calendar.trim();
     if cal.is_empty() || cal == "__all__" {
         if stay {
-            return Html(
-                r#"<script>alert('Choisissez un calendrier');</script>"#.to_string(),
-            )
-            .into_response();
+            return stay_alert_html("Choisissez un calendrier").into_response();
         }
         return Redirect::to("/calendar?msg=Choisissez%20un%20calendrier").into_response();
     }
     let Some(client) = &state.calendula else {
         if stay {
-            return Html(r#"<script>alert('Calendula absent');</script>"#.to_string())
-                .into_response();
+            return stay_alert_html("Calendula absent").into_response();
         }
         return Redirect::to("/calendar?msg=Calendula%20absent").into_response();
     };
@@ -1319,9 +1554,7 @@ async fn create_event(
         Ok(v) => v,
         Err(e) => {
             if stay {
-                let msg = serde_json::to_string(&format!("Erreur tcal: {e}"))
-                    .unwrap_or_else(|_| "\"Erreur\"".into());
-                return Html(format!(r#"<script>alert({msg});</script>"#)).into_response();
+                return stay_alert_html(&format!("Erreur tcal: {e}")).into_response();
             }
             let err_s = format!("Erreur tcal: {e}");
             let msg = urlencoding::encode(&err_s);
@@ -1357,9 +1590,7 @@ if (window.HimaWeb) {
         }
         Err(e) => {
             if stay {
-                let msg = serde_json::to_string(&format!("Erreur: {e}"))
-                    .unwrap_or_else(|_| "\"Erreur\"".into());
-                return Html(format!(r#"<script>alert({msg});</script>"#)).into_response();
+                return stay_alert_html(&format!("Erreur: {e}")).into_response();
             }
             let err_s = format!("Erreur: {e}");
             let msg = urlencoding::encode(&err_s);
@@ -1644,10 +1875,7 @@ async fn create_todo(
     let cal = form.calendar.trim();
     if cal.is_empty() || cal == "__all__" {
         if stay {
-            return Html(
-                r#"<script>alert('Choisissez un calendrier');</script>"#.to_string(),
-            )
-            .into_response();
+            return stay_alert_html("Choisissez un calendrier").into_response();
         }
         return Redirect::to("/calendar?msg=Choisissez%20un%20calendrier").into_response();
     }

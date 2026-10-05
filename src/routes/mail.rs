@@ -1479,6 +1479,7 @@ pub struct AttRow {
     pub mime: String,
     pub size_label: String,
     pub previewable: bool,
+    pub is_calendar: bool,
 }
 
 /// Affichage lisible : `o` / `Ko` / `Mo` (séparateur décimal français).
@@ -1541,18 +1542,31 @@ fn is_previewable_attachment(filename: &str, mime: &str) -> bool {
         || name.ends_with(".txt")
 }
 
+fn is_calendar_attachment(filename: &str, mime: &str) -> bool {
+    let mime_l = mime.trim().to_ascii_lowercase();
+    if mime_l.starts_with("text/calendar")
+        || mime_l.contains("application/ics")
+        || mime_l == "application/calendar"
+    {
+        return true;
+    }
+    filename.trim().to_ascii_lowercase().ends_with(".ics")
+}
+
 fn att_rows_from_meta(list: Vec<crate::cli::himalaya::AttachmentMeta>) -> (Vec<AttRow>, Vec<AttRow>) {
     let mut real = Vec::new();
     let mut accessory = Vec::new();
     for a in list {
         let is_acc = is_accessory_attachment(&a.filename, &a.mime, a.size);
         let previewable = !is_acc && is_previewable_attachment(&a.filename, &a.mime);
+        let is_calendar = !is_acc && is_calendar_attachment(&a.filename, &a.mime);
         let row = AttRow {
             id: a.id,
             filename: a.filename,
             mime: a.mime,
             size_label: format_size_fr(a.size),
             previewable,
+            is_calendar,
         };
         if is_acc {
             accessory.push(row);
@@ -1968,7 +1982,9 @@ struct MessageAttachmentsQuery {
 #[derive(Template)]
 #[template(path = "message_attachments.html")]
 struct MessageAttachmentsTemplate {
+    pub mailbox: String,
     pub mailbox_enc: String,
+    pub account: String,
     pub account_enc: String,
     pub message_id: String,
     pub attachments: Vec<AttRow>,
@@ -1996,7 +2012,9 @@ async fn message_attachments(
     let (attachments, accessory_attachments) = att_rows_from_meta(list);
 
     let html = MessageAttachmentsTemplate {
+        mailbox: q.mailbox.clone(),
         mailbox_enc: urlencoding::encode(&q.mailbox).into_owned(),
+        account: account.clone().unwrap_or_default(),
         account_enc: urlencoding::encode(account.as_deref().unwrap_or("")).into_owned(),
         message_id: q.message_id,
         attachments,

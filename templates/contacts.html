@@ -138,7 +138,7 @@
                       : ((window.HimaWeb&&HimaWeb.t('contacts.edit'))||'Modifier')"></button>
             <form method="post" action="/contacts/delete"
                   x-show="selected.id && selected.book_ref"
-                  onsubmit="return confirm((window.HimaWeb&&HimaWeb.t('contacts.delete_confirm'))||'Supprimer ce contact ?');">
+                  onsubmit="return window.HimaWeb.confirmSubmit(event, (window.HimaWeb&&HimaWeb.t('contacts.delete_confirm'))||'Supprimer ce contact ?');">
               <input type="hidden" name="id" :value="selected.id" />
               <input type="hidden" name="book" :value="selected.book_ref" />
               <button type="submit" class="btn secondary" data-i18n="contacts.delete">Supprimer</button>

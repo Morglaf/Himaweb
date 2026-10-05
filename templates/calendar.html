@@ -198,7 +198,7 @@
           </span>
         </div>
         <form method="post" action="/calendar/todo/delete"
-              onsubmit="return confirm((window.HimaWeb&&HimaWeb.t('cal.delete_task'))||'Supprimer cette tâche ?');">
+              onsubmit="return window.HimaWeb.confirmSubmit(event, (window.HimaWeb&&HimaWeb.t('cal.delete_task'))||'Supprimer cette tâche ?');">
           <input type="hidden" name="calendar" value="{{ t.calendar_id }}" />
           <input type="hidden" name="id" value="{{ t.id }}" />
           <button type="submit" class="icon-btn" title="Supprimer"><i data-lucide="trash-2"></i></button>

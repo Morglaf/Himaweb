@@ -413,7 +413,7 @@
             <div class="account-actions-row">
               <button type="submit" class="btn" form="acct-edit-{{ loop.index }}" data-i18n="common.save">Enregistrer</button>
               <form method="post" action="/settings/account/delete"
-                    onsubmit="return confirm('Supprimer le compte {{ a.name }} ?');">
+                    onsubmit="return window.HimaWeb.confirmSubmit(event, 'Supprimer le compte {{ a.name }} ?');">
                 <input type="hidden" name="name" value="{{ a.name }}" />
                 <button type="submit" class="btn secondary" data-i18n="settings.delete_account">Supprimer le compte</button>
               </form>
@@ -609,7 +609,7 @@
               <button type="submit" class="btn secondary" data-i18n="common.save">Enregistrer</button>
             </form>
             <form method="post" action="/settings/contacts/delete"
-                  onsubmit="return confirm('Supprimer le carnet {{ a.name }} ?');">
+                  onsubmit="return window.HimaWeb.confirmSubmit(event, 'Supprimer le carnet {{ a.name }} ?');">
               <input type="hidden" name="name" value="{{ a.name }}" />
               <button type="submit" class="btn secondary" data-i18n="common.delete">Supprimer</button>
             </form>
@@ -710,7 +710,7 @@
               <button type="submit" class="btn secondary" data-i18n="common.save">Enregistrer</button>
             </form>
             <form method="post" action="/settings/calendar/delete"
-                  onsubmit="return confirm('Supprimer le calendrier {{ a.name }} ?');">
+                  onsubmit="return window.HimaWeb.confirmSubmit(event, 'Supprimer le calendrier {{ a.name }} ?');">
               <input type="hidden" name="name" value="{{ a.name }}" />
               <button type="submit" class="btn secondary" data-i18n="common.delete">Supprimer</button>
             </form>
@@ -951,7 +951,7 @@
               <div class="muted tiny"><code>{{ p.id }}</code>{% if !p.hooks_label.is_empty() %} · hooks : {{ p.hooks_label }}{% endif %}</div>
             </div>
             <form method="post" action="/settings/plugins/remove"
-                  onsubmit="return confirm('Retirer {{ p.name }} ?');">
+                  onsubmit="return window.HimaWeb.confirmSubmit(event, 'Retirer {{ p.name }} ?');">
               <input type="hidden" name="id" value="{{ p.id }}" />
               <button type="submit" class="btn secondary" data-i18n="settings.remove">Retirer</button>
             </form>
@@ -992,7 +992,7 @@
               </div>
             </form>
             <form method="post" action="/settings/ntfy/delete"
-                  onsubmit="return confirm('Supprimer la source {{ s.topic }} ?');">
+                  onsubmit="return window.HimaWeb.confirmSubmit(event, 'Supprimer la source {{ s.topic }} ?');">
               <input type="hidden" name="id" value="{{ s.id }}" />
               <button type="submit" class="btn secondary" data-i18n="common.delete">Supprimer</button>
             </form>
@@ -1046,7 +1046,7 @@
             {% endif %}
             {% if freshrss_api_password_set || !freshrss_url.is_empty() %}
             <button type="submit" name="clear" value="1" class="btn secondary" data-i18n="plugins.freshrss_clear"
-                    onclick="return confirm('Effacer la config FreshRSS ?');">Effacer</button>
+                    onclick="return window.HimaWeb.confirmClick(event, 'Effacer la config FreshRSS ?');">Effacer</button>
             {% endif %}
           </div>
         </form>
@@ -1195,7 +1195,7 @@
           <button type="submit" class="btn" data-i18n="settings.save_ai">Enregistrer IA</button>
         </form>
         <form method="post" action="/settings/ai/log/clear" class="mt-2"
-              onsubmit="return confirm('Effacer le journal IA ?');">
+              onsubmit="return window.HimaWeb.confirmSubmit(event, 'Effacer le journal IA ?');">
           <button type="submit" class="btn secondary" data-i18n="settings.clear_ai_log">Effacer le journal IA</button>
         </form>
         {% if let Some(msg) = ai_message %}
