@@ -49,6 +49,8 @@ async fn health() -> impl IntoResponse {
 struct SideWidgetTemplate {
     events: Vec<SideEventRow>,
     calendars: Vec<SideCalOpt>,
+    /// Tous les agendas (y compris masqués) — création de tâches
+    task_calendars: Vec<SideCalOpt>,
     todos: Vec<crate::routes::calendar::TodoRow>,
     default_date: String,
     default_calendar: String,
@@ -78,7 +80,10 @@ struct SideEventRow {
 
 struct SideCalOpt {
     id: String,
+    /// Compte technique pour filtre tâches
+    account: String,
     name: String,
+    color: String,
 }
 
 fn format_event_when(start: &str) -> String {
@@ -143,6 +148,7 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             .load_upcoming_events(limit)
             .unwrap_or_default()
             .into_iter()
+            .filter(|(_id, _summary, _start, cal, _location)| !prefs.is_calendar_hidden(cal))
             .map(|(_id, summary, start, _cal, location)| {
                 let maps_url = crate::routes::calendar::build_maps_url(
                     &prefs.maps_provider,
@@ -157,37 +163,73 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 }
             })
             .collect::<Vec<_>>();
-        let calendars: Vec<SideCalOpt> = cache
-            .load_calendars()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(id, name, _)| SideCalOpt { id, name })
-            .collect();
+        let calendars: Vec<SideCalOpt> = {
+            let prefs_c = prefs.clone();
+            cache
+                .load_calendars()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(id, _, _)| !prefs_c.is_calendar_hidden(id))
+                .map(|(id, name, _)| {
+                    let color = prefs_c.calendar_color(&id);
+                    let account = crate::prefs::Prefs::cal_account_from_id(&id).to_string();
+                    let name = prefs_c.calendar_display_name(&id, &name);
+                    SideCalOpt {
+                        id,
+                        account,
+                        name,
+                        color,
+                    }
+                })
+                .collect()
+        };
+        // Trier comme le calendrier principal
+        let mut calendars = calendars;
+        calendars.sort_by(|a, b| a.name.cmp(&b.name));
         (events, calendars)
     };
-    let cal_rows: Vec<crate::routes::calendar::CalRow> = calendars
-        .iter()
-        .map(|c| crate::routes::calendar::CalRow {
-            id: c.id.clone(),
-            name: c.name.clone(),
-        })
-        .collect();
+    let all_cal_rows: Vec<crate::routes::calendar::CalRow> = {
+        let cache = state.cache.lock().await;
+        let prefs_c = prefs.clone();
+        crate::routes::calendar::decorate_calendars_pub(
+            &prefs_c,
+            cache
+                .load_calendars()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(id, name, _)| (id, name))
+                .collect(),
+        )
+    };
     let todos = if prefs.side_show_tasks
         && state.calendula_available
-        && !cal_rows.is_empty()
+        && !all_cal_rows.is_empty()
     {
         let mut list =
-            crate::routes::calendar::load_todos(&state, &cal_rows, "__all__").await;
-        // Sidebar : tâches ouvertes d'abord, max ~8
+            crate::routes::calendar::load_todos(&state, &all_cal_rows, "__all__").await;
+        // Sidebar : tâches ouvertes uniquement (filtre calendrier côté UI)
         list.retain(|t| !t.completed);
-        list.truncate(8);
         list
     } else {
         vec![]
     };
+    let task_calendars: Vec<SideCalOpt> =
+        crate::routes::calendar::select_task_calendars(&prefs, &all_cal_rows, &todos)
+            .into_iter()
+            .map(|c| {
+                let account = crate::prefs::Prefs::cal_account_from_id(&c.id).to_string();
+                SideCalOpt {
+                    id: c.id,
+                    account,
+                    name: c.name,
+                    color: c.color,
+                }
+            })
+            .collect();
     let default_date = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let default_calendar = calendars
+    let default_calendar = task_calendars
         .first()
+        .or_else(|| calendars.first())
         .map(|c| c.id.clone())
         .unwrap_or_default();
     let plugin_panels: Vec<SidePluginPanel> = crate::plugins::sidebar_panels()
@@ -212,6 +254,7 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match (SideWidgetTemplate {
         events,
         calendars,
+        task_calendars,
         todos,
         default_date,
         default_calendar,

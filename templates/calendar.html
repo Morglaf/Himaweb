@@ -32,12 +32,18 @@
   {% endif %}
 
   {% if !account_hints.is_empty() %}
-  <div class="account-legend mb-3">
+  <div class="account-legend mb-3" role="toolbar" aria-label="Filtrer par compte">
+    <a class="legend-item {% if current_id == "__all__" %}is-active{% endif %}"
+       href="/calendar?view={{ view }}&year={{ year }}&month={{ month }}&day={{ day }}&calendar=__all__"
+       data-i18n="cal.all">Tous</a>
     {% for a in account_hints %}
-    <span class="legend-item" title="{{ a.name }}">
+    <a class="legend-item {% if a.selected %}is-active{% endif %}"
+       href="/calendar?view={{ view }}&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ a.filter_id_enc }}"
+       title="{{ a.name }}"
+       style="--cal-color: {{ a.color }}">
       <span class="acct-ico" style="color: {{ a.color }}"><i data-lucide="{{ a.icon }}"></i></span>
       <span class="legend-label">{{ a.label }}</span>
-    </span>
+    </a>
     {% endfor %}
   </div>
   {% endif %}
@@ -52,35 +58,23 @@
   <div class="cal-toolbar">
     <div class="cal-nav">
       <a class="icon-btn" data-i18n-title="common.prev" title="Précédent"
-         href="/calendar?view={{ view }}&year={{ prev_year }}&month={{ prev_month }}&day={{ prev_day }}&calendar={{ current_id }}">
+         href="/calendar?view={{ view }}&year={{ prev_year }}&month={{ prev_month }}&day={{ prev_day }}&calendar={{ current_id_enc }}">
         <i data-lucide="chevron-left"></i>
       </a>
       <h2 class="cal-title font-display">{{ title_label }}</h2>
       <a class="icon-btn" data-i18n-title="common.next" title="Suivant"
-         href="/calendar?view={{ view }}&year={{ next_year }}&month={{ next_month }}&day={{ next_day }}&calendar={{ current_id }}">
+         href="/calendar?view={{ view }}&year={{ next_year }}&month={{ next_month }}&day={{ next_day }}&calendar={{ current_id_enc }}">
         <i data-lucide="chevron-right"></i>
       </a>
     </div>
     <div class="cal-views">
       <a class="btn {% if view == "day" %}primary{% else %}ghost{% endif %}"
-         href="/calendar?view=day&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id }}" data-i18n="cal.day">Jour</a>
+         href="/calendar?view=day&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id_enc }}" data-i18n="cal.day">Jour</a>
       <a class="btn {% if view == "week" %}primary{% else %}ghost{% endif %}"
-         href="/calendar?view=week&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id }}" data-i18n="cal.week">Semaine</a>
+         href="/calendar?view=week&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id_enc }}" data-i18n="cal.week">Semaine</a>
       <a class="btn {% if view == "month" %}primary{% else %}ghost{% endif %}"
-         href="/calendar?view=month&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id }}" data-i18n="cal.month">Mois</a>
+         href="/calendar?view=month&year={{ year }}&month={{ month }}&day={{ day }}&calendar={{ current_id_enc }}" data-i18n="cal.month">Mois</a>
     </div>
-    <form method="get" action="/calendar" class="cal-cal-select">
-      <input type="hidden" name="view" value="{{ view }}" />
-      <input type="hidden" name="year" value="{{ year }}" />
-      <input type="hidden" name="month" value="{{ month }}" />
-      <input type="hidden" name="day" value="{{ day }}" />
-      <select name="calendar" class="select" onchange="this.form.submit()">
-        <option value="__all__" {% if current_id == "__all__" %}selected{% endif %}>{{ all_calendars_label }}</option>
-        {% for c in calendars %}
-        <option value="{{ c.id }}" {% if c.id == current_id %}selected{% endif %}>{{ c.name }}</option>
-        {% endfor %}
-      </select>
-    </form>
   </div>
 
   {% if view == "month" %}
@@ -92,12 +86,13 @@
       {% if d.in_month %}
       <div class="cal-day {% if d.selected %}selected{% endif %} {% if d.has_events %}has-events{% endif %}">
         <a class="cal-day-num"
-           href="/calendar?view=day&calendar={{ current_id }}&year={{ year }}&month={{ month }}&day={{ d.day }}">{{ d.day }}</a>
+           href="/calendar?view=day&calendar={{ current_id_enc }}&year={{ year }}&month={{ month }}&day={{ d.day }}">{{ d.day }}</a>
         <ul class="cal-day-events">
           {% for p in d.previews %}
           <li class="cal-ev-click"
               role="button"
               tabindex="0"
+              style="--cal-color: {{ p.color }}; background: color-mix(in srgb, {{ p.color }} 22%, var(--surface));"
               @click.stop="openEditJson($event.currentTarget.getAttribute('data-ev'))"
               @keydown.enter.stop="openEditJson($event.currentTarget.getAttribute('data-ev'))"
               data-ev="{{ p.ev_json }}">
@@ -116,13 +111,14 @@
   <div class="cal-week">
     {% for col in week_days %}
     <div class="cal-week-col {% if col.selected %}selected{% endif %}">
-      <a class="cal-week-head" href="/calendar?view=day&calendar={{ current_id }}&year={{ col.year }}&month={{ col.month }}&day={{ col.day }}">{{ col.label }}</a>
+      <a class="cal-week-head" href="/calendar?view=day&calendar={{ current_id_enc }}&year={{ col.year }}&month={{ col.month }}&day={{ col.day }}">{{ col.label }}</a>
       <ul class="cal-week-list">
         {% for ev in col.events %}
         <li class="cal-week-ev cal-ev-click"
+            style="--cal-color: {{ ev.color }}; border-left: 3px solid {{ ev.color }};"
             @click="openEditJson($event.currentTarget.getAttribute('data-ev'))"
             data-ev="{{ ev.ev_json }}">
-          <span class="cal-ev-time">{% if !ev.time.is_empty() %}{{ ev.time }}{% endif %}</span>
+          <span class="cal-ev-time" style="color: {{ ev.color }}">{% if !ev.time.is_empty() %}{{ ev.time }}{% endif %}</span>
           <span class="cal-ev-title">{{ ev.summary }}</span>
         </li>
         {% else %}
@@ -146,14 +142,44 @@
   </div>
   {% endif %}
 
-  <div class="cal-todos mt-6">
+  <div class="cal-todos mt-6" x-data="{
+    todoCal: '__all__',
+    show(acc) { return this.todoCal === '__all__' || this.todoCal === acc; },
+    anyVisible() {
+      const rows = this.$refs.todoList ? this.$refs.todoList.querySelectorAll('[data-cal-account]') : [];
+      for (const el of rows) { if (this.show(el.dataset.calAccount)) return true; }
+      return false;
+    }
+  }">
     <h2 class="font-display text-xl mb-3" data-i18n="cal.tasks">Tâches</h2>
+    {% if !task_calendars.is_empty() %}
+    <div class="todo-cal-filters" role="toolbar" aria-label="Filtrer par agenda">
+      <button type="button" class="todo-cal-chip"
+              :class="{ 'is-active': todoCal === '__all__' }"
+              @click="todoCal = '__all__'"
+              data-i18n="cal.all">Tous</button>
+      {% for c in task_calendars %}
+      <button type="button" class="todo-cal-chip"
+              style="--cal-color: {{ c.color }}"
+              :class="{ 'is-active': todoCal === '{{ c.account }}' }"
+              @click="todoCal = '{{ c.account }}'">
+        <span class="todo-cal-dot" aria-hidden="true"></span>{{ c.name }}
+      </button>
+      {% endfor %}
+    </div>
+    {% endif %}
     {% if todos.is_empty() %}
     <p class="muted tiny" data-i18n="cal.no_tasks">Aucune tâche (CalDAV VTODO).</p>
     {% else %}
-    <ul class="todo-list">
+    <p class="muted tiny" x-show="!anyVisible()" x-cloak data-i18n="cal.no_tasks_filter">Aucune tâche pour cet agenda.</p>
+    <ul class="todo-list" x-ref="todoList">
       {% for t in todos %}
-      <li class="todo-row {% if t.completed %}is-done{% endif %}">
+      <li class="todo-row {% if t.completed %}is-done{% endif %}"
+          style="--cal-color: {{ t.color }}"
+          data-cal-id="{{ t.calendar_id }}"
+          data-cal-account="{{ t.account }}"
+          x-show="show($el.dataset.calAccount)">
+        <span class="todo-cal-bar" aria-hidden="true"></span>
         <form method="post" action="/calendar/todo/toggle" class="todo-toggle-form">
           <input type="hidden" name="calendar" value="{{ t.calendar_id }}" />
           <input type="hidden" name="id" value="{{ t.id }}" />
@@ -166,7 +192,10 @@
         </form>
         <div class="todo-main">
           <span class="todo-summary">{{ t.summary }}</span>
-          {% if !t.due_label.is_empty() %}<span class="muted tiny">{{ t.due_label }}</span>{% endif %}
+          <span class="todo-meta muted tiny">
+            <span class="todo-cal-name">{{ t.calendar_name }}</span>
+            {% if !t.due_label.is_empty() %}<span class="todo-due"> · {{ t.due_label }}</span>{% endif %}
+          </span>
         </div>
         <form method="post" action="/calendar/todo/delete"
               onsubmit="return confirm((window.HimaWeb&&HimaWeb.t('cal.delete_task'))||'Supprimer cette tâche ?');">
@@ -182,8 +211,9 @@
       <summary class="btn secondary sm" data-i18n="cal.new_task">Nouvelle tâche</summary>
       <form method="post" action="/calendar/todo/create" class="space-y-2 mt-2">
         <select name="calendar" class="select w-full" required>
-          {% for c in calendars %}
-          <option value="{{ c.id }}" {% if c.id == default_calendar %}selected{% endif %}>{{ c.name }}</option>
+          {% for c in task_calendars %}
+          <option value="{{ c.id }}" {% if c.id == default_calendar %}selected{% endif %}
+                  style="color: {{ c.color }}">{{ c.name }}</option>
           {% endfor %}
         </select>
         <input class="input w-full" name="summary" required data-i18n-placeholder="cal.task_title" placeholder="Titre de la tâche…" />

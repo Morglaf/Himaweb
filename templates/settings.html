@@ -54,6 +54,14 @@
             </select>
           </label>
           <label class="settings-row">
+            <span class="label" data-i18n="settings.compose_width_normal">Largeur rédaction (centrée, rem)</span>
+            <input class="input w-full" type="number" name="compose_width_normal" min="28" max="96" step="1" value="{{ compose_width_normal }}" />
+          </label>
+          <label class="settings-row">
+            <span class="label" data-i18n="settings.compose_width_docked">Largeur rédaction (ancrée, rem)</span>
+            <input class="input w-full" type="number" name="compose_width_docked" min="24" max="64" step="1" value="{{ compose_width_docked }}" />
+          </label>
+          <label class="settings-row">
             <span class="label" data-ui-label="ui_font_scale" data-i18n-base="settings.font_scale">Taille du texte ({{ ui_font_scale }})</span>
             <input class="input w-full" type="range" name="ui_font_scale" min="0.8" max="1.4" step="0.05" value="{{ ui_font_scale }}" />
           </label>
@@ -790,6 +798,42 @@
           </div>
           <button type="submit" class="btn secondary" data-i18n="settings.save_cal_look">Enregistrer l’apparence agendas</button>
         </form>
+
+        <h3 class="settings-subhead mt-4" data-i18n="settings.cal_visibility">Visibilité des agendas</h3>
+        <p class="muted tiny mb-2" data-i18n="settings.cal_visibility_hint">Masquer un agenda de la vue calendrier (sélecteurs / grille). Les tâches associées restent disponibles.</p>
+        {% if cal_visibility.is_empty() %}
+        <p class="muted tiny" data-i18n="settings.cal_visibility_empty">Aucun agenda en cache — ouvrez Calendrier une fois pour les découvrir.</p>
+        {% else %}
+        <form method="post" action="/settings/calendar/visibility" class="space-y-2">
+          {% for c in cal_visibility %}
+          <label class="settings-row cal-visibility-row" style="border-left: 3px solid {{ c.color }}; padding-left: 0.65rem;">
+            <span class="label">{{ c.label }}</span>
+            <span class="muted tiny grow">{{ c.id }}</span>
+            <span class="toggle-row">
+              <span data-i18n="settings.cal_hide">Masquer</span>
+              <input class="toggle" type="checkbox" name="hidden" value="{{ c.id }}" {% if c.hidden %}checked{% endif %} />
+            </span>
+          </label>
+          {% endfor %}
+          <button type="submit" class="btn secondary" data-i18n="settings.save_cal_visibility">Enregistrer la visibilité</button>
+        </form>
+
+        <h3 class="settings-subhead mt-4" data-i18n="settings.cal_task_visibility">Agendas pour les tâches</h3>
+        <p class="muted tiny mb-2" data-i18n="settings.cal_task_visibility_hint">Cochez les calendriers CalDAV qui apparaissent dans le filtre / la création de tâches. Par défaut : un agenda par compte (Tasks si présent, sinon personal).</p>
+        <form method="post" action="/settings/calendar/task-visibility" class="space-y-2">
+          {% for c in cal_visibility %}
+          <label class="settings-row cal-visibility-row" style="border-left: 3px solid {{ c.color }}; padding-left: 0.65rem;">
+            <span class="label">{{ c.label }}</span>
+            <span class="muted tiny grow">{{ c.id }}</span>
+            <span class="toggle-row">
+              <span data-i18n="settings.cal_show_tasks">Tâches</span>
+              <input class="toggle" type="checkbox" name="task_cal" value="{{ c.id }}" {% if c.show_tasks %}checked{% endif %} />
+            </span>
+          </label>
+          {% endfor %}
+          <button type="submit" class="btn secondary" data-i18n="settings.save_cal_task_visibility">Enregistrer les agendas tâches</button>
+        </form>
+        {% endif %}
       </section>
 
       <p class="settings-group-label settings-span" id="sync" data-i18n="settings.group.sync">Sync &amp; OAuth</p>

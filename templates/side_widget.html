@@ -47,16 +47,46 @@
   {% endif %}
 
   {% if show_tasks %}
-  <section class="side-block">
+  <section class="side-block" x-data="{
+    todoCal: '__all__',
+    show(acc) { return this.todoCal === '__all__' || this.todoCal === acc; },
+    anyVisible() {
+      const rows = this.$refs.todoList ? this.$refs.todoList.querySelectorAll('[data-cal-account]') : [];
+      for (const el of rows) { if (this.show(el.dataset.calAccount)) return true; }
+      return false;
+    }
+  }">
     <div class="side-block-title">
       <i data-lucide="check-square"></i> <span data-i18n="side.tasks">Tâches</span>
     </div>
+    {% if !task_calendars.is_empty() %}
+    <div class="todo-cal-filters side-todo-filters" role="toolbar" aria-label="Filtrer par agenda">
+      <button type="button" class="todo-cal-chip"
+              :class="{ 'is-active': todoCal === '__all__' }"
+              @click="todoCal = '__all__'"
+              data-i18n="cal.all">Tous</button>
+      {% for c in task_calendars %}
+      <button type="button" class="todo-cal-chip"
+              style="--cal-color: {{ c.color }}"
+              :class="{ 'is-active': todoCal === '{{ c.account }}' }"
+              @click="todoCal = '{{ c.account }}'">
+        <span class="todo-cal-dot" aria-hidden="true"></span>{{ c.name }}
+      </button>
+      {% endfor %}
+    </div>
+    {% endif %}
     {% if todos.is_empty() %}
     <p class="muted tiny" data-i18n="side.no_tasks">Aucune tâche ouverte</p>
     {% else %}
-    <ul class="todo-list side-todo-list">
+    <p class="muted tiny" x-show="!anyVisible()" x-cloak data-i18n="cal.no_tasks_filter">Aucune tâche pour cet agenda.</p>
+    <ul class="todo-list side-todo-list" x-ref="todoList">
       {% for t in todos %}
-      <li class="todo-row {% if t.completed %}is-done{% endif %}">
+      <li class="todo-row {% if t.completed %}is-done{% endif %}"
+          style="--cal-color: {{ t.color }}"
+          data-cal-id="{{ t.calendar_id }}"
+          data-cal-account="{{ t.account }}"
+          x-show="show($el.dataset.calAccount)">
+        <span class="todo-cal-bar" aria-hidden="true"></span>
         <form method="post" action="/calendar/todo/toggle"
               hx-post="/calendar/todo/toggle" hx-target="#htmx-sink" hx-swap="innerHTML">
           <input type="hidden" name="stay" value="1" />
@@ -71,7 +101,10 @@
         </form>
         <div class="todo-main">
           <span class="todo-summary">{{ t.summary }}</span>
-          {% if !t.due_label.is_empty() %}<span class="muted tiny">{{ t.due_label }}</span>{% endif %}
+          <span class="todo-meta muted tiny">
+            <span class="todo-cal-name">{{ t.calendar_name }}</span>
+            {% if !t.due_label.is_empty() %}<span class="todo-due"> · {{ t.due_label }}</span>{% endif %}
+          </span>
         </div>
       </li>
       {% endfor %}
@@ -83,8 +116,9 @@
             hx-post="/calendar/todo/create" hx-target="#htmx-sink" hx-swap="innerHTML">
         <input type="hidden" name="stay" value="1" />
         <select name="calendar" class="select w-full" required>
-          {% for c in calendars %}
-          <option value="{{ c.id }}" {% if c.id == default_calendar %}selected{% endif %}>{{ c.name }}</option>
+          {% for c in task_calendars %}
+          <option value="{{ c.id }}" {% if c.id == default_calendar %}selected{% endif %}
+                  style="color: {{ c.color }}">{{ c.name }}</option>
           {% endfor %}
         </select>
         <input class="input w-full" name="summary" required data-i18n-placeholder="side.task_title" placeholder="Titre…" />

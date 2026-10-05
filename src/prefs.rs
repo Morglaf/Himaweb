@@ -26,6 +26,12 @@ pub struct Prefs {
     /// Affichage barre d’outils compose : `icon-text` | `icon` | `text`
     #[serde(default = "default_topbar_mode")]
     pub compose_toolbar_mode: String,
+    /// Largeur fenêtre compose centrée (rem)
+    #[serde(default = "default_compose_width_normal")]
+    pub compose_width_normal: u16,
+    /// Largeur fenêtre compose ancrée en bas (rem)
+    #[serde(default = "default_compose_width_docked")]
+    pub compose_width_docked: u16,
     /// None / empty = Himalaya default account; `__all__` = tous les comptes
     pub account: Option<String>,
     #[serde(default)]
@@ -177,6 +183,16 @@ pub struct Prefs {
     pub cal_account_labels: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub cal_account_icons: std::collections::BTreeMap<String, String>,
+    /// Agendas masqués de l’UI calendrier (ids `compte::calendrier`) — restent dispo pour les tâches
+    #[serde(default)]
+    pub hidden_calendars: Vec<String>,
+    /// Agendas affichés dans les listes / filtres de tâches (ids).
+    /// Ignoré tant que `task_calendars_configured` est false (défaut auto : 1 par compte).
+    #[serde(default)]
+    pub task_calendars: Vec<String>,
+    /// true après enregistrement manuel de la liste des agendas tâches
+    #[serde(default)]
+    pub task_calendars_configured: bool,
     /// Langue UI : `fr` | `en`
     #[serde(default = "default_locale")]
     pub locale: String,
@@ -259,6 +275,14 @@ fn default_side_events() -> u16 {
     6
 }
 
+fn default_compose_width_normal() -> u16 {
+    52
+}
+
+fn default_compose_width_docked() -> u16 {
+    36
+}
+
 impl Default for Prefs {
     fn default() -> Self {
         Self {
@@ -266,6 +290,8 @@ impl Default for Prefs {
             layout: "classic".into(),
             topbar_mode: default_topbar_mode(),
             compose_toolbar_mode: default_topbar_mode(),
+            compose_width_normal: default_compose_width_normal(),
+            compose_width_docked: default_compose_width_docked(),
             account: None,
             account_order: vec![],
             pinned_folders: vec![],
@@ -322,6 +348,9 @@ impl Default for Prefs {
             cal_account_colors: Default::default(),
             cal_account_labels: Default::default(),
             cal_account_icons: Default::default(),
+            hidden_calendars: vec![],
+            task_calendars: vec![],
+            task_calendars_configured: false,
             locale: default_locale(),
             rss_feeds: vec![],
             freshrss_url: String::new(),
@@ -379,6 +408,8 @@ impl Prefs {
         {
             self.compose_toolbar_mode = default_topbar_mode();
         }
+        self.compose_width_normal = self.compose_width_normal.clamp(28, 96);
+        self.compose_width_docked = self.compose_width_docked.clamp(24, 64);
         self.ui_font_scale = self.ui_font_scale.clamp(0.8, 1.4);
         self.ui_space = self.ui_space.clamp(0.75, 1.4);
         self.ui_radius = self.ui_radius.clamp(0, 28);
@@ -388,6 +419,10 @@ impl Prefs {
         self.pinned_folders.dedup();
         self.hidden_folders.sort();
         self.hidden_folders.dedup();
+        self.hidden_calendars.sort();
+        self.hidden_calendars.dedup();
+        self.task_calendars.sort();
+        self.task_calendars.dedup();
         self.watched_folders.sort();
         self.watched_folders.dedup();
         self.badge_only_folders.sort();
@@ -727,6 +762,132 @@ impl Prefs {
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| "calendar".into())
+    }
+
+    /// Compte Calendula depuis un id `compte::calendrier`.
+    pub fn cal_account_from_id(calendar_id: &str) -> &str {
+        calendar_id.split("::").next().unwrap_or(calendar_id)
+    }
+
+    pub fn is_calendar_hidden(&self, calendar_id: &str) -> bool {
+        self.hidden_calendars.iter().any(|h| h == calendar_id)
+    }
+
+    /// Ids d’agendas à montrer pour les tâches (liste manuelle ou défaut 1 / compte).
+    pub fn effective_task_calendar_ids(&self, known: &[(String, String)]) -> Vec<String> {
+        if self.task_calendars_configured {
+            return self
+                .task_calendars
+                .iter()
+                .filter(|id| known.iter().any(|(k, _)| k == *id))
+                .cloned()
+                .collect();
+        }
+        Self::default_task_calendar_ids(known)
+    }
+
+    pub fn is_task_calendar_visible(&self, calendar_id: &str, known: &[(String, String)]) -> bool {
+        self.effective_task_calendar_ids(known)
+            .iter()
+            .any(|id| id == calendar_id)
+    }
+
+    /// Défaut : un agenda par compte — préfère Tasks/Todo, sinon personal/calendar.
+    pub fn default_task_calendar_ids(known: &[(String, String)]) -> Vec<String> {
+        let mut by_acc: std::collections::BTreeMap<String, (i32, String)> =
+            std::collections::BTreeMap::new();
+        for (id, _) in known {
+            let acc = Self::cal_account_from_id(id).to_string();
+            let score = Self::task_calendar_default_score(id);
+            match by_acc.get(&acc) {
+                None => {
+                    by_acc.insert(acc, (score, id.clone()));
+                }
+                Some((old, _)) if score > *old => {
+                    by_acc.insert(acc, (score, id.clone()));
+                }
+                _ => {}
+            }
+        }
+        by_acc.into_values().map(|(_, id)| id).collect()
+    }
+
+    pub(crate) fn task_calendar_default_score(calendar_id: &str) -> i32 {
+        let short = calendar_id
+            .rsplit("::")
+            .next()
+            .unwrap_or(calendar_id)
+            .to_ascii_lowercase();
+        if [
+            "task", "todo", "tâche", "tache", "aufgaben", "tarea", "attivit",
+        ]
+        .iter()
+        .any(|k| short.contains(k))
+        {
+            return 3;
+        }
+        if matches!(
+            short.as_str(),
+            "personal"
+                | "agenda personnel"
+                | "calendar"
+                | "calendrier"
+                | "default"
+                | "home"
+                | "inbox"
+        ) {
+            return 2;
+        }
+        1
+    }
+
+    /// Nom affiché d’un agenda : label compte + nom court du calendrier.
+    pub fn calendar_display_name(&self, calendar_id: &str, stored_name: &str) -> String {
+        let account = Self::cal_account_from_id(calendar_id);
+        let label = self.cal_account_label(account);
+        let short = {
+            let prefixes = [
+                format!("{account} — "),
+                format!("{account} - "),
+                format!("{account}: "),
+            ];
+            let mut s = stored_name.trim().to_string();
+            for p in &prefixes {
+                if let Some(rest) = s.strip_prefix(p) {
+                    s = rest.to_string();
+                    break;
+                }
+            }
+            // Si le stocké commence déjà par le label (après rename)
+            let lp = format!("{label} — ");
+            if let Some(rest) = s.strip_prefix(&lp) {
+                s = rest.to_string();
+            }
+            s
+        };
+        let key = short.to_ascii_lowercase();
+        let primary = matches!(
+            key.as_str(),
+            "personal"
+                | "agenda personnel"
+                | "calendar"
+                | "calendrier"
+                | "default"
+                | "home"
+                | "inbox"
+        ) || short.eq_ignore_ascii_case(account)
+            || short.eq_ignore_ascii_case(&label);
+        if primary {
+            label
+        } else if short.is_empty() {
+            label
+        } else {
+            format!("{label} — {short}")
+        }
+    }
+
+    pub fn calendar_color(&self, calendar_id: &str) -> String {
+        self.cal_account_color(Self::cal_account_from_id(calendar_id))
     }
 
     pub fn ordered_accounts(&self, known: &[String]) -> Vec<String> {

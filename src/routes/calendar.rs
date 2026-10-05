@@ -54,6 +54,8 @@ struct ShellTemplate {
 struct CalendarTemplate {
     pub calendula_available: bool,
     pub calendars: Vec<CalRow>,
+    /// Tous les agendas (masqués inclus) pour créer des tâches
+    pub task_calendars: Vec<CalRow>,
     pub account_hints: Vec<CalAccountHint>,
     pub current_id: String,
     pub current_id_enc: String,
@@ -64,7 +66,6 @@ struct CalendarTemplate {
     pub title_label: String,
     pub month_name: String,
     pub dow: Vec<String>,
-    pub all_calendars_label: String,
     pub prev_year: i32,
     pub prev_month: u32,
     pub prev_day: u32,
@@ -87,15 +88,24 @@ struct CalendarTemplate {
 pub struct TodoRow {
     pub id: String,
     pub calendar_id: String,
+    /// Compte technique (filtre chips)
+    pub account: String,
+    /// Label Apparence des agendas (ex. EHESS)
+    pub calendar_name: String,
+    pub color: String,
     pub summary: String,
     pub due: String,
     pub due_label: String,
     pub completed: bool,
 }
 
+#[derive(Clone)]
 pub struct CalRow {
     pub id: String,
+    pub account: String,
     pub name: String,
+    pub color: String,
+    pub hidden: bool,
 }
 
 pub struct CalAccountHint {
@@ -103,12 +113,19 @@ pub struct CalAccountHint {
     pub label: String,
     pub icon: String,
     pub color: String,
+    /// `__acc__{name}` encodé pour les liens légende
+    pub filter_id_enc: String,
+    pub selected: bool,
 }
+
+/// Préfixe URL pour filtrer tous les agendas d’un compte CalDAV.
+pub const ACC_FILTER_PREFIX: &str = "__acc__";
 
 pub struct EventPreview {
     pub time: String,
     pub title: String,
     pub ev_json: String,
+    pub color: String,
 }
 
 pub struct DayCell {
@@ -146,6 +163,8 @@ pub struct EventRow {
     pub rrule: String,
     /// URL trajet (vide si pas de lieu)
     pub maps_url: String,
+    /// Couleur compte Calendula (`#rrggbb`)
+    pub color: String,
     /// JSON compact pour data-ev (échappé HTML-safe)
     pub ev_json: String,
 }
@@ -217,23 +236,39 @@ async fn calendar_page(
     };
 
     let todos = if state.calendula_available {
-        load_todos(&state, &calendars, &current_id).await
+        // Tâches : tous les agendas (y compris masqués) — filtre dédié côté UI
+        let all_for_todos: Vec<CalRow> = {
+            let cache = state.cache.lock().await;
+            let prefs_t = state.prefs.lock().await.clone();
+            decorate_calendars(
+                &prefs_t,
+                cache
+                    .load_calendars()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(id, name, _)| (id, name))
+                    .collect(),
+            )
+        };
+        let todos = load_todos(&state, &all_for_todos, "__all__").await;
+        let task_calendars = select_task_calendars(&prefs, &all_for_todos, &todos);
+        (todos, task_calendars)
     } else {
-        vec![]
+        (vec![], vec![])
     };
+    let (todos, task_calendars) = todos;
     let current_id_enc = urlencoding::encode(&current_id).into_owned();
     let default_date = format!("{year:04}-{month:02}-{day:02}");
-    let default_calendar = if current_id != "__all__" && !current_id.is_empty() {
-        current_id.clone()
-    } else {
-        calendars
-            .first()
-            .map(|c| c.id.clone())
-            .unwrap_or_default()
-    };
+    let default_calendar = task_calendars
+        .first()
+        .or_else(|| calendars.first())
+        .map(|c| c.id.clone())
+        .unwrap_or_default();
+    let account_hints = mark_account_hints_selected(account_hints, &current_id);
     let inner = CalendarTemplate {
         calendula_available: state.calendula_available,
         calendars,
+        task_calendars,
         account_hints,
         current_id: current_id.clone(),
         current_id_enc,
@@ -244,7 +279,6 @@ async fn calendar_page(
         title_label,
         month_name,
         dow,
-        all_calendars_label: crate::i18n::t(loc, "cal.all_calendars"),
         prev_year: prev.year(),
         prev_month: prev.month(),
         prev_day: prev.day(),
@@ -401,16 +435,7 @@ async fn load_calendar_data(
     bool,
 ) {
     let prefs = state.prefs.lock().await.clone();
-    let account_hints: Vec<CalAccountHint> = crate::calendar_import::list_calendula_accounts()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|a| CalAccountHint {
-            label: prefs.cal_account_label(&a.name),
-            icon: prefs.cal_account_icon(&a.name),
-            color: prefs.cal_account_color(&a.name),
-            name: a.name,
-        })
-        .collect();
+    let account_hints: Vec<CalAccountHint> = build_account_hints(&prefs);
 
     if !state.calendula_available {
         return (
@@ -430,22 +455,16 @@ async fn load_calendar_data(
             cache.load_calendars().unwrap_or_default()
         };
         if !cached_cals.is_empty() {
-            let calendars: Vec<CalRow> = cached_cals
-                .iter()
-                .map(|(id, name, _)| CalRow {
-                    id: id.clone(),
-                    name: name.clone(),
-                })
-                .collect();
-            let current_id = preferred
-                .map(str::to_string)
-                .filter(|p| p == "__all__" || calendars.iter().any(|c| &c.id == p))
-                .unwrap_or_else(|| "__all__".into());
-            let ids: Vec<String> = if current_id == "__all__" {
-                calendars.iter().map(|c| c.id.clone()).collect()
-            } else {
-                vec![current_id.clone()]
-            };
+            let calendars: Vec<CalRow> = decorate_calendars(
+                &prefs,
+                cached_cals
+                    .iter()
+                    .map(|(id, name, _)| (id.clone(), name.clone()))
+                    .collect(),
+            );
+            let visible: Vec<CalRow> = calendars.iter().filter(|c| !c.hidden).cloned().collect();
+            let current_id = normalize_cal_selection(preferred, &calendars);
+            let ids = selection_calendar_ids(&current_id, &calendars, true);
             let cached_ev = {
                 let cache = state.cache.lock().await;
                 cache
@@ -456,20 +475,23 @@ async fn load_calendar_data(
                 let events: Vec<EventRow> = cached_ev
                     .into_iter()
                     .map(|(cid, id, summary, start, end, desc, loc)| {
-                        with_ev_json(to_event_row(
-                            id,
-                            cid,
-                            summary,
-                            start,
-                            end,
-                            desc,
-                            loc,
-                            String::new(),
+                        with_ev_json(decorate_event_color(
+                            &prefs,
+                            to_event_row(
+                                id,
+                                cid,
+                                summary,
+                                start,
+                                end,
+                                desc,
+                                loc,
+                                String::new(),
+                            ),
                         ))
                     })
                     .collect();
                 return (
-                    calendars,
+                    visible,
                     current_id,
                     events,
                     None,
@@ -478,12 +500,43 @@ async fn load_calendar_data(
                 );
             }
             // Calendriers en cache mais pas d'events pour ce mois → fetch CLI
+            // (retourner quand même la liste décorée pour l’UI)
+            if !force_refresh && !visible.is_empty() {
+                // continue to fetch below, but keep going
+            }
         }
     }
 
     match fetch_and_cache_month(state, preferred, year, month, false).await {
         Ok((calendars, current_id, events)) => {
-            (calendars, current_id, events, None, account_hints, false)
+            let calendars = decorate_calendars(
+                &prefs,
+                calendars
+                    .into_iter()
+                    .map(|c| (c.id, c.name))
+                    .collect(),
+            );
+            let visible: Vec<CalRow> = calendars.iter().filter(|c| !c.hidden).cloned().collect();
+            let current_id = normalize_cal_selection(Some(&current_id), &calendars);
+            let events: Vec<EventRow> = events
+                .into_iter()
+                .filter(|e| event_matches_selection(&current_id, &e.calendar_id, &prefs))
+                .map(|e| with_ev_json(decorate_event_color(&prefs, e)))
+                .collect();
+            // Agenda unique hors liste visible → l’ajouter pour l’UI
+            let ui_cals = if !is_all_selection(&current_id)
+                && parse_account_filter(&current_id).is_none()
+                && visible.iter().all(|c| c.id != current_id)
+            {
+                let mut v = visible;
+                if let Some(c) = calendars.iter().find(|c| c.id == current_id) {
+                    v.insert(0, c.clone());
+                }
+                v
+            } else {
+                visible
+            };
+            (ui_cals, current_id, events, None, account_hints, false)
         }
         Err(e) => {
             // Fallback cache même si refresh a échoué
@@ -492,22 +545,17 @@ async fn load_calendar_data(
                 cache.load_calendars().unwrap_or_default()
             };
             if !cached_cals.is_empty() {
-                let calendars: Vec<CalRow> = cached_cals
-                    .iter()
-                    .map(|(id, name, _)| CalRow {
-                        id: id.clone(),
-                        name: name.clone(),
-                    })
-                    .collect();
-                let current_id = preferred
-                    .map(str::to_string)
-                    .filter(|p| p == "__all__" || calendars.iter().any(|c| &c.id == p))
-                    .unwrap_or_else(|| "__all__".into());
-                let ids: Vec<String> = if current_id == "__all__" {
-                    calendars.iter().map(|c| c.id.clone()).collect()
-                } else {
-                    vec![current_id.clone()]
-                };
+                let calendars: Vec<CalRow> = decorate_calendars(
+                    &prefs,
+                    cached_cals
+                        .iter()
+                        .map(|(id, name, _)| (id.clone(), name.clone()))
+                        .collect(),
+                );
+                let visible: Vec<CalRow> =
+                    calendars.iter().filter(|c| !c.hidden).cloned().collect();
+                let current_id = normalize_cal_selection(preferred, &calendars);
+                let ids = selection_calendar_ids(&current_id, &calendars, true);
                 let events: Vec<EventRow> = {
                     let cache = state.cache.lock().await;
                     cache
@@ -515,21 +563,15 @@ async fn load_calendar_data(
                         .unwrap_or_default()
                         .into_iter()
                         .map(|(c, i, s, start, e, d, loc)| {
-                            with_ev_json(to_event_row(
-                                i,
-                                c,
-                                s,
-                                start,
-                                e,
-                                d,
-                                loc,
-                                String::new(),
+                            with_ev_json(decorate_event_color(
+                                &prefs,
+                                to_event_row(i, c, s, start, e, d, loc, String::new()),
                             ))
                         })
                         .collect()
                 };
                 return (
-                    calendars,
+                    visible,
                     current_id,
                     events,
                     Some(format!("{e} — cache local.")),
@@ -587,24 +629,29 @@ async fn fetch_and_cache_month(
         let _ = cache.save_calendars(&cal_tuples);
     }
 
+    let prefs = state.prefs.lock().await.clone();
     let calendars: Vec<CalRow> = list
         .iter()
         .map(|c| CalRow {
             id: c.id.clone(),
+            account: if c.account.is_empty() {
+                crate::prefs::Prefs::cal_account_from_id(&c.id).to_string()
+            } else {
+                c.account.clone()
+            },
             name: c.name.clone(),
+            color: String::new(),
+            hidden: prefs.is_calendar_hidden(&c.id),
         })
         .collect();
 
-    let current_id = preferred
-        .map(str::to_string)
-        .filter(|p| p == "__all__" || calendars.iter().any(|c| &c.id == p))
-        .unwrap_or_else(|| "__all__".into());
+    let current_id = normalize_cal_selection(preferred, &calendars);
+    let fetch_ids = selection_calendar_ids(&current_id, &calendars, true);
 
-    let targets: Vec<&CalRow> = if current_id == "__all__" {
-        calendars.iter().collect()
-    } else {
-        calendars.iter().filter(|c| c.id == current_id).collect()
-    };
+    let targets: Vec<&CalRow> = calendars
+        .iter()
+        .filter(|c| fetch_ids.iter().any(|id| id == &c.id))
+        .collect();
 
     let mut all_events = Vec::new();
     let mut errs = Vec::new();
@@ -763,6 +810,7 @@ fn to_event_row(
         location,
         rrule,
         maps_url: String::new(),
+        color: String::new(),
         ev_json: String::new(),
     }
 }
@@ -779,8 +827,185 @@ fn with_ev_json(mut e: EventRow) -> EventRow {
         "description": e.description,
         "location": e.location,
         "rrule": e.rrule,
+        "color": e.color,
     })
     .to_string();
+    e
+}
+
+pub fn decorate_calendars_pub(prefs: &crate::prefs::Prefs, rows: Vec<(String, String)>) -> Vec<CalRow> {
+    decorate_calendars(prefs, rows)
+}
+
+fn is_all_selection(id: &str) -> bool {
+    id.is_empty() || id == "__all__"
+}
+
+fn parse_account_filter(id: &str) -> Option<&str> {
+    id.strip_prefix(ACC_FILTER_PREFIX)
+        .filter(|s| !s.is_empty())
+}
+
+fn account_filter_id(account: &str) -> String {
+    format!("{ACC_FILTER_PREFIX}{account}")
+}
+
+fn normalize_cal_selection(preferred: Option<&str>, calendars: &[CalRow]) -> String {
+    let Some(p) = preferred.map(str::trim).filter(|s| !s.is_empty()) else {
+        return "__all__".into();
+    };
+    if p == "__all__" {
+        return "__all__".into();
+    }
+    if let Some(acc) = parse_account_filter(p) {
+        if calendars
+            .iter()
+            .any(|c| crate::prefs::Prefs::cal_account_from_id(&c.id) == acc)
+        {
+            return account_filter_id(acc);
+        }
+        return "__all__".into();
+    }
+    if calendars.iter().any(|c| c.id == p) {
+        return p.to_string();
+    }
+    "__all__".into()
+}
+
+fn selection_calendar_ids(selection: &str, calendars: &[CalRow], visible_only: bool) -> Vec<String> {
+    if is_all_selection(selection) {
+        calendars
+            .iter()
+            .filter(|c| !visible_only || !c.hidden)
+            .map(|c| c.id.clone())
+            .collect()
+    } else if let Some(acc) = parse_account_filter(selection) {
+        calendars
+            .iter()
+            .filter(|c| crate::prefs::Prefs::cal_account_from_id(&c.id) == acc)
+            .filter(|c| !visible_only || !c.hidden)
+            .map(|c| c.id.clone())
+            .collect()
+    } else {
+        vec![selection.to_string()]
+    }
+}
+
+fn event_matches_selection(selection: &str, calendar_id: &str, prefs: &crate::prefs::Prefs) -> bool {
+    if is_all_selection(selection) {
+        return !prefs.is_calendar_hidden(calendar_id);
+    }
+    if let Some(acc) = parse_account_filter(selection) {
+        return crate::prefs::Prefs::cal_account_from_id(calendar_id) == acc
+            && !prefs.is_calendar_hidden(calendar_id);
+    }
+    calendar_id == selection
+}
+
+fn build_account_hints(prefs: &crate::prefs::Prefs) -> Vec<CalAccountHint> {
+    crate::calendar_import::list_calendula_accounts()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| {
+            let filter_id = account_filter_id(&a.name);
+            let filter_id_enc = urlencoding::encode(&filter_id).into_owned();
+            CalAccountHint {
+                label: prefs.cal_account_label(&a.name),
+                icon: prefs.cal_account_icon(&a.name),
+                color: prefs.cal_account_color(&a.name),
+                name: a.name,
+                filter_id_enc,
+                selected: false,
+            }
+        })
+        .collect()
+}
+
+fn mark_account_hints_selected(
+    mut hints: Vec<CalAccountHint>,
+    current_id: &str,
+) -> Vec<CalAccountHint> {
+    let selected_acc = parse_account_filter(current_id).map(str::to_string);
+    for h in &mut hints {
+        h.selected = selected_acc.as_deref() == Some(h.name.as_str());
+    }
+    hints
+}
+
+/// Agendas pour les tâches : liste manuelle (Paramètres) ou défaut 1 agenda / compte.
+/// Labels = Apparence des agendas (un seul par compte → label compte).
+pub(crate) fn select_task_calendars(
+    prefs: &crate::prefs::Prefs,
+    all: &[CalRow],
+    _todos: &[TodoRow],
+) -> Vec<CalRow> {
+    let known: Vec<(String, String)> = all
+        .iter()
+        .map(|c| (c.id.clone(), c.name.clone()))
+        .collect();
+    let selected = prefs.effective_task_calendar_ids(&known);
+    if selected.is_empty() {
+        return vec![];
+    }
+    let mut out: Vec<CalRow> = Vec::new();
+    for id in &selected {
+        let Some(c) = all.iter().find(|c| &c.id == id) else {
+            continue;
+        };
+        let account = crate::prefs::Prefs::cal_account_from_id(&c.id).to_string();
+        let same_acc = selected
+            .iter()
+            .filter(|sid| crate::prefs::Prefs::cal_account_from_id(sid) == account)
+            .count();
+        let name = if same_acc <= 1 {
+            prefs.cal_account_label(&account)
+        } else {
+            c.name.clone()
+        };
+        out.push(CalRow {
+            id: c.id.clone(),
+            account: account.clone(),
+            name,
+            color: c.color.clone(),
+            hidden: c.hidden,
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+    out
+}
+
+fn decorate_calendars(prefs: &crate::prefs::Prefs, rows: Vec<(String, String)>) -> Vec<CalRow> {
+    let mut out: Vec<CalRow> = rows
+        .into_iter()
+        .map(|(id, name)| {
+            let color = prefs.calendar_color(&id);
+            let hidden = prefs.is_calendar_hidden(&id);
+            let account = crate::prefs::Prefs::cal_account_from_id(&id).to_string();
+            let name = prefs.calendar_display_name(&id, &name);
+            CalRow {
+                id,
+                account,
+                name,
+                color,
+                hidden,
+            }
+        })
+        .collect();
+    // Ordre : comptes dans l’ordre des labels settings (alpha label), agendas non masqués d’abord
+    out.sort_by(|a, b| {
+        let aa = crate::prefs::Prefs::cal_account_from_id(&a.id);
+        let bb = crate::prefs::Prefs::cal_account_from_id(&b.id);
+        let la = prefs.cal_account_label(aa);
+        let lb = prefs.cal_account_label(bb);
+        la.cmp(&lb)
+            .then_with(|| a.hidden.cmp(&b.hidden))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    out
+}
+
+fn decorate_event_color(prefs: &crate::prefs::Prefs, mut e: EventRow) -> EventRow {
+    e.color = prefs.calendar_color(&e.calendar_id);
     e
 }
 
@@ -974,6 +1199,7 @@ fn build_month_grid(year: i32, month: u32, selected_day: u32, events: &[EventRow
                 time: e.time.clone(),
                 title: e.summary.clone(),
                 ev_json: e.ev_json.clone(),
+                color: e.color.clone(),
             });
         }
         let more = list.len().saturating_sub(3) as u32;
@@ -1321,8 +1547,14 @@ pub(crate) async fn load_todos(
     let Some(client) = &state.calendula else {
         return vec![];
     };
+    let prefs = state.prefs.lock().await.clone();
     let targets: Vec<&CalRow> = if current_id == "__all__" || current_id.is_empty() {
         calendars.iter().collect()
+    } else if let Some(acc) = parse_account_filter(current_id) {
+        calendars
+            .iter()
+            .filter(|c| crate::prefs::Prefs::cal_account_from_id(&c.id) == acc)
+            .collect()
     } else {
         calendars.iter().filter(|c| c.id == current_id).collect()
     };
@@ -1342,10 +1574,15 @@ pub(crate) async fn load_todos(
             for t in list {
                 let completed = t.percent_complete >= 100
                     || t.status.eq_ignore_ascii_case("COMPLETED");
-                // UID pour update : souvent id = "xxx.ics"
+                let account = crate::prefs::Prefs::cal_account_from_id(&t.calendar_id).to_string();
+                let calendar_name = prefs.cal_account_label(&account);
+                let color = prefs.calendar_color(&t.calendar_id);
                 out.push(TodoRow {
                     id: t.id,
-                    calendar_id: t.calendar_id,
+                    calendar_id: t.calendar_id.clone(),
+                    account,
+                    calendar_name,
+                    color,
                     summary: t.summary,
                     due: t.due.clone(),
                     due_label: format_todo_due(&t.due),

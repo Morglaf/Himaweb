@@ -260,27 +260,35 @@ fn tcal_date_to_ui(raw: &str) -> String {
     t.replace('T', " ").chars().take(16).collect()
 }
 
-/// UI `2026-10-03 14:00` / `2026-10-03` → forme tcal `2026-10-03T14:00:00`.
+/// UI `2026-10-03 14:00` / `2026-10-03` → forme « friendly » tcal (`YYYY-MM-DD HH:MM:SS`).
+///
+/// Important : tcal `parse_friendly_date` attend un **espace** entre date et heure
+/// (pas un `T`). Avec un `T`, la valeur est recopiée telle quelle dans le iCal
+/// (`DTSTART:2026-10-15T18:00:00`), ce que Thunderbird / CalDAV mal-interprètent
+/// (récurrence fantôme, affichage cassé).
 fn ui_to_tcal_date(raw: &str) -> String {
     let t = raw.trim();
     if t.is_empty() {
         return String::new();
     }
-    let cleaned = t.replace(' ', "T");
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&cleaned, "%Y-%m-%dT%H:%M") {
-        return dt.format("%Y-%m-%dT%H:%M:%S").to_string();
+    let cleaned = t.replace('T', " ");
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&cleaned, "%Y-%m-%d %H:%M") {
+        return dt.format("%Y-%m-%d %H:%M:%S").to_string();
     }
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&cleaned, "%Y-%m-%dT%H:%M:%S") {
-        return dt.format("%Y-%m-%dT%H:%M:%S").to_string();
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&cleaned, "%Y-%m-%d %H:%M:%S") {
+        return dt.format("%Y-%m-%d %H:%M:%S").to_string();
     }
     if let Ok(d) = chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d") {
         return d.format("%Y-%m-%d").to_string();
     }
-    // Compact iCal
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(cleaned.split_whitespace().next().unwrap_or(""), "%Y-%m-%d") {
+        return d.format("%Y-%m-%d").to_string();
+    }
+    // Compact iCal → friendly
     let digits: String = t.chars().filter(|c| c.is_ascii_digit()).collect();
     if digits.len() >= 14 {
         return format!(
-            "{}-{}-{}T{}:{}:{}",
+            "{}-{}-{} {}:{}:{}",
             &digits[0..4],
             &digits[4..6],
             &digits[6..8],
@@ -351,6 +359,43 @@ mod tests {
         let parsed = parse_event_fields(&out).unwrap();
         assert_eq!(parsed.summary, "New title");
         assert!(parsed.rrule.contains("week") || parsed.rrule == "weekly");
+    }
+
+    #[test]
+    fn build_event_none_rrule_has_no_rrule() {
+        let fields = EventFields {
+            summary: "Apéro Synaps".into(),
+            start: "2026-10-15 18:00".into(),
+            end: "2026-10-15 20:00".into(),
+            description: String::new(),
+            location: String::new(),
+            rrule: "none".into(),
+        };
+        let out = build_event(&fields).unwrap();
+        let upper = out.to_ascii_uppercase();
+        assert!(
+            !upper.contains("RRULE"),
+            "unexpected RRULE for none:\n{out}"
+        );
+        assert!(
+            !upper.contains("FREQ=DAILY"),
+            "unexpected daily recurrence:\n{out}"
+        );
+        // Format iCal compact (pas ISO avec tirets) — sinon TB/CalDAV cassent.
+        assert!(
+            out.contains("DTSTART:20261015T180000")
+                || (out.contains("DTSTART;TZID=") && out.contains(":20261015T180000")),
+            "DTSTART must be compact iCal:\n{out}"
+        );
+        assert!(
+            out.contains("DTEND:20261015T200000")
+                || (out.contains("DTEND;TZID=") && out.contains(":20261015T200000")),
+            "DTEND must be compact iCal:\n{out}"
+        );
+        assert!(
+            !out.contains("DTSTART:2026-10-15"),
+            "ISO-extended DTSTART must not be written:\n{out}"
+        );
     }
 
     #[test]

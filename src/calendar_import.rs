@@ -270,6 +270,45 @@ pub struct CalendulaAccountEdit {
     pub has_password: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct CaldavBasicAuth {
+    pub username: String,
+    pub password: String,
+    /// `caldav.home` si présent (collection parent des agendas)
+    pub home: Option<String>,
+}
+
+/// Identifiants Basic + home/server pour un compte Calendula.
+pub fn caldav_basic_auth(account: &str) -> Result<CaldavBasicAuth, String> {
+    let path = prefs::calendula_config_path();
+    if !path.is_file() {
+        return Err("Config Calendula introuvable.".into());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e: toml_edit::TomlError| e.to_string())?;
+    let t = doc
+        .get("accounts")
+        .and_then(|a| a.as_table())
+        .and_then(|a| a.get(account))
+        .and_then(|i| i.as_table())
+        .ok_or_else(|| format!("Compte Calendula « {account} » introuvable."))?;
+    let username = get_nested_str(t, &["caldav", "auth", "basic", "username"])
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("Username CalDAV manquant pour « {account} »."))?;
+    let password = get_nested_str(t, &["caldav", "auth", "basic", "password", "raw"])
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("Mot de passe CalDAV manquant pour « {account} »."))?;
+    let home = get_nested_str(t, &["caldav", "home"]).filter(|s| !s.is_empty());
+    let _server = get_nested_str(t, &["caldav", "server"]).filter(|s| !s.is_empty());
+    Ok(CaldavBasicAuth {
+        username,
+        password,
+        home,
+    })
+}
+
 pub fn list_calendula_accounts() -> Result<Vec<CalendulaAccountEdit>, String> {
     let path = prefs::calendula_config_path();
     if !path.is_file() {

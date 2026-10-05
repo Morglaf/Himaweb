@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use askama::Template;
-use axum::extract::{Multipart, Query, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
@@ -14,11 +14,15 @@ use crate::cli::himalaya::ComposeKind;
 use crate::prefs::ACCOUNT_ALL;
 use crate::state::AppState;
 
+/// Limite corps multipart (PJ mail) — défaut Axum = 2 Mo, trop bas pour les pièces jointes.
+const COMPOSE_BODY_LIMIT: usize = 50 * 1024 * 1024;
+
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/compose", get(compose_get))
         .route("/compose/send", post(compose_send))
         .route("/compose/draft", post(compose_draft))
+        .layer(DefaultBodyLimit::max(COMPOSE_BODY_LIMIT))
 }
 
 #[derive(Deserialize)]
@@ -115,10 +119,25 @@ async fn compose_get(
             } else {
                 Some(preferred.as_str())
             };
+            let self_email = crate::accounts_config::list_editable_accounts()
+                .ok()
+                .and_then(|list| {
+                    list.into_iter()
+                        .find(|a| {
+                            if preferred.is_empty() {
+                                a.is_default
+                            } else {
+                                a.name == preferred
+                            }
+                        })
+                        .map(|a| a.email)
+                })
+                .filter(|e| !e.trim().is_empty());
+            let self_email_ref = self_email.as_deref();
             let _permit = state.cli_limit.acquire().await.ok();
             match state
                 .himalaya
-                .compose_template(kind, &mailbox, Some(id), account_ref)
+                .compose_template(kind, &mailbox, Some(id), account_ref, self_email_ref)
                 .await
             {
                 Ok(d) => draft = d,
@@ -134,11 +153,18 @@ async fn compose_get(
                             }
                             _ => format!("Re: {}", crate::cli::himalaya::decode_rfc2047(&msg.subject)),
                         };
-                        if !matches!(kind, ComposeKind::Forward) {
-                            draft.to = crate::cli::himalaya::normalize_addr_header(&msg.from);
-                        }
                         if matches!(kind, ComposeKind::ReplyAll) {
-                            draft.cc = crate::cli::himalaya::normalize_addr_header(&msg.cc);
+                            let (to, cc) = crate::cli::himalaya::reply_all_recipients(
+                                &msg.from,
+                                &msg.reply_to,
+                                &msg.to,
+                                &msg.cc,
+                                self_email_ref,
+                            );
+                            draft.to = to;
+                            draft.cc = cc;
+                        } else if !matches!(kind, ComposeKind::Forward) {
+                            draft.to = crate::cli::himalaya::normalize_addr_header(&msg.from);
                         }
                         let body_src = if msg.body_text.is_empty() {
                             "(voir HTML)".to_string()
@@ -199,6 +225,8 @@ async fn compose_get(
         "cardamum": state.cardamum_available,
         "ai": prefs_snap.ai_enabled,
         "toolbarMode": prefs_snap.compose_toolbar_mode,
+        "widthNormal": prefs_snap.compose_width_normal,
+        "widthDocked": prefs_snap.compose_width_docked,
         "kind": if is_reply { "reply" } else { "compose" },
         "title": title,
         "to": draft.to,
@@ -361,7 +389,10 @@ async fn parse_compose_multipart(mut multipart: Multipart) -> Result<ParsedCompo
     {
         let name = field.name().unwrap_or("").to_string();
         let filename = field.file_name().map(|s| s.to_string());
-        let data = field.bytes().await.map_err(|e| format!("champ {name}: {e}"))?;
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| map_multipart_field_err(&name, &e))?;
         match name.as_str() {
             "account" => {
                 let s = String::from_utf8_lossy(&data).trim().to_string();
@@ -443,6 +474,15 @@ async fn parse_compose_multipart(mut multipart: Multipart) -> Result<ParsedCompo
         }
     }
     Ok(out)
+}
+
+fn map_multipart_field_err(name: &str, e: &axum::extract::multipart::MultipartError) -> String {
+    let s = e.to_string();
+    if s.contains("too large") || s.contains("Limit") || s.contains("limit") {
+        let mb = COMPOSE_BODY_LIMIT / (1024 * 1024);
+        return format!("Pièce jointe ou message trop volumineux (max. {mb} Mo).");
+    }
+    format!("champ {name}: {s}")
 }
 
 /// Erreur compose → JSON (modal côté client), plus de page blanche.
@@ -549,6 +589,10 @@ async fn finish_send(state: Arc<AppState>, form: ParsedCompose) -> axum::respons
         {
             Ok(()) => Ok(()),
             Err(e) => {
+                // Pause courte si coupure SMTP (10054) : éviter d’enchaîner 3 envois qui reset
+                if is_smtp_conn_reset(&e.to_string()) {
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                }
                 // Échec souvent dû à l’alias Sent (Gmail) : réessayer sans --save, puis EML
                 let retry = state
                     .himalaya
@@ -567,6 +611,15 @@ async fn finish_send(state: Arc<AppState>, form: ParsedCompose) -> axum::respons
                     tracing::warn!("envoi OK sans copie Sent ({sent_mailbox}): {e}");
                     Ok(())
                 } else {
+                    if is_smtp_conn_reset(&e.to_string())
+                        || retry
+                            .as_ref()
+                            .err()
+                            .map(|e2| is_smtp_conn_reset(&e2.to_string()))
+                            .unwrap_or(false)
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    }
                     let eml = build_eml(
                         &form,
                         from.as_deref().unwrap_or(""),
@@ -584,7 +637,7 @@ async fn finish_send(state: Arc<AppState>, form: ParsedCompose) -> axum::respons
                     .await
                     {
                         Ok(()) => Ok(()),
-                        Err(e2) => Err(format!("{e} / {e2}")),
+                        Err(e2) => Err(format_send_error(&e.to_string(), Some(&e2))),
                     }
                 }
             }
@@ -670,14 +723,43 @@ async fn send_eml_with_sent_fallback(
     {
         Ok(()) => Ok(()),
         Err(e) => {
+            let e1 = e.to_string();
+            if is_smtp_conn_reset(&e1) {
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            }
             match state.himalaya.send_raw_eml(eml, account, None).await {
                 Ok(()) => {
-                    tracing::warn!("envoi OK sans copie Sent ({sent_mailbox}): {e}");
+                    tracing::warn!("envoi OK sans copie Sent ({sent_mailbox}): {e1}");
                     Ok(())
                 }
-                Err(e2) => Err(format!("{e} / {e2}")),
+                Err(e2) => Err(format_send_error(&e1, Some(&e2.to_string()))),
             }
         }
+    }
+}
+
+fn is_smtp_conn_reset(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("10054")
+        || e.contains("connection reset")
+        || e.contains("fermée par l")
+        || e.contains("fermee par l")
+        || e.contains("broken pipe")
+        || e.contains("connection abort")
+}
+
+fn format_send_error(primary: &str, secondary: Option<&str>) -> String {
+    let detail = secondary
+        .filter(|s| !s.is_empty() && *s != primary)
+        .unwrap_or(primary);
+    if is_smtp_conn_reset(primary) || secondary.is_some_and(is_smtp_conn_reset) {
+        format!(
+            "le serveur SMTP a coupé la connexion (souvent temporaire). Réessayez dans quelques secondes. Détail : {detail}"
+        )
+    } else if let Some(sec) = secondary.filter(|s| !s.is_empty() && *s != primary) {
+        format!("{primary} / {sec}")
+    } else {
+        primary.to_string()
     }
 }
 

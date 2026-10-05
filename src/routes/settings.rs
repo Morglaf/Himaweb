@@ -38,6 +38,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/settings/calendar/password", post(set_calendula_password))
         .route("/settings/calendar/delete", post(delete_cal_account))
         .route("/settings/calendar/colors", post(save_cal_colors))
+        .route("/settings/calendar/visibility", post(save_cal_visibility))
+        .route("/settings/calendar/task-visibility", post(save_cal_task_visibility))
         .route("/settings/contacts/import", post(import_contacts))
         .route("/settings/contacts/add", post(add_carddav))
         .route("/settings/contacts/password", post(set_cardamum_password))
@@ -83,6 +85,8 @@ struct SettingsTemplate {
     pub layout: String,
     pub topbar_mode: String,
     pub compose_toolbar_mode: String,
+    pub compose_width_normal: u16,
+    pub compose_width_docked: u16,
     pub ui_font_scale: f32,
     pub ui_radius: u16,
     pub ui_space: f32,
@@ -153,6 +157,7 @@ struct SettingsTemplate {
     pub ai_inbox_preprompt: String,
     pub ai_message: Option<String>,
     pub cal_color_accounts: Vec<ColorAccountRow>,
+    pub cal_visibility: Vec<CalVisibilityRow>,
     pub backup_message: Option<String>,
     pub locale: String,
     pub rss_feeds_text: String,
@@ -189,6 +194,15 @@ pub struct ColorAccountRow {
     pub color: String,
     pub kind: String,
     pub ai_preprompt: String,
+}
+
+pub struct CalVisibilityRow {
+    pub id: String,
+    pub label: String,
+    pub color: String,
+    pub hidden: bool,
+    /// Affiché dans les listes / filtres de tâches
+    pub show_tasks: bool,
 }
 
 pub struct NtfySourceRow {
@@ -556,6 +570,35 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         })
         .collect();
 
+    let cal_visibility: Vec<CalVisibilityRow> = {
+        let cached = {
+            let cache = state.cache.lock().await;
+            cache.load_calendars().unwrap_or_default()
+        };
+        let known: Vec<(String, String)> = cached
+            .iter()
+            .map(|(id, name, _)| (id.clone(), name.clone()))
+            .collect();
+        let mut rows: Vec<CalVisibilityRow> = cached
+            .into_iter()
+            .map(|(id, name, _)| {
+                let label = prefs_snap.calendar_display_name(&id, &name);
+                let color = prefs_snap.calendar_color(&id);
+                let hidden = prefs_snap.is_calendar_hidden(&id);
+                let show_tasks = prefs_snap.is_task_calendar_visible(&id, &known);
+                CalVisibilityRow {
+                    id,
+                    label,
+                    color,
+                    hidden,
+                    show_tasks,
+                }
+            })
+            .collect();
+        rows.sort_by(|a, b| a.label.cmp(&b.label));
+        rows
+    };
+
     let ai_gemini_model = if prefs_snap.ai_provider == "gemini" {
         prefs_snap.ai_model.clone()
     } else {
@@ -572,6 +615,8 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         layout: layout.clone(),
         topbar_mode: prefs_snap.topbar_mode.clone(),
         compose_toolbar_mode: prefs_snap.compose_toolbar_mode.clone(),
+        compose_width_normal: prefs_snap.compose_width_normal,
+        compose_width_docked: prefs_snap.compose_width_docked,
         ui_font_scale: prefs_snap.ui_font_scale,
         ui_radius: prefs_snap.ui_radius,
         ui_space: prefs_snap.ui_space,
@@ -666,6 +711,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         ai_inbox_preprompt: prefs_snap.ai_inbox_preprompt.clone(),
         ai_message: flash.ai_message,
         cal_color_accounts,
+        cal_visibility,
         backup_message: flash.backup_message,
         locale: crate::i18n::normalize_locale(&prefs_snap.locale).to_string(),
         rss_feeds_text: prefs_snap
@@ -722,6 +768,8 @@ pub struct UiForm {
     pub layout: String,
     pub topbar_mode: Option<String>,
     pub compose_toolbar_mode: Option<String>,
+    pub compose_width_normal: Option<u16>,
+    pub compose_width_docked: Option<u16>,
     pub ui_font_scale: Option<f32>,
     pub ui_radius: Option<u16>,
     pub ui_space: Option<f32>,
@@ -745,6 +793,12 @@ async fn save_ui(
         }
         if let Some(mode) = form.compose_toolbar_mode {
             prefs.compose_toolbar_mode = mode;
+        }
+        if let Some(v) = form.compose_width_normal {
+            prefs.compose_width_normal = v;
+        }
+        if let Some(v) = form.compose_width_docked {
+            prefs.compose_width_docked = v;
         }
         if let Some(v) = form.ui_font_scale {
             prefs.ui_font_scale = v;
@@ -2159,6 +2213,50 @@ async fn save_cal_colors(
         let _ = p.save();
     }
     flash.calendar_message = Some("Apparence des agendas enregistrée.".into());
+    render_settings(state, flash).await
+}
+
+async fn save_cal_visibility(
+    State(state): State<Arc<AppState>>,
+    axum::extract::RawForm(raw): axum::extract::RawForm,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    let map = crate::form_util::parse_form_lists(&raw);
+    // Agendas explicitement masqués (checkbox name=hidden value=id)
+    let hidden = crate::form_util::form_values(&map, "hidden");
+    {
+        let mut p = state.prefs.lock().await;
+        p.hidden_calendars = hidden
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        *p = p.clone().normalize();
+        let _ = p.save();
+    }
+    flash.calendar_message = Some("Visibilité des agendas enregistrée.".into());
+    render_settings(state, flash).await
+}
+
+async fn save_cal_task_visibility(
+    State(state): State<Arc<AppState>>,
+    axum::extract::RawForm(raw): axum::extract::RawForm,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    let map = crate::form_util::parse_form_lists(&raw);
+    let shown = crate::form_util::form_values(&map, "task_cal");
+    {
+        let mut p = state.prefs.lock().await;
+        p.task_calendars = shown
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        p.task_calendars_configured = true;
+        *p = p.clone().normalize();
+        let _ = p.save();
+    }
+    flash.calendar_message = Some("Agendas pour les tâches enregistrés.".into());
     render_settings(state, flash).await
 }
 

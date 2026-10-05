@@ -362,6 +362,7 @@ impl Cache {
                         from: r.get(1)?,
                         to: r.get(2)?,
                         cc: r.get(3)?,
+                        reply_to: String::new(),
                         date: r.get(4)?,
                         flags: if flags.is_empty() {
                             vec![]

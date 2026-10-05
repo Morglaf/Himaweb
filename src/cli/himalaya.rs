@@ -43,6 +43,7 @@ pub struct MessageView {
     pub from: String,
     pub to: String,
     pub cc: String,
+    pub reply_to: String,
     pub date: String,
     pub flags: Vec<String>,
     pub body_html: String,
@@ -384,7 +385,8 @@ impl HimalayaClient {
 
         // Himalaya v2: parts + html_body/text_body indices
         let parts = obj.get("parts").and_then(|p| p.as_array());
-        let (mut subject, mut from, mut to, mut cc, mut date) = (
+        let (mut subject, mut from, mut to, mut cc, mut reply_to, mut date) = (
+            String::new(),
             String::new(),
             String::new(),
             String::new(),
@@ -407,6 +409,7 @@ impl HimalayaClient {
                             "from" => from = header_address(value),
                             "to" => to = header_address(value),
                             "cc" => cc = header_address(value),
+                            "reply-to" => reply_to = header_address(value),
                             "date" => date = header_date(value),
                             _ => {}
                         }
@@ -431,6 +434,12 @@ impl HimalayaClient {
         }
         if cc.is_empty() {
             cc = extract_addr(obj, "cc");
+        }
+        if reply_to.is_empty() {
+            reply_to = extract_addr(obj, "reply-to");
+            if reply_to.is_empty() {
+                reply_to = extract_addr(obj, "reply_to");
+            }
         }
         if date.is_empty() {
             date = obj
@@ -547,6 +556,7 @@ impl HimalayaClient {
             from,
             to,
             cc,
+            reply_to,
             date,
             flags,
             body_html,
@@ -1119,14 +1129,34 @@ impl HimalayaClient {
         mailbox: &str,
         id: Option<&str>,
         account: Option<&str>,
+        self_email: Option<&str>,
     ) -> CliResult<ComposeDraft> {
         let id = id.unwrap_or("");
         if matches!(kind, ComposeKind::New) {
             return Ok(ComposeDraft::default());
         }
 
+        // Himalaya n'a pas de `--all` : pour ReplyAll on lit les headers, calcule To/Cc,
+        // puis surcharge `message reply --to/--cc` (sujet, citation, fil restent côté CLI).
+        let (to_override, cc_override) = if matches!(kind, ComposeKind::ReplyAll) {
+            let msg = self.read_message(mailbox, id, account).await?;
+            let (to, cc) = reply_all_recipients(
+                &msg.from,
+                &msg.reply_to,
+                &msg.to,
+                &msg.cc,
+                self_email,
+            );
+            (Some(to), if cc.is_empty() { None } else { Some(cc) })
+        } else {
+            (None, None)
+        };
+
+        let to_owned = to_override.clone();
+        let cc_owned = cc_override.clone();
+
         // `message reply|forward` écrit du MIME brut (pas du JSON), même avec --json.
-        let args: Vec<&str> = match kind {
+        let mut args: Vec<&str> = match kind {
             ComposeKind::Reply | ComposeKind::ReplyAll => {
                 Self::with_account(account, &["message", "reply", "--mailbox", mailbox, id])
             }
@@ -1135,10 +1165,26 @@ impl HimalayaClient {
             }
             ComposeKind::New => unreachable!(),
         };
+        if let Some(ref t) = to_owned {
+            args.push("--to");
+            args.push(t.as_str());
+        }
+        if let Some(ref c) = cc_owned {
+            args.push("--cc");
+            args.push(c.as_str());
+        }
 
         let bytes = self.runner.run_raw(&self.bin, &args).await?;
         let text = String::from_utf8_lossy(&bytes);
-        Ok(ComposeDraft::from_mime(&text))
+        let mut draft = ComposeDraft::from_mime(&text);
+        // Garantir les destinataires calculés même si Himalaya ignore les flags en sortie MIME.
+        if let Some(t) = to_owned {
+            draft.to = t;
+        }
+        if let Some(c) = cc_owned {
+            draft.cc = c;
+        }
+        Ok(draft)
     }
 }
 
@@ -1485,6 +1531,82 @@ pub fn normalize_addr_header(raw: &str) -> String {
         Ok(s) => s,
         Err(_) => raw,
     }
+}
+
+/// Destinataires reply-all : To = Reply-To∥From ; Cc = (To∪Cc d’origine) − soi − To.
+pub fn reply_all_recipients(
+    from: &str,
+    reply_to: &str,
+    to: &str,
+    cc: &str,
+    self_email: Option<&str>,
+) -> (String, String) {
+    let self_lower = self_email
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| extract_email_addr(s).or_else(|| Some(s.to_ascii_lowercase())))
+        .map(|e| e.to_ascii_lowercase());
+
+    let primary_raw = if !reply_to.trim().is_empty() {
+        reply_to
+    } else {
+        from
+    };
+    let primary_parts = collect_addr_parts(primary_raw);
+    let to_out = join_addr_parts(&primary_parts);
+
+    let mut exclude: std::collections::HashSet<String> = primary_parts
+        .iter()
+        .filter_map(|p| extract_email_addr(p).map(|e| e.to_ascii_lowercase()))
+        .collect();
+    if let Some(ref s) = self_lower {
+        exclude.insert(s.clone());
+    }
+
+    let mut cc_parts: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = exclude.clone();
+    for raw in [to, cc] {
+        for part in collect_addr_parts(raw) {
+            let Some(email) = extract_email_addr(&part) else {
+                continue;
+            };
+            let key = email.to_ascii_lowercase();
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.insert(key);
+            cc_parts.push(part);
+        }
+    }
+
+    (to_out, join_addr_parts(&cc_parts))
+}
+
+fn collect_addr_parts(raw: &str) -> Vec<String> {
+    let raw = repair_utf8_mojibake(&decode_rfc2047(raw.trim()));
+    if raw.is_empty() {
+        return vec![];
+    }
+    split_addr_list(&raw)
+        .into_iter()
+        .filter_map(|part| {
+            let part = part.trim();
+            if part.is_empty() {
+                return None;
+            }
+            let email = extract_email_addr(part)?;
+            let name = display_name_before_email(part, &email);
+            if name.is_empty() {
+                Some(email)
+            } else {
+                Some(format!("{name} <{email}>"))
+            }
+        })
+        .collect()
+}
+
+fn join_addr_parts(parts: &[String]) -> String {
+    parts.join(", ")
 }
 
 /// Liste d'adresses SMTP (virgules). Refuse les noms sans `@`.

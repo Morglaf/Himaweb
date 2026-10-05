@@ -555,6 +555,8 @@ function composeForm() {
     showBcc: false,
     showReplyTo: false,
     toolbarMode: 'icon-text',
+    widthNormal: 52,
+    widthDocked: 36,
     to: '',
     cc: '',
     bcc: '',
@@ -572,6 +574,8 @@ function composeForm() {
     aiBusy: false,
     aiError: '',
     draftBusy: false,
+    sendBusy: false,
+    sendDone: false,
     attachNames: [],
     attachFiles: [],
     windowMode: 'normal',
@@ -584,6 +588,12 @@ function composeForm() {
     get displayTitle() {
       const s = (this.subject || '').trim();
       return s || this.baseTitle;
+    },
+    get panelStyle() {
+      const n = Math.min(96, Math.max(28, Number(this.widthNormal) || 52));
+      const d = Math.min(64, Math.max(24, Number(this.widthDocked) || 36));
+      const w = this.windowMode === 'docked' ? d : n;
+      return `--compose-w: ${w}rem`;
     },
     get displayQuoteText() {
       return (this.previousQuote || '')
@@ -658,6 +668,8 @@ function composeForm() {
             opts.toolbarMode === 'icon' || opts.toolbarMode === 'text' || opts.toolbarMode === 'icon-text'
               ? opts.toolbarMode
               : 'icon-text';
+          if (opts.widthNormal != null) this.widthNormal = Number(opts.widthNormal) || 52;
+          if (opts.widthDocked != null) this.widthDocked = Number(opts.widthDocked) || 36;
           this.to = opts.to || '';
           this.cc = opts.cc || '';
           this.bcc = opts.bcc || '';
@@ -987,11 +999,17 @@ function composeForm() {
     },
     async onSubmit(ev) {
       ev.preventDefault();
-      if (this._composeSubmitting) return;
       const submitter = ev.submitter;
       const isDraft = !!(submitter && submitter.name === 'save_draft');
+      if (this._composeSubmitting || this.sendDone || (!isDraft && this.sendBusy)) return;
+      if (isDraft && this.draftBusy) return;
       this.draftBusy = isDraft;
+      this.sendBusy = !isDraft;
       this._composeSubmitting = true;
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+      });
+      let keepLocked = false;
       try {
         if (this.bodyMode === 'html' && this.quill) {
           this.bodyHtml = this.quill.root.innerHTML || '';
@@ -1011,6 +1029,11 @@ function composeForm() {
 
         const form = ev.target;
         const fd = new FormData(form);
+        // PJ : append explicite depuis attachFiles (évite champ file vide/corrompu avec fetch)
+        fd.delete('attachments');
+        for (const f of this.attachFiles) {
+          fd.append('attachments', f, f.name);
+        }
         // Forcer les champs Alpine (parfois absents du FormData natif)
         fd.set('account', this.account || '');
         fd.set('html', this.bodyMode === 'html' ? '1' : '0');
@@ -1039,6 +1062,12 @@ function composeForm() {
           (res.status >= 300 && res.status < 400)
         ) {
           const loc = res.headers.get('Location') || '/';
+          this.sendDone = true;
+          this.sendBusy = true;
+          keepLocked = true;
+          this.$nextTick(() => {
+            if (window.lucide) lucide.createIcons();
+          });
           if (window.HimaWeb && HimaWeb.closeComposeOverlay) {
             HimaWeb.closeComposeOverlay();
           }
@@ -1071,8 +1100,11 @@ function composeForm() {
           alert(msg);
         }
       } finally {
-        this._composeSubmitting = false;
-        this.draftBusy = false;
+        if (!keepLocked) {
+          this._composeSubmitting = false;
+          this.draftBusy = false;
+          this.sendBusy = false;
+        }
       }
     },
     onFilesChange(ev) {
@@ -2176,6 +2208,7 @@ window.HimaWeb = {
 
 
   _lastUnreadTotal: null,
+  _lastUnreadByFolder: null,
   _folderClicksBound: false,
   _folderTreeBound: false,
   _resizeBound: false,
@@ -2412,7 +2445,7 @@ window.HimaWeb = {
     }, 8000);
   },
 
-  reloadEnvelopeList() {
+  reloadEnvelopeList({ fresh = false } = {}) {
     const listEl = document.getElementById('envelope-list');
     if (!listEl || !window.htmx) return;
     const mb =
@@ -2432,6 +2465,7 @@ window.HimaWeb = {
       encodeURIComponent(sort) +
       '&page=1';
     if (ac) url += '&account=' + encodeURIComponent(ac);
+    if (fresh) url += '&fresh=1';
     window.htmx.ajax('GET', url, { target: '#envelope-list', swap: 'innerHTML' });
   },
 
@@ -3106,6 +3140,7 @@ window.HimaWeb = {
       const res = await fetch('/api/mail/unread');
       const data = await res.json();
       const total = data.total || 0;
+      const folders = data.folders || [];
       const badge = document.getElementById('unread-badge');
       if (badge) {
         if (total > 0) {
@@ -3115,7 +3150,7 @@ window.HimaWeb = {
           badge.hidden = true;
         }
       }
-      this.applySidebarUnread(data.folders || []);
+      this.applySidebarUnread(folders);
       this.setUnreadFavicon(total);
       this.setUnreadTitle(total);
       if (data.notifications && typeof Notification !== 'undefined') {
@@ -3129,7 +3164,7 @@ window.HimaWeb = {
           Notification.permission === 'granted'
         ) {
           const delta = total - this._lastUnreadTotal;
-          const first = (data.folders && data.folders[0]) || null;
+          const first = folders[0] || null;
           new Notification('HimaWeb', {
             body: first
               ? `${delta} nouveau(x) — ${first.label} (${first.unread})`
@@ -3138,8 +3173,56 @@ window.HimaWeb = {
           });
         }
       }
+      const prevMap = this._lastUnreadByFolder;
+      const nextMap = new Map();
+      folders.forEach((f) => {
+        const key = f.key || (f.account ? `${f.account}::${f.mailbox}` : f.mailbox);
+        if (key) nextMap.set(key, f.unread || 0);
+      });
+      // Après le 1er poll : si un dossier visible a plus de non-lus, recharger la liste.
+      if (prevMap && this.shouldRefreshEnvelopesForUnread(folders, prevMap)) {
+        this.reloadEnvelopeList({ fresh: true });
+      }
+      this._lastUnreadByFolder = nextMap;
       this._lastUnreadTotal = total;
     } catch (_) {}
+  },
+
+  /** True si le dossier affiché a reçu de nouveaux non-lus (Inbox fusionnée incluse). */
+  shouldRefreshEnvelopesForUnread(folders, prevMap) {
+    if (!document.getElementById('envelope-list')) return false;
+    const curMb = (
+      (document.getElementById('current-mailbox') &&
+        document.getElementById('current-mailbox').value) ||
+      ''
+    ).trim();
+    const curAc = (
+      (document.getElementById('current-account') &&
+        document.getElementById('current-account').value) ||
+      ''
+    ).trim();
+    if (!curMb) return false;
+    const viewingInbox = /^inbox$/i.test(curMb);
+    const viewingMergedInbox =
+      viewingInbox &&
+      !curAc &&
+      !!document.querySelector('.folder-merged.active, a.folder-merged.active');
+
+    for (const f of folders || []) {
+      const key = f.key || (f.account ? `${f.account}::${f.mailbox}` : f.mailbox);
+      const n = f.unread || 0;
+      const was = (prevMap && key && prevMap.get(key)) || 0;
+      if (n <= was) continue;
+      const fMb = (f.mailbox || '').trim();
+      const fAc = (f.account || '').trim();
+      if (viewingMergedInbox || (viewingInbox && !curAc)) {
+        if (/^inbox$/i.test(fMb)) return true;
+      }
+      if (fMb.toLowerCase() !== curMb.toLowerCase()) continue;
+      if (!curAc || !fAc || fAc === curAc) return true;
+      if (key === `${curAc}::${curMb}` || key === curMb) return true;
+    }
+    return false;
   },
 
   applySidebarUnread(folders) {
@@ -3248,26 +3331,7 @@ window.HimaWeb = {
   },
 
   reloadEnvelopes() {
-    const mb =
-      (document.getElementById('current-mailbox') &&
-        document.getElementById('current-mailbox').value) ||
-      'Inbox';
-    const ac =
-      (document.getElementById('current-account') &&
-        document.getElementById('current-account').value) ||
-      '';
-    const sortEl = document.getElementById('mail-sort');
-    const sort = (sortEl && sortEl.value) || 'date_desc';
-    let url =
-      '/partials/envelopes?mailbox=' +
-      encodeURIComponent(mb) +
-      '&sort=' +
-      encodeURIComponent(sort) +
-      '&page=1';
-    if (ac) url += '&account=' + encodeURIComponent(ac);
-    if (window.htmx) {
-      window.htmx.ajax('GET', url, { target: '#envelope-list', swap: 'innerHTML' });
-    }
+    this.reloadEnvelopeList({ fresh: false });
   },
 
   onMessageMoved({ id, mailbox, account, to }) {
