@@ -1,7 +1,10 @@
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::runner::{CliError, CliResult, CliRunner};
+use crate::data_backup::{self, ARCHIVE_ACCOUNT};
 
 #[derive(Clone)]
 pub struct HimalayaClient {
@@ -76,8 +79,71 @@ impl HimalayaClient {
     }
 
 
+    fn args_use_archive(args: &[&str]) -> bool {
+        args.windows(2)
+            .any(|w| w[0] == "--account" && w[1] == ARCHIVE_ACCOUNT)
+    }
+
+    /// `-c` relatif depuis le dossier parent (évite le split `C:` sur Windows).
+    fn archive_config_launch(config: &Path) -> Option<(PathBuf, String)> {
+        let parent = config.parent()?.to_path_buf();
+        let name = config.file_name()?.to_str()?.to_string();
+        Some((parent, name))
+    }
+
     async fn json(&self, args: &[&str]) -> CliResult<Value> {
+        if Self::args_use_archive(args) {
+            return self.json_archive(args).await;
+        }
         self.runner.run_json(&self.bin, args).await
+    }
+
+    async fn json_archive(&self, args: &[&str]) -> CliResult<Value> {
+        let config = data_backup::archive_himalaya_config_path();
+        if !config.is_file() {
+            return Err(CliError::Message(
+                "mode archive non préparé — utilisez « Lire le mail (archive) »".into(),
+            ));
+        }
+        let Some((parent, name)) = Self::archive_config_launch(&config) else {
+            return Err(CliError::Message(
+                format!("config archive invalide: {}", config.display()),
+            ));
+        };
+        let mut full: Vec<String> = Vec::with_capacity(args.len() + 2);
+        full.push("-c".into());
+        full.push(name);
+        full.extend(args.iter().map(|s| (*s).to_string()));
+        let refs: Vec<&str> = full.iter().map(|s| s.as_str()).collect();
+        self.runner
+            .run_json_cwd(&self.bin, &refs, Some(parent.as_path()))
+            .await
+    }
+
+    async fn raw_for_args(&self, args: &[&str]) -> CliResult<Vec<u8>> {
+        if Self::args_use_archive(args) {
+            let config = data_backup::archive_himalaya_config_path();
+            if !config.is_file() {
+                return Err(CliError::Message(
+                    "mode archive non préparé — utilisez « Lire le mail (archive) »".into(),
+                ));
+            }
+            let Some((parent, name)) = Self::archive_config_launch(&config) else {
+                return Err(CliError::Message(
+                    format!("config archive invalide: {}", config.display()),
+                ));
+            };
+            let mut full: Vec<String> = Vec::with_capacity(args.len() + 2);
+            full.push("-c".into());
+            full.push(name);
+            full.extend(args.iter().map(|s| (*s).to_string()));
+            let refs: Vec<&str> = full.iter().map(|s| s.as_str()).collect();
+            return self
+                .runner
+                .run_raw_cwd(&self.bin, &refs, Some(parent.as_path()))
+                .await;
+        }
+        self.runner.run_raw(&self.bin, args).await
     }
 
     fn with_account<'a>(account: Option<&'a str>, rest: &[&'a str]) -> Vec<&'a str> {
@@ -92,7 +158,11 @@ impl HimalayaClient {
 
     pub async fn list_accounts(&self) -> CliResult<Vec<AccountInfo>> {
         let v = self.json(&["account", "list"]).await?;
-        Ok(Self::parse_accounts(v))
+        // Ne jamais exposer un éventuel résidu archive dans la liste des comptes.
+        Ok(Self::parse_accounts(v)
+            .into_iter()
+            .filter(|a| a.name != ARCHIVE_ACCOUNT)
+            .collect())
     }
 
     fn parse_accounts(v: Value) -> Vec<AccountInfo> {
@@ -156,16 +226,19 @@ impl HimalayaClient {
 
         arr.into_iter()
             .map(|item| {
+                // Preférer `id` : en pimdir Neverest, `name` est court (`INBOX`)
+                // alors que `id` est l'identifiant CLI (`source/INBOX`).
                 let name = item
-                    .get("name")
-                    .or_else(|| item.get("id"))
+                    .get("id")
                     .or_else(|| item.get("path"))
+                    .or_else(|| item.get("name"))
                     .and_then(|x| x.as_str())
                     .unwrap_or("Inbox")
                     .to_string();
                 let desc = item
                     .get("desc")
                     .or_else(|| item.get("description"))
+                    .or_else(|| item.get("name"))
                     .and_then(|x| x.as_str())
                     .map(str::to_string);
                 let unread = item
@@ -582,6 +655,53 @@ impl HimalayaClient {
         );
         self.json(&args).await?;
         Ok(())
+    }
+
+    /// Marque tous les messages non lus d’un dossier comme lus (pages de recherche unseen).
+    pub async fn mark_folder_seen(
+        &self,
+        mailbox: &str,
+        account: Option<&str>,
+    ) -> CliResult<u64> {
+        let mut marked = 0u64;
+        for _ in 0..50 {
+            let page_size = 100u32;
+            let args = Self::with_account(
+                account,
+                &[
+                    "envelope",
+                    "search",
+                    "--mailbox",
+                    mailbox,
+                    "--page",
+                    "1",
+                    "--page-size",
+                    "100",
+                    "--",
+                    "not",
+                    "flag",
+                    "seen",
+                ],
+            );
+            let v = self.json(&args).await?;
+            let envs = Self::parse_envelopes(v);
+            if envs.is_empty() {
+                break;
+            }
+            for env in &envs {
+                if env.id.is_empty() {
+                    continue;
+                }
+                match self.set_flag(mailbox, &env.id, "seen", true, account).await {
+                    Ok(()) => marked += 1,
+                    Err(e) => tracing::warn!("mark seen {}/{}: {e}", mailbox, env.id),
+                }
+            }
+            if (envs.len() as u32) < page_size {
+                break;
+            }
+        }
+        Ok(marked)
     }
 
     pub async fn move_message(
@@ -1051,7 +1171,7 @@ impl HimalayaClient {
             account,
             &["message", "read", "--mailbox", mailbox, "--raw", id],
         );
-        self.runner.run_raw(&self.bin, &args).await
+        self.raw_for_args(&args).await
     }
 
     /// Append a raw message to a mailbox (`message add`).

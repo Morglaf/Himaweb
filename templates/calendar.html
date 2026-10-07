@@ -3,6 +3,7 @@
            ai: {{ ai_enabled }},
            defaultDate: '{{ default_date }}',
            defaultCalendar: '{{ default_calendar }}',
+           filterCalendar: '{{ current_id }}',
            homeAddress: {{ home_address_js }},
            mapsProvider: '{{ maps_provider }}',
            year: {{ year }},
@@ -182,6 +183,7 @@
         <span class="todo-cal-bar" aria-hidden="true"></span>
         <form method="post" action="/calendar/todo/toggle" class="todo-toggle-form">
           <input type="hidden" name="calendar" value="{{ t.calendar_id }}" />
+          <input type="hidden" name="filter" value="{{ current_id }}" />
           <input type="hidden" name="id" value="{{ t.id }}" />
           <input type="hidden" name="summary" value="{{ t.summary }}" />
           <input type="hidden" name="due" value="{{ t.due }}" />
@@ -200,6 +202,7 @@
         <form method="post" action="/calendar/todo/delete"
               onsubmit="return window.HimaWeb.confirmSubmit(event, (window.HimaWeb&&HimaWeb.t('cal.delete_task'))||'Supprimer cette tâche ?');">
           <input type="hidden" name="calendar" value="{{ t.calendar_id }}" />
+          <input type="hidden" name="filter" value="{{ current_id }}" />
           <input type="hidden" name="id" value="{{ t.id }}" />
           <button type="submit" class="icon-btn" title="Supprimer"><i data-lucide="trash-2"></i></button>
         </form>
@@ -210,6 +213,7 @@
     <details class="todo-create mt-3">
       <summary class="btn secondary sm" data-i18n="cal.new_task">Nouvelle tâche</summary>
       <form method="post" action="/calendar/todo/create" class="space-y-2 mt-2">
+        <input type="hidden" name="filter" value="{{ current_id }}" />
         <select name="calendar" class="select w-full" required>
           {% for c in task_calendars %}
           <option value="{{ c.id }}" {% if c.id == default_calendar %}selected{% endif %}
@@ -240,6 +244,7 @@
         <input type="hidden" name="month" :value="month" />
         <input type="hidden" name="day" :value="day" />
         <input type="hidden" name="view" :value="view" />
+        <input type="hidden" name="filter" :value="filterCalendar" />
         <input type="hidden" name="id" :value="id" x-show="mode === 'edit'" />
 
         <template x-if="ai">
@@ -304,7 +309,8 @@
                     placeholder="Description…"></textarea>
         </div>
         <div class="btn-row compose-actions">
-          <button type="submit" class="btn" x-text="mode === 'edit' ? (window.HimaWeb&&HimaWeb.t('common.save')) : (window.HimaWeb&&HimaWeb.t('common.create'))"></button>
+          <button type="submit" class="btn" x-show="mode !== 'edit'" data-i18n="common.create">Créer</button>
+          <button type="submit" class="btn" x-show="mode === 'edit'" data-i18n="common.save" x-cloak>Enregistrer</button>
           <button type="button" class="btn ghost" @click="closeModal()" data-i18n="common.cancel">Annuler</button>
           <template x-if="mode === 'edit' && id">
             <button type="button" class="btn secondary danger-text" @click="confirmDelete()" data-i18n="common.delete">Supprimer</button>
@@ -315,6 +321,7 @@
       <form method="post" action="/calendar/delete" x-ref="delForm" class="sr-only">
         <input type="hidden" name="id" :value="id" />
         <input type="hidden" name="calendar" :value="calendar" />
+        <input type="hidden" name="filter" :value="filterCalendar" />
         <input type="hidden" name="year" :value="year" />
         <input type="hidden" name="month" :value="month" />
         <input type="hidden" name="day" :value="day" />

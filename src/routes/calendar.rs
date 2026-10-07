@@ -93,7 +93,7 @@ pub struct TodoRow {
     pub calendar_id: String,
     /// Compte technique (filtre chips)
     pub account: String,
-    /// Label Apparence des agendas (ex. EHESS)
+    /// Label Apparence des agendas
     pub calendar_name: String,
     pub color: String,
     pub summary: String,
@@ -1514,6 +1514,8 @@ pub struct CreateEventForm {
     pub month: Option<u32>,
     pub day: Option<u32>,
     pub view: Option<String>,
+    /// Sélection UI courante (`__all__` / `__acc__…` / id agenda) — préservée au redirect
+    pub filter: Option<String>,
     /// Si `1` : rester sur la page courante (panneau mail) au lieu d’aller au calendrier
     pub stay: Option<String>,
 }
@@ -1563,7 +1565,7 @@ async fn create_event(
     };
     let _permit = state.cli_limit.acquire().await.ok();
     let redirect = cal_redirect(
-        cal,
+        redirect_calendar(form.filter.as_deref(), cal),
         form.view.as_deref(),
         form.year,
         form.month,
@@ -1615,6 +1617,7 @@ pub struct UpdateEventForm {
     pub month: Option<u32>,
     pub day: Option<u32>,
     pub view: Option<String>,
+    pub filter: Option<String>,
 }
 
 async fn update_event(
@@ -1662,7 +1665,7 @@ async fn update_event(
         }
     };
     let redirect = cal_redirect(
-        cal,
+        redirect_calendar(form.filter.as_deref(), cal),
         form.view.as_deref(),
         form.year,
         form.month,
@@ -1706,6 +1709,7 @@ pub struct DeleteEventForm {
     pub month: Option<u32>,
     pub day: Option<u32>,
     pub view: Option<String>,
+    pub filter: Option<String>,
 }
 
 async fn delete_event(
@@ -1720,7 +1724,7 @@ async fn delete_event(
     }
     let _permit = state.cli_limit.acquire().await.ok();
     let redirect = cal_redirect(
-        form.calendar.trim(),
+        redirect_calendar(form.filter.as_deref(), form.calendar.trim()),
         form.view.as_deref(),
         form.year,
         form.month,
@@ -1741,6 +1745,14 @@ async fn delete_event(
             let msg = urlencoding::encode(&err_s);
             Redirect::to(&format!("{redirect}&msg={msg}")).into_response()
         }
+    }
+}
+
+/// Préfère le filtre UI (`__all__` / `__acc__…`) s’il est fourni, sinon l’agenda métier.
+fn redirect_calendar<'a>(filter: Option<&'a str>, event_calendar: &'a str) -> &'a str {
+    match filter.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(f) => f,
+        None => event_calendar,
     }
 }
 
@@ -1863,6 +1875,7 @@ pub struct CreateTodoForm {
     pub calendar: String,
     pub summary: String,
     pub due: Option<String>,
+    pub filter: Option<String>,
     pub stay: Option<String>,
 }
 
@@ -1897,6 +1910,7 @@ async fn create_todo(
         }
     };
     let _permit = state.cli_limit.acquire().await.ok();
+    let sel = redirect_calendar(form.filter.as_deref(), cal);
     match client.create_todo(cal, ical.as_bytes()).await {
         Ok(_) => {
             if stay {
@@ -1908,7 +1922,7 @@ async fn create_todo(
             }
             Redirect::to(&format!(
                 "/calendar?calendar={}&msg=Tâche%20créée",
-                urlencoding::encode(cal)
+                urlencoding::encode(sel)
             ))
             .into_response()
         }
@@ -1927,6 +1941,7 @@ pub struct ToggleTodoForm {
     pub summary: String,
     pub due: Option<String>,
     pub completed: Option<String>,
+    pub filter: Option<String>,
     pub stay: Option<String>,
 }
 
@@ -1964,6 +1979,7 @@ async fn toggle_todo(
         }
     };
     let _permit = state.cli_limit.acquire().await.ok();
+    let sel = redirect_calendar(form.filter.as_deref(), cal);
     match client.update_todo(cal, &form.id, ical.as_bytes()).await {
         Ok(()) => {
             if stay {
@@ -1975,7 +1991,7 @@ async fn toggle_todo(
             }
             Redirect::to(&format!(
                 "/calendar?calendar={}&msg=Tâche%20mise%20à%20jour",
-                urlencoding::encode(cal)
+                urlencoding::encode(sel)
             ))
             .into_response()
         }
@@ -1991,6 +2007,7 @@ async fn toggle_todo(
 pub struct DeleteTodoForm {
     pub calendar: String,
     pub id: String,
+    pub filter: Option<String>,
     pub stay: Option<String>,
 }
 
@@ -2005,6 +2022,7 @@ async fn delete_todo(
         return Redirect::to("/calendar?msg=Calendula%20absent").into_response();
     };
     let _permit = state.cli_limit.acquire().await.ok();
+    let sel = redirect_calendar(form.filter.as_deref(), cal);
     match client.delete_todo(cal, &form.id).await {
         Ok(()) => {
             if stay {
@@ -2016,7 +2034,7 @@ async fn delete_todo(
             }
             Redirect::to(&format!(
                 "/calendar?calendar={}&msg=Tâche%20supprimée",
-                urlencoding::encode(cal)
+                urlencoding::encode(sel)
             ))
             .into_response()
         }

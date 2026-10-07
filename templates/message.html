@@ -89,9 +89,17 @@
             {% endif %}
           </div>
         </div>
+        {% if !archive_readonly %}
         <a class="icon-btn" title="Répondre" data-i18n-title="mail.reply" href="/compose?kind=reply&mailbox={{ mailbox_enc }}&id={{ m.id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="reply"></i></a>
         <a class="icon-btn" title="Répondre à tous" data-i18n-title="mail.reply_all" href="/compose?kind=reply-all&mailbox={{ mailbox_enc }}&id={{ m.id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="reply-all"></i></a>
         <a class="icon-btn" title="Transférer" data-i18n-title="mail.forward" href="/compose?kind=forward&mailbox={{ mailbox_enc }}&id={{ m.id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="forward"></i></a>
+        {% endif %}
+        <button type="button" class="icon-btn no-print" title="Imprimer" data-i18n-title="mail.print"
+                onclick="window.print()"><i data-lucide="printer"></i></button>
+        <a class="icon-btn no-print" title="Exporter Markdown" data-i18n-title="mail.export_md"
+           href="/api/mail/export/md?mailbox={{ mailbox_enc }}&id={{ m.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}"
+           download><i data-lucide="file-text"></i></a>
+        {% if !archive_readonly %}
         <form class="inline" hx-post="/partials/message/flag" hx-target="#message-pane" hx-swap="innerHTML"
               hx-disabled-elt="find button[type='submit']">
           <input type="hidden" name="mailbox" value="{{ mailbox }}" />
@@ -125,6 +133,7 @@
           </select>
           <button class="icon-btn" type="submit" title="Déplacer" data-i18n-title="mail.move"><i data-lucide="folder-input"></i></button>
         </form>
+        {% endif %}
       </div>
     </header>
 

@@ -268,6 +268,8 @@ pub struct CalendulaAccountEdit {
     pub username: String,
     pub is_default: bool,
     pub has_password: bool,
+    /// Inclus dans le backup / export (renseigné par settings)
+    pub backup_selected: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -338,6 +340,7 @@ pub fn list_calendula_accounts() -> Result<Vec<CalendulaAccountEdit>, String> {
             username,
             is_default: t.get("default").and_then(|i| i.as_bool()).unwrap_or(false),
             has_password,
+            backup_selected: true,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));

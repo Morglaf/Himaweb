@@ -1274,6 +1274,7 @@ function eventModal(opts) {
     month: opts.month,
     day: opts.day,
     view: opts.view || 'month',
+    filterCalendar: opts.filterCalendar || '__all__',
     id: '',
     calendar: firstCal,
     summary: '',
@@ -1811,6 +1812,50 @@ function messageView(opts) {
   };
 }
 
+function backupDataStatus(opts) {
+  opts = opts || {};
+  return {
+    running: !!opts.running,
+    message: opts.message || '',
+    progress: 0,
+    logs: [],
+    ok: !!opts.ok,
+    _timer: null,
+    init() {
+      this.poll();
+    },
+    poll() {
+      if (this._timer) return;
+      this._timer = setInterval(() => this.refresh(), 1500);
+      this.refresh();
+    },
+    async refresh() {
+      try {
+        const res = await fetch('/settings/backup/data/status');
+        const data = await res.json();
+        this.running = !!data.running;
+        this.message = data.message || '';
+        this.progress = Math.max(0, Math.min(100, Number(data.progress) || 0));
+        this.logs = Array.isArray(data.logs) ? data.logs : [];
+        this.ok = !!data.ok;
+        this.$nextTick(() => {
+          const el = this.$refs && this.$refs.logBox;
+          if (el) el.scrollTop = el.scrollHeight;
+        });
+        if (this.running) {
+          this._idleTicks = 0;
+        } else {
+          this._idleTicks = (this._idleTicks || 0) + 1;
+          if (this._idleTicks > 2 && this._timer) {
+            clearInterval(this._timer);
+            this._timer = null;
+          }
+        }
+      } catch (_) {}
+    },
+  };
+}
+
 document.addEventListener('alpine:init', () => {
   if (window.Alpine) {
     Alpine.data('composeForm', composeForm);
@@ -1824,6 +1869,7 @@ document.addEventListener('alpine:init', () => {
     Alpine.data('inboxSummaryModal', inboxSummaryModal);
     Alpine.data('updateChecker', updateChecker);
     Alpine.data('sideRss', sideRss);
+    Alpine.data('backupDataStatus', (opts) => backupDataStatus(opts || {}));
   }
 });
 
@@ -4458,6 +4504,62 @@ window.HimaWeb = {
           `<button type="button" data-ctx-action="contact-mail" data-ctx-payload='${payload}'><i data-lucide="pen-square"></i> ${this.t('contacts.write')}</button>
            <button type="button" class="danger" data-ctx-action="contact-delete" data-ctx-payload='${payload}'><i data-lucide="trash-2"></i> ${this.t('contacts.delete')}</button>`
         );
+        return;
+      }
+      const acctHdr = ev.target.closest('[data-account-header="1"]');
+      if (acctHdr) {
+        const account = acctHdr.dataset.account || '';
+        if (!account) return;
+        ev.preventDefault();
+        const sel = document.getElementById('account-select');
+        const opt = sel && [...sel.options].find((o) => o.value === account);
+        const paused = opt && opt.dataset.paused === '1';
+        const payload = JSON.stringify({ account });
+        show(
+          ev.clientX,
+          ev.clientY,
+          `<button type="button" data-ctx-action="account-pause" data-ctx-payload='${payload}'><i data-lucide="${
+            paused ? 'play' : 'pause'
+          }"></i> ${
+            paused ? this.t('mail.resume_account') : this.t('mail.pause_account')
+          }</button>`
+        );
+        return;
+      }
+      const folderEl = ev.target.closest(
+        'a.folder-link[data-folder-key], a.folder-link-text[data-folder-key]'
+      );
+      if (folderEl) {
+        const key = folderEl.dataset.folderKey || '';
+        const account = folderEl.dataset.account || '';
+        let mailbox = key;
+        if (account && key.startsWith(account + '::')) {
+          mailbox = key.slice(account.length + 2);
+        }
+        if (!mailbox || mailbox.startsWith('__ntfy__')) return;
+        ev.preventDefault();
+        const watched = folderEl.dataset.watched === '1';
+        const payload = JSON.stringify({ mailbox, account, key });
+        const pausePayload = JSON.stringify({ account });
+        let html = `<button type="button" data-ctx-action="folder-mark-read" data-ctx-payload='${payload}'><i data-lucide="mail-open"></i> ${this.t(
+          'mail.mark_folder_read'
+        )}</button>
+           <button type="button" data-ctx-action="folder-watch" data-ctx-payload='${payload}'><i data-lucide="${
+          watched ? 'eye-off' : 'eye'
+        }"></i> ${
+          watched ? this.t('mail.unwatch_folder') : this.t('mail.watch_folder')
+        }</button>`;
+        if (account) {
+          const sel = document.getElementById('account-select');
+          const opt = sel && [...sel.options].find((o) => o.value === account);
+          const paused = opt && opt.dataset.paused === '1';
+          html += `<hr/><button type="button" data-ctx-action="account-pause" data-ctx-payload='${pausePayload}'><i data-lucide="${
+            paused ? 'play' : 'pause'
+          }"></i> ${
+            paused ? this.t('mail.resume_account') : this.t('mail.pause_account')
+          }</button>`;
+        }
+        show(ev.clientX, ev.clientY, html);
       }
     });
   },
@@ -4671,19 +4773,82 @@ window.HimaWeb = {
         confirmLabel: this.t('common.delete') || 'Supprimer',
       }).then((ok) => {
         if (!ok) return;
+        const qs = new URLSearchParams(location.search);
+        const esc = (v) => String(v || '').replace(/"/g, '&quot;');
+        const filterInput = document.querySelector('input[name="filter"]');
+        const filter = qs.get('calendar') || (filterInput && filterInput.value) || '';
         const form = document.createElement('form');
         form.method = 'post';
         form.action = '/calendar/delete';
-        form.innerHTML = `<input type="hidden" name="id" value="${String(p.id).replace(
-          /"/g,
-          '&quot;'
-        )}"/><input type="hidden" name="calendar" value="${String(p.calendar || '').replace(
-          /"/g,
-          '&quot;'
-        )}"/>`;
+        form.innerHTML = `<input type="hidden" name="id" value="${esc(p.id)}"/>
+          <input type="hidden" name="calendar" value="${esc(p.calendar)}"/>
+          <input type="hidden" name="filter" value="${esc(filter)}"/>
+          <input type="hidden" name="view" value="${esc(qs.get('view'))}"/>
+          <input type="hidden" name="year" value="${esc(qs.get('year'))}"/>
+          <input type="hidden" name="month" value="${esc(qs.get('month'))}"/>
+          <input type="hidden" name="day" value="${esc(qs.get('day'))}"/>`;
         document.body.appendChild(form);
         form.submit();
       });
+      return;
+    }
+    if (action === 'folder-mark-read') {
+      const body = new URLSearchParams();
+      body.set('mailbox', p.mailbox || mb);
+      body.set('account', p.account || acc);
+      fetch('/api/mail/folder/mark-read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data && data.ok) {
+            this.pollUnread && this.pollUnread();
+            this.reloadSidebar && this.reloadSidebar();
+            this.reloadEnvelopes && this.reloadEnvelopes();
+          } else if (data && data.error) {
+            console.warn('mark folder read', data.error);
+          }
+        })
+        .catch((e) => console.warn(e));
+      return;
+    }
+    if (action === 'folder-watch') {
+      const body = new URLSearchParams();
+      body.set('mailbox', p.mailbox || mb);
+      body.set('account', p.account || acc);
+      fetch('/api/mail/folder/watch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data && data.ok) {
+            this.reloadSidebar && this.reloadSidebar();
+            this.pollUnread && this.pollUnread();
+          }
+        })
+        .catch((e) => console.warn(e));
+      return;
+    }
+    if (action === 'account-pause') {
+      const body = new URLSearchParams();
+      body.set('account', p.account || acc);
+      fetch('/api/mail/account/pause', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data && data.ok) {
+            this.reloadSidebar && this.reloadSidebar();
+            this.pollUnread && this.pollUnread();
+          }
+        })
+        .catch((e) => console.warn(e));
       return;
     }
     if (action === 'contact-mail') {

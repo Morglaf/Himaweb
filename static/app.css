@@ -409,6 +409,26 @@ html[data-topbar="text"] .tab > i { display: none; }
   font-size: 0.92rem;
 }
 .folder-link i { width: 16px; height: 16px; color: var(--muted); }
+.folder-watch-ico {
+  width: 13px;
+  height: 13px;
+  color: var(--accent);
+  opacity: 0.85;
+  flex-shrink: 0;
+  margin-left: 0.15rem;
+}
+.folder-pause-ico {
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+  flex-shrink: 0;
+  margin-right: 0.25rem;
+}
+.compose-icon-btn.is-disabled {
+  opacity: 0.45;
+  pointer-events: none;
+  cursor: not-allowed;
+}
 .folder-link:hover { background: var(--surface-2); }
 .folder-link.active {
   background: var(--accent-soft);
@@ -450,7 +470,9 @@ html[data-topbar="text"] .tab > i { display: none; }
 .folder-acct-label {
   color: inherit;
   min-width: 0;
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
   cursor: default;
 }
 .folder-link-text {
@@ -2333,6 +2355,106 @@ a.legend-item:hover {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 0.75rem;
 }
+.form-row-4 {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+.account-edit-form .form-row-4 .select,
+.account-edit-form .form-row .select {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.account-edit-form .form-row-4 > label,
+.account-edit-form .form-row > label {
+  min-width: 0;
+  overflow: hidden;
+}
+.ai-preprompt-acct {
+  border-left: 3px solid var(--line);
+  padding-left: 0.65rem;
+  margin-bottom: 0.75rem;
+}
+.ai-preprompt-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.35rem;
+  font-weight: 650;
+}
+.ai-preprompt-head i {
+  width: 16px;
+  height: 16px;
+}
+.backup-acct-picks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.35rem 0.75rem;
+  margin-top: 0.35rem;
+}
+.backup-acct-pick {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.3rem 0.45rem;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--line);
+  background: color-mix(in srgb, var(--surface-2) 50%, transparent);
+  min-width: 0;
+}
+.backup-acct-pick i {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.backup-acct-pick span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+.cal-visibility-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem 1rem;
+  align-items: start;
+}
+.cal-visibility-list .cal-vis-acct,
+.cal-visibility-list .settings-saved {
+  grid-column: 1 / -1;
+}
+.cal-visibility-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  padding: 0.35rem 0.5rem 0.35rem 0.65rem;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+  min-width: 0;
+}
+.cal-vis-label {
+  font-size: 0.88rem;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cal-vis-toggle {
+  flex-shrink: 0;
+  padding: 0 !important;
+  margin: 0 !important;
+  gap: 0.45rem !important;
+}
+.cal-vis-toggle > span {
+  font-size: 0.78rem;
+  color: var(--muted);
+  flex: 0 0 auto !important;
+}
+@media (max-width: 720px) {
+  .cal-visibility-list { grid-template-columns: 1fr; }
+}
 .input {
   width: 100%;
   border: 1px solid var(--line);
@@ -3260,6 +3382,163 @@ button[disabled].hw-busy {
   text-align: center;
   font-size: 0.75rem;
   color: var(--muted);
+}
+
+/* Backup Neverest progress --------------------------------------------- */
+
+.backup-progress-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.backup-progress-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.9rem;
+}
+.backup-progress-head strong {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+.backup-progress-track {
+  height: 0.55rem;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.backup-progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.35s ease;
+}
+.backup-progress-bar.is-done { background: #16a34a; }
+.backup-progress-bar.is-error { background: #dc2626; }
+.backup-log {
+  margin: 0;
+  max-height: 14rem;
+  overflow: auto;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--muted);
+}
+
+/* Impression message --------------------------------------------------- */
+
+@media print {
+  html, body {
+    background: #fff !important;
+    color: #111 !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+  .page-main,
+  .page-main-mail {
+    height: auto !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+  .rail,
+  .topbar,
+  .envelope-list,
+  .side-widget,
+  .list-pane,
+  .mail-toolbar,
+  .col-resizer,
+  .no-print,
+  .msg-actions,
+  .att-lazy-probe,
+  .acc-attach-wrap,
+  #att-preview-modal,
+  .offline-strip,
+  .ctx-menu {
+    display: none !important;
+  }
+  .gmail-shell,
+  .mail-main,
+  .read-pane,
+  #message-pane,
+  .thread-view,
+  .message-view,
+  .msg-body {
+    display: block !important;
+    position: static !important;
+    grid-template-columns: 1fr !important;
+    width: 100% !important;
+    max-width: none !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: #fff !important;
+    color: #111 !important;
+    box-shadow: none !important;
+    border: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  .msg-body,
+  .msg-body.tone-light,
+  .msg-body.tone-dark {
+    background: #fff !important;
+    color: #111 !important;
+  }
+  .msg-body a { color: #0b57d0 !important; }
+  /*
+   * Ne pas mettre break-inside:avoid sur tout le message : si le corps est
+   * trop long, Chromium décale l’article entier → 1re page = titre seul.
+   * On garde seulement titre + en-tête collés ; le corps peut couper.
+   */
+  .thread-title-bar {
+    position: static !important;
+    top: auto !important;
+    backdrop-filter: none !important;
+    page-break-after: avoid !important;
+    break-after: avoid-page !important;
+  }
+  .thread-title-bar .msg-subject,
+  h1.msg-subject {
+    /* Les UA traitent souvent h1 comme bloc de page ; on force le flux */
+    display: block !important;
+    font-size: 1.25rem !important;
+    font-weight: 650 !important;
+    margin: 0 !important;
+    line-height: 1.3 !important;
+    page-break-after: avoid !important;
+    break-after: avoid-page !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+  .msg-header {
+    page-break-before: avoid !important;
+    break-before: avoid-page !important;
+    page-break-after: avoid !important;
+    break-after: avoid-page !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+  .thread-title-bar + .thread-item {
+    page-break-before: avoid !important;
+    break-before: avoid-page !important;
+  }
+  .thread-item {
+    break-inside: auto;
+    page-break-inside: auto;
+    margin-bottom: 1.25rem;
+  }
+  .msg-body {
+    break-inside: auto;
+    page-break-inside: auto;
+  }
 }
 
 /* Accessibilité : respecter le réglage système ------------------------ */

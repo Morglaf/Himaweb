@@ -5,14 +5,13 @@
     <nav class="settings-nav" aria-label="Sections">
       <a href="#apparence" data-i18n="settings.nav.apparence">Apparence</a>
       <a href="#accounts" data-i18n="settings.nav.mail">Mail</a>
-      <a href="#folders" data-i18n="settings.nav.folders">Dossiers</a>
       <a href="#contacts" data-i18n="settings.nav.contacts">Contacts</a>
       <a href="#calendar" data-i18n="settings.nav.calendar">Calendrier</a>
       <a href="#sync" data-i18n="settings.nav.sync">Sync &amp; OAuth</a>
       <a href="#plugins" data-i18n="settings.nav.plugins">Plugins</a>
       <a href="#ai" data-i18n="settings.nav.ai">IA</a>
       <a href="#updates" data-i18n="settings.nav.updates">Mises à jour</a>
-      <a href="#backup" data-i18n="settings.nav.backup">Sauvegarde</a>
+      <a href="#backup" data-i18n="settings.nav.backup">Sauvegarde Configuration</a>
     </nav>
 
     <div class="settings-grid">
@@ -169,7 +168,7 @@
       </section>
 
       <p class="settings-group-label settings-span" id="accounts" data-i18n="settings.group.mail">Mail</p>
-      <section class="settings-card settings-span" id="accounts-layout"
+      <section class="settings-card" id="accounts-layout"
                x-data="accountOrderList(JSON.parse(document.getElementById('acct-order-boot').textContent))">
         <script type="application/json" id="acct-order-boot">{{ rail_order_boot|safe }}</script>
         <h2 data-i18n="settings.accounts_order">Comptes — actif &amp; ordre</h2>
@@ -236,7 +235,7 @@
         </form>
       </section>
 
-      <section class="settings-card settings-span">
+      <section class="settings-card">
         <h2 data-i18n="settings.accounts_look">Apparence des comptes</h2>
         <form method="post" action="/settings/account/colors" class="space-y-3">
           <p class="muted tiny mb-2" data-i18n="settings.look_hint">Nom affiché + icône Lucide + couleur (mail et NTFY). Le nom technique reste inchangé en coulisses.</p>
@@ -275,15 +274,6 @@
                 {% if a.kind == "ntfy" %}<span class="acct-kind-badge">NTFY</span>{% endif %}
                 {{ a.name }}
               </span>
-              {% if a.kind == "mail" %}
-              <label class="block acct-ai-preprompt" style="grid-column: 1 / -1">
-                <span class="label" data-i18n="settings.ai_preprompt_account">Préprompt IA (propriétaire / style)</span>
-                <textarea class="input w-full" name="ai_preprompt" rows="2"
-                          data-i18n-placeholder="settings.ai_preprompt_ph" placeholder="Ex. : Je suis …, je signe …, ton …">{{ a.ai_preprompt }}</textarea>
-              </label>
-              {% else %}
-              <input type="hidden" name="ai_preprompt" value="" />
-              {% endif %}
             </div>
             {% else %}
             <p class="muted tiny" data-i18n="settings.no_account">Aucun compte.</p>
@@ -348,7 +338,7 @@
                 </label>
               </div>
               <p class="muted tiny" data-i18n="settings.folder_aliases">Alias de dossiers (noms IMAP) — la poubelle est requise pour supprimer un message</p>
-              <div class="form-row">
+              <div class="form-row form-row-4">
                 <label class="block">
                   <span class="label" data-i18n="settings.trash">Poubelle</span>
                   <select class="select w-full" name="trash_alias">
@@ -376,7 +366,17 @@
                     {% endfor %}
                   </select>
                 </label>
+                <label class="block">
+                  <span class="label" data-i18n="settings.move_default">Archiver</span>
+                  <select class="select w-full" name="default_move">
+                    <option value="" data-i18n="settings.undefined">(non défini)</option>
+                    {% for m in a.mailboxes %}
+                    <option value="{{ m.name }}" {% if m.is_archive %}selected{% endif %}>{{ m.name }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
               </div>
+              <p class="muted tiny" data-i18n="settings.move_default_hint">Pré-sélectionné dans le menu « Déplacer ».</p>
               <div class="block signature-editor"
                    x-data="signatureEditor()"
                    x-init="boot()">
@@ -404,12 +404,50 @@
                 <span data-i18n="settings.default_account">Compte par défaut</span>
                 <input class="toggle" type="checkbox" name="make_default" value="1" {% if a.is_default %}checked{% endif %} />
               </label>
-              <label class="toggle-row" title="Pour les serveurs IMAP qui refusent UID MOVE (ex. EHESS / rosa.ehess.fr)">
+              <label class="toggle-row" title="Pour les serveurs IMAP qui refusent UID MOVE
                 <span data-i18n="settings.copy_move">Déplacer / archiver / supprimer via COPY (pas de UID MOVE)</span>
                 <input class="toggle" type="checkbox" name="copy_move" value="1" {% if a.copy_move %}checked{% endif %} />
               </label>
               <p class="muted tiny" data-i18n="settings.copy_move_hint">À activer si les déplacements échouent avec « command not permitted with UID ».</p>
             </form>
+            {% for g in folder_groups %}
+            {% if g.account == a.name %}
+            <div class="account-folders-block mt-3">
+              <h3 class="settings-subhead" data-i18n="settings.folders_title">Dossiers — épingler / masquer / surveiller</h3>
+              <p class="muted tiny mb-2" data-i18n="settings.folders_hint">
+                Épinglés en tête · non-système dans « Plus » · Masquer retire des menus.
+                Surveiller active le compteur / notifications (par défaut : toutes les Inbox si rien n’est coché).
+              </p>
+              <form method="post" action="/settings/folders" class="settings-autosave folder-pref-form"
+                    hx-post="/settings/folders" hx-trigger="change" hx-swap="none"
+                    hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
+                <input type="hidden" name="account" value="{{ g.account }}" />
+                {% for f in g.folders %}
+                <div class="folder-pref-row">
+                  <code class="folder-pref-name">{{ f.label }}</code>
+                  <label class="toggle-mini" title="Épingler">
+                    <span data-i18n="settings.pin">Épingler</span>
+                    <input class="toggle" type="checkbox" name="pinned" value="{{ f.key }}" {% if f.pinned %}checked{% endif %} />
+                  </label>
+                  <label class="toggle-mini" title="Masquer">
+                    <span data-i18n="settings.hide">Masquer</span>
+                    <input class="toggle" type="checkbox" name="hidden" value="{{ f.key }}" {% if f.hidden %}checked{% endif %} />
+                  </label>
+                  <label class="toggle-mini" title="Surveiller (badge sur le dossier)">
+                    <span data-i18n="settings.watch">Surveiller</span>
+                    <input class="toggle" type="checkbox" name="watched" value="{{ f.key }}" {% if f.watched %}checked{% endif %} />
+                  </label>
+                  <label class="toggle-mini" title="Inclure dans le badge non-lus de la barre du haut">
+                    <span data-i18n="settings.total">Total</span>
+                    <input class="toggle" type="checkbox" name="count_total" value="{{ f.key }}" {% if f.count_in_total %}checked{% endif %} />
+                  </label>
+                </div>
+                {% endfor %}
+                <p class="settings-saved muted tiny" hidden data-i18n="settings.saved">Enregistré</p>
+              </form>
+            </div>
+            {% endif %}
+            {% endfor %}
             <div class="account-actions-row">
               <button type="submit" class="btn" form="acct-edit-{{ loop.index }}" data-i18n="common.save">Enregistrer</button>
               <form method="post" action="/settings/account/delete"
@@ -420,27 +458,10 @@
             </div>
           </details>
           {% endfor %}
-        {% endif %}
-
-        {% if let Some(msg) = import_message %}
-        <div class="offline-strip mt-3">{{ msg }}</div>
-        {% endif %}
-      </section>
-
-      <section class="settings-card settings-span" id="folders">
-        <h2 data-i18n="settings.folders_title">Dossiers — épingler / masquer / surveiller</h2>
-        <p class="muted text-sm mb-3" data-i18n="settings.folders_hint">
-          Épinglés en tête · non-système dans « Plus » · Masquer retire des menus.
-          Surveiller active le compteur / notifications (par défaut : toutes les Inbox si rien n’est coché).
-        </p>
-
-        {% if folder_groups.is_empty() %}
-        <p class="muted" data-i18n="settings.no_folders_listed">Aucun dossier listé (compte / config requis).</p>
-        {% else %}
-        <div class="folder-groups">
           {% for g in folder_groups %}
-          <details class="folder-account">
-            <summary>{% if g.account == "__ntfy__" %}Ntfy{% else %}{{ g.account }}{% endif %} <span class="muted tiny">({{ g.folders.len() }} <span data-i18n="settings.n_folders">dossiers</span>)</span></summary>
+          {% if g.account == "__ntfy__" %}
+          <details class="account-edit">
+            <summary><strong>NTFY</strong> <span class="muted tiny" data-i18n="settings.folders_title">Dossiers — épingler / masquer / surveiller</span></summary>
             <form method="post" action="/settings/folders" class="settings-autosave folder-pref-form"
                   hx-post="/settings/folders" hx-trigger="change" hx-swap="none"
                   hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
@@ -469,32 +490,12 @@
               <p class="settings-saved muted tiny" hidden data-i18n="settings.saved">Enregistré</p>
             </form>
           </details>
+          {% endif %}
           {% endfor %}
-        </div>
         {% endif %}
 
-        <h3 class="settings-subhead" data-i18n="settings.move_default">Destination par défaut (déplacer)</h3>
-        <p class="muted tiny mb-3" data-i18n="settings.move_default_hint">Pré-sélectionné dans le menu « Déplacer » pour chaque compte.</p>
-        {% if move_defaults.is_empty() %}
-        <p class="muted tiny" data-i18n="settings.no_account">Aucun compte.</p>
-        {% else %}
-        <form method="post" action="/settings/move-defaults" class="settings-autosave"
-              hx-post="/settings/move-defaults" hx-trigger="change delay:200ms" hx-swap="none"
-              hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
-          {% for d in move_defaults %}
-          <div class="move-default-row">
-            <span class="label" title="{{ d.account }}">{{ d.account_label }}</span>
-            <input type="hidden" name="account" value="{{ d.account }}" />
-            <select name="folder" class="select">
-              <option value="" data-i18n="settings.none">(aucun)</option>
-              {% for o in d.options %}
-              <option value="{{ o.name }}" {% if o.selected %}selected{% endif %}>{{ o.name }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          {% endfor %}
-          <p class="settings-saved muted tiny" hidden data-i18n="settings.saved">Enregistré</p>
-        </form>
+        {% if let Some(msg) = import_message %}
+        <div class="offline-strip mt-3">{{ msg }}</div>
         {% endif %}
       </section>
 
@@ -798,40 +799,56 @@
           </div>
           <button type="submit" class="btn secondary" data-i18n="settings.save_cal_look">Enregistrer l’apparence agendas</button>
         </form>
+      </section>
 
-        <h3 class="settings-subhead mt-4" data-i18n="settings.cal_visibility">Visibilité des agendas</h3>
+      <section class="settings-card">
+        <h2 data-i18n="settings.cal_visibility">Visibilité des agendas</h2>
         <p class="muted tiny mb-2" data-i18n="settings.cal_visibility_hint">Masquer un agenda de la vue calendrier (sélecteurs / grille). Les tâches associées restent disponibles.</p>
         {% if cal_visibility.is_empty() %}
         <p class="muted tiny" data-i18n="settings.cal_visibility_empty">Aucun agenda en cache — ouvrez Calendrier une fois pour les découvrir.</p>
         {% else %}
-        <form method="post" action="/settings/calendar/visibility" class="space-y-2">
+        <form method="post" action="/settings/calendar/visibility" class="space-y-2 settings-autosave"
+              hx-post="/settings/calendar/visibility" hx-trigger="change" hx-swap="none"
+              hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
           {% for c in cal_visibility %}
-          <label class="settings-row cal-visibility-row" style="border-left: 3px solid {{ c.color }}; padding-left: 0.65rem;">
-            <span class="label">{{ c.label }}</span>
-            <span class="muted tiny grow">{{ c.id }}</span>
-            <span class="toggle-row">
+          {% if c.show_account_header %}
+          <p class="settings-subhead tiny">{% if !c.account_label.is_empty() %}{{ c.account_label }}{% else %}{{ c.account }}{% endif %}</p>
+          {% endif %}
+          <label class="cal-visibility-row" style="border-left: 3px solid {{ c.color }};">
+            <span class="cal-vis-label">{{ c.label }}</span>
+            <span class="toggle-row cal-vis-toggle">
               <span data-i18n="settings.cal_hide">Masquer</span>
               <input class="toggle" type="checkbox" name="hidden" value="{{ c.id }}" {% if c.hidden %}checked{% endif %} />
             </span>
           </label>
           {% endfor %}
-          <button type="submit" class="btn secondary" data-i18n="settings.save_cal_visibility">Enregistrer la visibilité</button>
+          <p class="settings-saved muted tiny" hidden data-i18n="settings.saved">Enregistré</p>
         </form>
+        {% endif %}
+      </section>
 
-        <h3 class="settings-subhead mt-4" data-i18n="settings.cal_task_visibility">Agendas pour les tâches</h3>
+      <section class="settings-card">
+        <h2 data-i18n="settings.cal_task_visibility">Agendas pour les tâches</h2>
         <p class="muted tiny mb-2" data-i18n="settings.cal_task_visibility_hint">Cochez les calendriers CalDAV qui apparaissent dans le filtre / la création de tâches. Par défaut : un agenda par compte (Tasks si présent, sinon personal).</p>
-        <form method="post" action="/settings/calendar/task-visibility" class="space-y-2">
+        {% if cal_visibility.is_empty() %}
+        <p class="muted tiny" data-i18n="settings.cal_visibility_empty">Aucun agenda en cache — ouvrez Calendrier une fois pour les découvrir.</p>
+        {% else %}
+        <form method="post" action="/settings/calendar/task-visibility" class="space-y-2 settings-autosave"
+              hx-post="/settings/calendar/task-visibility" hx-trigger="change" hx-swap="none"
+              hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
           {% for c in cal_visibility %}
-          <label class="settings-row cal-visibility-row" style="border-left: 3px solid {{ c.color }}; padding-left: 0.65rem;">
-            <span class="label">{{ c.label }}</span>
-            <span class="muted tiny grow">{{ c.id }}</span>
-            <span class="toggle-row">
+          {% if c.show_account_header %}
+          <p class="settings-subhead tiny">{% if !c.account_label.is_empty() %}{{ c.account_label }}{% else %}{{ c.account }}{% endif %}</p>
+          {% endif %}
+          <label class="cal-visibility-row" style="border-left: 3px solid {{ c.color }};">
+            <span class="cal-vis-label">{{ c.label }}</span>
+            <span class="toggle-row cal-vis-toggle">
               <span data-i18n="settings.cal_show_tasks">Tâches</span>
               <input class="toggle" type="checkbox" name="task_cal" value="{{ c.id }}" {% if c.show_tasks %}checked{% endif %} />
             </span>
           </label>
           {% endfor %}
-          <button type="submit" class="btn secondary" data-i18n="settings.save_cal_task_visibility">Enregistrer les agendas tâches</button>
+          <p class="settings-saved muted tiny" hidden data-i18n="settings.saved">Enregistré</p>
         </form>
         {% endif %}
       </section>
@@ -854,24 +871,6 @@
           <button type="submit" class="btn" {% if !ortie_available %}disabled{% endif %} data-i18n="settings.ortie_oauth">Lancer OAuth Ortie</button>
         </form>
         {% if let Some(msg) = ortie_message %}
-        <div class="offline-strip mt-3">{{ msg }}</div>
-        {% endif %}
-      </section>
-
-      <section class="settings-card">
-        <h2 data-i18n="settings.neverest">Neverest — sync mail</h2>
-        <p class="muted text-sm mb-2" data-i18n="settings.neverest_hint">Synchronisation / backup via Neverest (CLI Pimalaya).</p>
-        <p class="muted tiny mb-3">
-          <span data-i18n="settings.neverest_label">Neverest :</span> {% if neverest_available %}<span class="ok" data-i18n="settings.available">disponible</span>{% else %}<span class="badge-warn" data-i18n="settings.bin_missing">binaire introuvable</span>{% endif %}
-        </p>
-        <form method="post" action="/settings/neverest/sync" class="space-y-3">
-          <label class="block">
-            <span class="label" data-i18n="settings.account_optional">Compte (optionnel)</span>
-            <input class="input w-full" name="account" data-i18n-placeholder="settings.default_ph" placeholder="(défaut)" {% if !neverest_available %}disabled{% endif %} />
-          </label>
-          <button type="submit" class="btn" {% if !neverest_available %}disabled{% endif %} data-i18n="settings.run_sync">Lancer une sync</button>
-        </form>
-        {% if let Some(msg) = neverest_message %}
         <div class="offline-strip mt-3">{{ msg }}</div>
         {% endif %}
       </section>
@@ -1160,7 +1159,7 @@
           <label class="block">
             <span class="label" data-i18n="settings.global_preprompt">Préprompt global (style / persona)</span>
             <textarea class="input w-full" name="ollama_preprompt" rows="3" placeholder="Ex. : Je m’appelle …, ton professionnel, français…">{{ ai_ollama_preprompt }}</textarea>
-            <span class="muted tiny" data-i18n="settings.global_preprompt_hint">Appliqué à Ollama et Gemini. Complété par le préprompt par compte (Apparence des comptes).</span>
+            <span class="muted tiny" data-i18n="settings.global_preprompt_hint">Appliqué à Ollama et Gemini. Complété par le préprompt par compte ci-dessous.</span>
           </label>
           <label class="block">
             <span class="label" data-i18n="settings.home_address">Adresse domicile</span>
@@ -1194,6 +1193,29 @@
           <p class="muted tiny" data-i18n="settings.ai_log_hint">Si activé : enregistre prompts / réponses dans %LOCALAPPDATA%\HimaWeb\ai-log.jsonl (désactivé = zéro I/O).</p>
           <button type="submit" class="btn" data-i18n="settings.save_ai">Enregistrer IA</button>
         </form>
+
+        <h3 class="settings-subhead mt-4" data-i18n="settings.ai_preprompts_accounts">Préprompts par compte</h3>
+        <p class="muted tiny mb-2" data-i18n="settings.ai_preprompts_accounts_hint">Complète le préprompt global pour la rédaction / le résumé selon le compte mail.</p>
+        <form method="post" action="/settings/account/colors" class="space-y-3">
+          <input type="hidden" name="return_to" value="ai" />
+          {% for a in color_accounts %}
+          {% if a.kind == "mail" %}
+          <div class="ai-preprompt-acct" style="border-left-color: {{ a.color }}">
+            <div class="ai-preprompt-head" style="color: {{ a.color }}">
+              <i data-lucide="{{ a.icon }}"></i>
+              <span>{{ a.label }}</span>
+            </div>
+            <input type="hidden" name="name" value="{{ a.name }}" />
+            <textarea class="input w-full" name="ai_preprompt" rows="2"
+                      data-i18n-placeholder="settings.ai_preprompt_ph" placeholder="Ex. : Je suis …, je signe …, ton …">{{ a.ai_preprompt }}</textarea>
+          </div>
+          {% endif %}
+          {% else %}
+          <p class="muted tiny" data-i18n="settings.no_account">Aucun compte.</p>
+          {% endfor %}
+          <button type="submit" class="btn secondary" data-i18n="settings.save_ai_preprompts">Enregistrer les préprompts</button>
+        </form>
+
         <form method="post" action="/settings/ai/log/clear" class="mt-2"
               onsubmit="return window.HimaWeb.confirmSubmit(event, 'Effacer le journal IA ?');">
           <button type="submit" class="btn secondary" data-i18n="settings.clear_ai_log">Effacer le journal IA</button>
@@ -1236,9 +1258,152 @@
         </template>
       </section>
 
-      <p class="settings-group-label settings-span" id="backup" data-i18n="settings.group.backup">Sauvegarde</p>
+      <p class="settings-group-label settings-span" id="backup" data-i18n="settings.group.backup">Sauvegarde Configuration</p>
+
+      <section class="settings-card settings-span" id="backup-data"
+              x-data="backupDataStatus({
+                running: {% if backup_data_running %}true{% else %}false{% endif %},
+                ok: {% if backup_data_ok %}true{% else %}false{% endif %}
+              })">
+        <h2 data-i18n="settings.backup_data_title">Backup données (mail / contacts / agendas)</h2>
+        <p class="muted text-sm mb-3" data-i18n="settings.backup_data_hint">
+          Neverest → store pimdir (mail lisible via « Lire le mail »). Contacts/agendas : aussi exportés en JSON/CSV dans <code>export/</code> (via Cardamum/Calendula).
+        </p>
+        <p class="muted tiny mb-3">
+          <span data-i18n="settings.neverest_label">Neverest :</span>
+          {% if neverest_available %}<span class="ok" data-i18n="settings.available">disponible</span>{% else %}<span class="badge-warn" data-i18n="settings.bin_missing">binaire introuvable</span>{% endif %}
+        </p>
+        <form method="post" action="/settings/backup/data" class="space-y-3 settings-autosave"
+              hx-post="/settings/backup/data" hx-trigger="change delay:300ms" hx-swap="none"
+              hx-on::after-request="window.HimaWeb && HimaWeb.settingsSaved(this, event)">
+          <label class="block">
+            <span class="label" data-i18n="settings.backup_data_dir">Dossier de destination</span>
+            <input class="input w-full" name="backup_data_dir" value="{{ backup_data_dir }}"
+                   placeholder="D:\Backups\HimaWeb" {% if !neverest_available %}disabled{% endif %} />
+          </label>
+          <div class="btn-row" style="gap:1rem;flex-wrap:wrap">
+            <label class="toggle-row">
+              <span data-i18n="settings.backup_mail">Mail</span>
+              <input class="toggle" type="checkbox" name="backup_include_mail" value="1" {% if backup_include_mail %}checked{% endif %} {% if !neverest_available %}disabled{% endif %} />
+            </label>
+            <label class="toggle-row">
+              <span data-i18n="settings.backup_contacts">Contacts</span>
+              <input class="toggle" type="checkbox" name="backup_include_contacts" value="1" {% if backup_include_contacts %}checked{% endif %} {% if !neverest_available %}disabled{% endif %} />
+            </label>
+            <label class="toggle-row">
+              <span data-i18n="settings.backup_calendars">Agendas</span>
+              <input class="toggle" type="checkbox" name="backup_include_calendars" value="1" {% if backup_include_calendars %}checked{% endif %} {% if !neverest_available %}disabled{% endif %} />
+            </label>
+          </div>
+          <div>
+            <span class="label" data-i18n="settings.backup_mail_accounts">Comptes mail à sauvegarder</span>
+            <p class="muted tiny" data-i18n="settings.backup_mail_accounts_hint">Décochez pour exclure un compte. Aucun coché = tous.</p>
+            <div class="backup-acct-picks">
+              {% for a in color_accounts %}
+              {% if a.kind == "mail" %}
+              <label class="backup-acct-pick" style="border-left-color: {{ a.color }}; color: {{ a.color }}">
+                <input type="checkbox" name="backup_mail_account" value="{{ a.name }}"
+                       {% if a.backup_selected %}checked{% endif %} {% if !neverest_available %}disabled{% endif %} />
+                <i data-lucide="{{ a.icon }}"></i>
+                <span>{{ a.label }}</span>
+              </label>
+              {% endif %}
+              {% endfor %}
+            </div>
+          </div>
+          {% if !cardamum_accounts.is_empty() %}
+          <div>
+            <span class="label" data-i18n="settings.backup_contact_accounts">Comptes contacts à sauvegarder</span>
+            <p class="muted tiny" data-i18n="settings.backup_mail_accounts_hint">Décochez pour exclure un compte. Aucun coché = tous.</p>
+            <div class="backup-acct-picks">
+              {% for a in cardamum_accounts %}
+              <label class="backup-acct-pick">
+                <input type="checkbox" name="backup_contact_account" value="{{ a.name }}"
+                       {% if a.backup_selected %}checked{% endif %} />
+                <i data-lucide="contact"></i>
+                <span>{{ a.name }}</span>
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+          {% if !calendula_accounts.is_empty() %}
+          <div>
+            <span class="label" data-i18n="settings.backup_calendar_accounts">Comptes agendas à sauvegarder</span>
+            <p class="muted tiny" data-i18n="settings.backup_mail_accounts_hint">Décochez pour exclure un compte. Aucun coché = tous.</p>
+            <div class="backup-acct-picks">
+              {% for a in calendula_accounts %}
+              <label class="backup-acct-pick">
+                <input type="checkbox" name="backup_calendar_account" value="{{ a.name }}"
+                       {% if a.backup_selected %}checked{% endif %} />
+                <i data-lucide="calendar"></i>
+                <span>{{ a.name }}</span>
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+          <p class="settings-saved muted tiny" hidden data-i18n="settings.saved">Enregistré</p>
+        </form>
+        {% if let Some(msg) = backup_data_message %}
+        <div class="offline-strip mt-3">{{ msg }}</div>
+        {% endif %}
+        {% if !backup_browse_dir.is_empty() %}
+        <p class="muted tiny mt-2">Snapshot courant : <code>{{ backup_browse_dir }}</code></p>
+        {% endif %}
+        {% if !backup_snapshots.is_empty() %}
+        <form method="post" action="/settings/backup/data/browse" class="mt-3 space-y-2">
+          <span class="label" data-i18n="settings.backup_snapshots">Snapshots à naviguer</span>
+          <p class="muted tiny" data-i18n="settings.backup_snapshots_hint">Chaque sauvegarde crée un dossier daté. Choisissez lequel lire (mail). Agendas/contacts : ouvrez le dossier (store pimdir).</p>
+          <select name="path" class="select w-full">
+            {% for s in backup_snapshots %}
+            <option value="{{ s.path }}" data-id="{{ s.id }}" {% if s.selected %}selected{% endif %}>{{ s.label }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="btn secondary" data-i18n="settings.backup_select_snapshot">Utiliser ce snapshot</button>
+        </form>
+        {% endif %}
+        <div class="btn-row mt-3" style="gap:0.75rem;flex-wrap:wrap">
+          <form method="post" action="/settings/backup/data/run">
+            <button type="submit" class="btn" {% if !neverest_available %}disabled{% endif %}
+                    :disabled="running" data-i18n="settings.backup_data_run">Lancer la sauvegarde</button>
+          </form>
+          <form method="post" action="/settings/backup/data/cancel" x-show="running || progress > 0">
+            <button type="submit" class="btn secondary" data-i18n="settings.backup_data_reset">Réinitialiser</button>
+          </form>
+          <form method="post" action="/settings/backup/data/open">
+            <button type="submit" class="btn secondary" data-i18n="settings.backup_data_open">Ouvrir le dossier</button>
+          </form>
+          <form method="post" action="/settings/backup/data/archive">
+            <button type="submit" class="btn secondary" data-i18n="settings.backup_data_archive">Lire le mail (archive)</button>
+          </form>
+          {% if backup_archive_active %}
+          <form method="post" action="/settings/backup/data/exit-archive">
+            <button type="submit" class="btn secondary" data-i18n="settings.backup_exit_archive">Quitter l’archive</button>
+          </form>
+          {% endif %}
+        </div>
+        <p class="muted tiny mt-2" data-i18n="settings.backup_browse_hint">
+          Navigation mail : mode archive temporaire (Quitter l’archive pour revenir). Agendas / contacts : store pimdir (Ouvrir le dossier) — format Neverest, pas encore lu par Calendula/Cardamum.
+        </p>
+        <div class="backup-progress-block mt-3" x-show="running || message || logs.length" x-cloak>
+          <div class="backup-progress-head">
+            <span x-show="running" class="hw-spinner" style="display:inline-block;width:12px;height:12px;vertical-align:middle"></span>
+            <strong x-text="message || '…'"></strong>
+            <span class="muted tiny" x-text="progress + '%'"></span>
+            <span x-show="!running && ok" class="ok"> ✓</span>
+            <span x-show="!running && message && !ok" class="badge-warn">!</span>
+          </div>
+          <div class="backup-progress-track" role="progressbar" :aria-valuenow="progress" aria-valuemin="0" aria-valuemax="100">
+            <div class="backup-progress-bar" :style="'width:' + progress + '%'"
+                 :class="{ 'is-done': !running && ok, 'is-error': !running && message && !ok }"></div>
+          </div>
+          <pre class="backup-log" x-ref="logBox" x-text="logs.join('\n')"></pre>
+        </div>
+      </section>
+
       <section class="settings-card settings-span">
-        <h2 data-i18n="settings.backup_title">Exporter / importer la config</h2>
+        <h2 data-i18n="settings.backup_title">Exporter / importer la configuration</h2>
         <p class="muted text-sm mb-3" data-i18n="settings.backup_hint">
           Archive ZIP : préférences HimaWeb, comptes Himalaya / Cardamum / Calendula, Ortie (tokens inclus).
           Contient des secrets (mots de passe, clés API) — à stocker en lieu sûr.

@@ -43,9 +43,42 @@ pub struct Prefs {
     /// Dossiers surveillés pour compteurs / notifications (`compte::Inbox` ou `Inbox`)
     #[serde(default)]
     pub watched_folders: Vec<String>,
+    /// Exclusions explicites (prioritaires sur le défaut « toutes les Inbox »)
+    #[serde(default)]
+    pub watch_excluded: Vec<String>,
     /// Sous-ensemble des dossiers surveillés : badge dossier seulement, hors total global
     #[serde(default)]
     pub badge_only_folders: Vec<String>,
+    /// Comptes mis en pause (pas de poll unread / Mirador pour eux)
+    #[serde(default)]
+    pub paused_accounts: Vec<String>,
+    /// Dossier cible backup contenu PIM (Neverest / pimdir)
+    #[serde(default)]
+    pub backup_data_dir: String,
+    /// Inclure le mail dans le backup données
+    #[serde(default = "default_true")]
+    pub backup_include_mail: bool,
+    /// Inclure les contacts
+    #[serde(default = "default_true")]
+    pub backup_include_contacts: bool,
+    /// Inclure les agendas
+    #[serde(default = "default_true")]
+    pub backup_include_calendars: bool,
+    /// Comptes mail à sauvegarder (vide = tous)
+    #[serde(default)]
+    pub backup_mail_accounts: Vec<String>,
+    /// Comptes Cardamum à sauvegarder / exporter (vide = tous)
+    #[serde(default)]
+    pub backup_contact_accounts: Vec<String>,
+    /// Comptes Calendula à sauvegarder / exporter (vide = tous)
+    #[serde(default)]
+    pub backup_calendar_accounts: Vec<String>,
+    /// Snapshot pimdir actuellement ouvert en navigation (chemin absolu)
+    #[serde(default)]
+    pub backup_browse_dir: String,
+    /// Compte actif avant d’entrer en mode archive (pour en sortir)
+    #[serde(default)]
+    pub backup_restore_account: Option<String>,
     /// Notifications navigateur pour nouveaux non-lus
     #[serde(default = "default_true")]
     pub notifications: bool,
@@ -297,7 +330,18 @@ impl Default for Prefs {
             pinned_folders: vec![],
             hidden_folders: vec![],
             watched_folders: vec![],
+            watch_excluded: vec![],
             badge_only_folders: vec![],
+            paused_accounts: vec![],
+            backup_data_dir: String::new(),
+            backup_include_mail: true,
+            backup_include_contacts: true,
+            backup_include_calendars: true,
+            backup_mail_accounts: vec![],
+            backup_contact_accounts: vec![],
+            backup_calendar_accounts: vec![],
+            backup_browse_dir: String::new(),
+            backup_restore_account: None,
             notifications: true,
             confirm_delete: true,
             open_browser_on_start: true,
@@ -425,6 +469,10 @@ impl Prefs {
         self.task_calendars.dedup();
         self.watched_folders.sort();
         self.watched_folders.dedup();
+        self.watch_excluded.sort();
+        self.watch_excluded.dedup();
+        self.paused_accounts.sort();
+        self.paused_accounts.dedup();
         self.badge_only_folders.sort();
         self.badge_only_folders.dedup();
         self.badge_only_folders
@@ -642,7 +690,15 @@ impl Prefs {
         self.hidden_folders.iter().any(|h| h == key)
     }
 
+    pub fn is_watch_excluded(&self, key: &str, mailbox: &str) -> bool {
+        self.watch_excluded.iter().any(|w| w == key)
+            || self.watch_excluded.iter().any(|w| w == mailbox)
+    }
+
     pub fn is_watched(&self, key: &str, mailbox: &str) -> bool {
+        if self.is_watch_excluded(key, mailbox) {
+            return false;
+        }
         if self.watched_folders.is_empty() {
             // Par défaut : toutes les Inbox
             return mailbox.eq_ignore_ascii_case("inbox")
@@ -650,6 +706,41 @@ impl Prefs {
         }
         self.watched_folders.iter().any(|w| w == key)
             || self.watched_folders.iter().any(|w| w == mailbox)
+    }
+
+    /// Bascule la surveillance d’un dossier. Retourne le nouvel état (surveillé ?).
+    pub fn toggle_watched(&mut self, key: &str, mailbox: &str) -> bool {
+        let currently = self.is_watched(key, mailbox);
+        if currently {
+            self.watched_folders.retain(|w| w != key && w != mailbox);
+            if !self.watch_excluded.iter().any(|w| w == key) {
+                self.watch_excluded.push(key.to_string());
+            }
+            false
+        } else {
+            self.watch_excluded.retain(|w| w != key && w != mailbox);
+            if !self.watched_folders.iter().any(|w| w == key) {
+                self.watched_folders.push(key.to_string());
+            }
+            true
+        }
+    }
+
+    pub fn is_account_paused(&self, name: &str) -> bool {
+        !name.is_empty() && self.paused_accounts.iter().any(|a| a == name)
+    }
+
+    pub fn toggle_account_paused(&mut self, name: &str) -> bool {
+        if name.is_empty() {
+            return false;
+        }
+        if let Some(i) = self.paused_accounts.iter().position(|a| a == name) {
+            self.paused_accounts.remove(i);
+            false
+        } else {
+            self.paused_accounts.push(name.to_string());
+            true
+        }
     }
 
     /// Badge dossier sans contribution au total global (ex. Spam).
@@ -683,6 +774,9 @@ impl Prefs {
             .filter(|s| !s.is_empty())
         {
             return label.to_string();
+        }
+        if name == "himaweb-archive" {
+            return "Archive (backup)".into();
         }
         if name == NTFY_MERGED {
             return "Ntfy".into();

@@ -7,8 +7,9 @@
         <i data-lucide="circle-user" class="acct-select-ico"></i>
         <select id="account-select" name="account" class="account-select" onchange="this.form.submit()">
           {% for a in accounts %}
-          <option value="{{ a.name }}" {% if a.selected %}selected{% endif %}>
-            {{ a.label }}{% if a.is_default %} · {{ default_label }}{% endif %}
+          <option value="{{ a.name }}" {% if a.selected %}selected{% endif %}
+                  data-paused="{% if a.paused %}1{% else %}0{% endif %}">
+            {% if a.paused %}⏸ {% endif %}{{ a.label }}{% if a.is_default %} · {{ default_label }}{% endif %}
           </option>
           {% else %}
           <option value="">{{ no_account_label }}</option>
@@ -18,9 +19,15 @@
         <i data-lucide="chevrons-up-down" class="chev"></i>
       </div>
     </form>
+    {% if !archive_readonly %}
     <a class="icon-btn compose-icon-btn" href="/compose" data-i18n-title="mail.new_message" title="Nouveau message">
       <i data-lucide="pen-square"></i>
     </a>
+    {% else %}
+    <span class="icon-btn compose-icon-btn is-disabled" data-i18n-title="mail.archive_readonly" title="Archive — lecture seule" aria-disabled="true">
+      <i data-lucide="book-lock"></i>
+    </span>
+    {% endif %}
     <button type="button" class="icon-btn rail-compact-btn" data-i18n-title="mail.compact_rail" title="Compacter la colonne"
             data-i18n-aria="mail.compact_rail" aria-label="Compacter la colonne" onclick="window.HimaWeb && HimaWeb.toggleRailCompact()">
       <i data-lucide="panel-left-close" class="rail-compact-ico-collapse"></i>
@@ -30,6 +37,13 @@
 
   {% if offline %}
   <div class="badge-offline rail-badge" data-i18n="badge.local_cache">Cache local</div>
+  {% endif %}
+  {% if archive_readonly %}
+  <div class="badge-offline rail-badge" data-i18n="mail.archive_readonly">Archive — lecture seule</div>
+  <form method="post" action="/settings/backup/data/exit-archive" class="mt-1">
+    <button type="submit" class="btn secondary" style="width:100%;font-size:0.78rem"
+            data-i18n="settings.backup_exit_archive">Quitter l’archive</button>
+  </form>
   {% endif %}
 
   <nav class="folder-nav" id="folder-nav" data-i18n-aria="mail.folders" aria-label="Dossiers" data-current="{{ current }}">
@@ -66,9 +80,11 @@
        data-folder-icon="{{ m.icon }}"
        data-folder-key="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}"
        data-account="{{ m.account }}"
-       data-account-color="{{ m.color }}">
+       data-account-color="{{ m.color }}"
+       data-watched="{% if m.watched %}1{% else %}0{% endif %}">
       <i data-lucide="pin"></i>
       <span class="folder-label" title="{{ m.name }}">{% if all_selected && !m.account.is_empty() %}{{ m.account_label }} · {% endif %}{{ m.label }}</span>
+      {% if m.watched %}<i data-lucide="eye" class="folder-watch-ico" title="Surveillé"></i>{% endif %}
       {% if m.unread > 0 %}<span class="unread" data-unread-for="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}">{{ m.unread }}</span>{% endif %}
     </a>
     {% endfor %}
@@ -92,26 +108,30 @@
         <span class="folder-ico"><i data-lucide="{{ m.icon }}"></i></span>
         {% endif %}
         {% if m.is_account_header %}
-        <span class="folder-link-text folder-acct-label" data-label="{{ m.label }}" title="{{ m.account }}">
+        <span class="folder-link-text folder-acct-label" data-label="{{ m.label }}" title="{{ m.account }}"
+              data-account="{{ m.account }}" data-account-header="1" data-paused="{% if m.paused %}1{% else %}0{% endif %}">
+          {% if m.paused %}<i data-lucide="pause" class="folder-pause-ico" title="En pause"></i>{% endif %}
           <span class="folder-label">{{ m.label }}</span>
         </span>
         {% else %}
         <a class="folder-link-text"
-           href="/?mailbox={{ m.name_enc }}{% if all_selected && !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
-           hx-get="/partials/envelopes?mailbox={{ m.name_enc }}{% if all_selected && !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+           href="/?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+           hx-get="/partials/envelopes?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
            hx-target="#envelope-list"
            hx-swap="innerHTML"
            hx-include="#mail-sort"
-           hx-push-url="/?mailbox={{ m.name_enc }}{% if all_selected && !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+           hx-push-url="/?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
            data-label="{{ m.label }}"
            title="{{ m.label }}"
            data-folder-icon="{{ m.icon }}"
            data-folder-key="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}"
            data-account="{{ m.account }}"
-           data-account-color="{{ m.color }}">
+           data-account-color="{{ m.color }}"
+           data-watched="{% if m.watched %}1{% else %}0{% endif %}">
           <span class="folder-label" title="{{ m.name }}">{{ m.label }}</span>
         </a>
         {% endif %}
+        {% if m.watched && !m.is_account_header %}<i data-lucide="eye" class="folder-watch-ico" title="Surveillé"></i>{% endif %}
         {% if m.unread > 0 %}<span class="unread" data-unread-for="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}">{{ m.unread }}</span>{% endif %}
       </div>
     </div>

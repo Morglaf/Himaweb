@@ -396,7 +396,7 @@ impl CalendulaClient {
         match self.create_todo_via_cli(calendar_ref, ical).await {
             Ok(id) => Ok(id),
             Err(e) if is_unexpected_redirect(&e) => {
-                // Zimbra (ex. EHESS) : calendula PUT sous un hash aléatoire → 302 vers {UID}.ics.
+                // Zimbra : calendula PUT sous un hash aléatoire → 302 vers {UID}.ics.
                 // io-webdav refuse ce redirect ; on rejoue le PUT avec le bon nom.
                 tracing::warn!(
                     "calendula todo create: redirect inattendu — PUT CalDAV direct ({calendar_ref})"
@@ -769,42 +769,18 @@ mod tests {
     fn absolutize() {
         assert_eq!(
             absolutize_url(
-                "https://rosa.ehess.fr/dav/u/Tasks/a.ics",
-                "https://rosa.ehess.fr:443/dav/u/Tasks/b.ics"
+                "https://caldav.example.com/dav/u/Tasks/a.ics",
+                "https://caldav.example.com:443/dav/u/Tasks/b.ics"
             ),
-            "https://rosa.ehess.fr:443/dav/u/Tasks/b.ics"
+            "https://caldav.example.com:443/dav/u/Tasks/b.ics"
         );
         assert_eq!(
-            absolutize_url("https://rosa.ehess.fr/dav/u/Tasks/a.ics", "/dav/u/Tasks/b.ics"),
-            "https://rosa.ehess.fr/dav/u/Tasks/b.ics"
+            absolutize_url(
+                "https://caldav.example.com/dav/u/Tasks/a.ics",
+                "/dav/u/Tasks/b.ics"
+            ),
+            "https://caldav.example.com/dav/u/Tasks/b.ics"
         );
-    }
-
-    #[tokio::test]
-    async fn create_todo_put_fallback_live() {
-        // Intégration : compte EHESS + calendula installé. Ignore si absent.
-        let Ok(bin) = which::which("calendula") else {
-            eprintln!("skip: calendula absent");
-            return;
-        };
-        let Ok(auth) = crate::calendar_import::caldav_basic_auth("robin-krier-ehess-fr") else {
-            eprintln!("skip: compte EHESS absent");
-            return;
-        };
-        let _ = auth;
-        let client = CalendulaClient::new(
-            bin.to_string_lossy().into_owned(),
-            super::super::runner::CliRunner::new(std::time::Duration::from_secs(60)),
-        );
-        let uid = format!("himaweb-live-{}", uuid::Uuid::new_v4());
-        let ical = format!(
-            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//HimaWeb//test//EN\r\nBEGIN:VTODO\r\nUID:{uid}\r\nDTSTAMP:20260405T100000Z\r\nSUMMARY:himaweb live todo\r\nSTATUS:NEEDS-ACTION\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
-        );
-        let id = client
-            .create_todo("robin-krier-ehess-fr::Tasks", ical.as_bytes())
-            .await
-            .expect("create_todo");
-        assert!(id.contains(&uid) || !id.is_empty(), "id={id}");
     }
 }
 

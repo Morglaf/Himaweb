@@ -8,6 +8,7 @@ use crate::cli::mirador::MiradorClient;
 use crate::cli::neverest::NeverestClient;
 use crate::cli::ortie::OrtieClient;
 use crate::cli::runner::CliRunner;
+use crate::data_backup::{self, BackupStatusHandle};
 use crate::prefs::{self, Prefs};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -23,6 +24,7 @@ pub struct AppState {
     pub ortie: Option<OrtieClient>,
     pub cache: Arc<Mutex<Cache>>,
     pub prefs: Arc<Mutex<Prefs>>,
+    pub backup_status: BackupStatusHandle,
     /// Appels CLI déclenchés par une action utilisateur.
     pub cli_limit: Arc<Semaphore>,
     /// Appels CLI de fond (préchauffage, poll des non-lus, rafraîchissements).
@@ -99,9 +101,18 @@ impl AppState {
 
         let cache_path = cache_db_path()?;
         let cache = Cache::open(&cache_path).map_err(|e| format!("cache SQLite: {e}"))?;
-        let prefs = Prefs::load().normalize();
+        let mut prefs = Prefs::load().normalize();
         let _ = crate::config_fix::migrate_cardamum_config();
         let _ = crate::config_fix::migrate_calendula_config();
+        // Anciennes versions injectaient himaweb-archive dans config.toml — on nettoie.
+        let _ = data_backup::strip_archive_from_main_himalaya_config();
+        if !data_backup::is_archive_account(prefs.selected_account()) {
+            let _ = data_backup::remove_archive_himalaya_account();
+            if prefs.account.as_deref() == Some(data_backup::ARCHIVE_ACCOUNT) {
+                prefs.account = prefs.backup_restore_account.take();
+                let _ = prefs.save();
+            }
+        }
 
         if !himalaya_available {
             tracing::warn!(
@@ -130,6 +141,7 @@ impl AppState {
             ortie,
             cache: Arc::new(Mutex::new(cache)),
             prefs: Arc::new(Mutex::new(prefs)),
+            backup_status: data_backup::new_status_handle(),
             cli_limit: Arc::new(Semaphore::new(6)),
             cli_bg_limit: Arc::new(Semaphore::new(2)),
             himalaya_available,

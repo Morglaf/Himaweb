@@ -1,4 +1,7 @@
 {% if !rows_only %}
+{% if archive_readonly %}
+<div class="offline-strip" data-i18n="mail.archive_readonly">Archive — lecture seule</div>
+{% endif %}
 {% if offline %}
 <div class="offline-strip">Cache local{% if let Some(e) = error %} — {{ e }}{% endif %}</div>
 {% else if let Some(e) = error %}

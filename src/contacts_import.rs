@@ -253,6 +253,8 @@ pub struct CardamumAccountEdit {
     pub username: String,
     pub is_default: bool,
     pub has_password: bool,
+    /// Inclus dans le backup / export (renseigné par settings)
+    pub backup_selected: bool,
 }
 
 pub fn list_cardamum_accounts() -> Result<Vec<CardamumAccountEdit>, String> {
@@ -286,6 +288,7 @@ pub fn list_cardamum_accounts() -> Result<Vec<CardamumAccountEdit>, String> {
             username,
             is_default: t.get("default").and_then(|i| i.as_bool()).unwrap_or(false),
             has_password,
+            backup_selected: true,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));

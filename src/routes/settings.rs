@@ -45,8 +45,15 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/settings/contacts/password", post(set_cardamum_password))
         .route("/settings/contacts/delete", post(delete_card_account))
         .route("/settings/ortie/auth", post(ortie_auth))
-        .route("/settings/neverest/sync", post(neverest_sync))
         .route("/settings/mirador/watch", post(mirador_watch))
+        .route("/settings/backup/data", post(backup_data_save))
+        .route("/settings/backup/data/run", post(backup_data_run))
+        .route("/settings/backup/data/cancel", post(backup_data_cancel))
+        .route("/settings/backup/data/status", get(backup_data_status))
+        .route("/settings/backup/data/open", post(backup_data_open))
+        .route("/settings/backup/data/archive", post(backup_data_archive))
+        .route("/settings/backup/data/exit-archive", post(backup_data_exit_archive))
+        .route("/settings/backup/data/browse", post(backup_data_browse))
         .route("/settings/plugins/install", post(plugins_install))
         .route("/settings/plugins/remove", post(plugins_remove))
         .route("/settings/ntfy", post(save_ntfy))
@@ -102,7 +109,6 @@ struct SettingsTemplate {
     pub cardamum_accounts: Vec<CardamumAccountEdit>,
     pub calendula_accounts: Vec<CalendulaAccountEdit>,
     pub color_accounts: Vec<ColorAccountRow>,
-    pub move_defaults: Vec<MoveDefaultRow>,
     pub folder_groups: Vec<FolderPrefGroup>,
     pub thunderbird_profiles: Vec<String>,
     pub import_preview: Option<String>,
@@ -132,8 +138,17 @@ struct SettingsTemplate {
     pub mirador_enabled: bool,
     pub open_browser_on_start: bool,
     pub ortie_message: Option<String>,
-    pub neverest_message: Option<String>,
     pub mirador_message: Option<String>,
+    pub backup_data_dir: String,
+    pub backup_include_mail: bool,
+    pub backup_include_contacts: bool,
+    pub backup_include_calendars: bool,
+    pub backup_browse_dir: String,
+    pub backup_snapshots: Vec<BackupSnapshotRow>,
+    pub backup_archive_active: bool,
+    pub backup_data_running: bool,
+    pub backup_data_message: Option<String>,
+    pub backup_data_ok: bool,
     pub plugins_dir: String,
     pub plugins: Vec<PluginRow>,
     pub plugins_message: Option<String>,
@@ -176,17 +191,6 @@ pub struct PluginRow {
     pub hooks_label: String,
 }
 
-pub struct MoveDefaultRow {
-    pub account: String,
-    pub account_label: String,
-    pub options: Vec<MoveFolderOpt>,
-}
-
-pub struct MoveFolderOpt {
-    pub name: String,
-    pub selected: bool,
-}
-
 pub struct ColorAccountRow {
     pub name: String,
     pub label: String,
@@ -194,6 +198,15 @@ pub struct ColorAccountRow {
     pub color: String,
     pub kind: String,
     pub ai_preprompt: String,
+    /// Inclus dans le backup Neverest (mail uniquement ; true si liste vide = tous)
+    pub backup_selected: bool,
+}
+
+pub struct BackupSnapshotRow {
+    pub id: String,
+    pub path: String,
+    pub label: String,
+    pub selected: bool,
 }
 
 pub struct CalVisibilityRow {
@@ -203,6 +216,9 @@ pub struct CalVisibilityRow {
     pub hidden: bool,
     /// Affiché dans les listes / filtres de tâches
     pub show_tasks: bool,
+    pub account: String,
+    pub account_label: String,
+    pub show_account_header: bool,
 }
 
 pub struct NtfySourceRow {
@@ -250,12 +266,18 @@ pub struct MailboxAliasChoice {
     pub is_trash: bool,
     pub is_sent: bool,
     pub is_drafts: bool,
+    pub is_archive: bool,
 }
 
 impl EditableAccountRow {
-    fn from_edit(a: AccountEdit, mailbox_names: Vec<String>, copy_move: bool) -> Self {
+    fn from_edit(
+        a: AccountEdit,
+        mailbox_names: Vec<String>,
+        copy_move: bool,
+        default_move: String,
+    ) -> Self {
         let mut names = mailbox_names;
-        for alias in [&a.trash_alias, &a.sent_alias, &a.drafts_alias] {
+        for alias in [&a.trash_alias, &a.sent_alias, &a.drafts_alias, &default_move] {
             let alias = alias.trim();
             if !alias.is_empty()
                 && !names.iter().any(|m| m.eq_ignore_ascii_case(alias))
@@ -269,6 +291,7 @@ impl EditableAccountRow {
                 is_trash: name.eq_ignore_ascii_case(&a.trash_alias),
                 is_sent: name.eq_ignore_ascii_case(&a.sent_alias),
                 is_drafts: name.eq_ignore_ascii_case(&a.drafts_alias),
+                is_archive: name.eq_ignore_ascii_case(&default_move),
                 name,
             })
             .collect();
@@ -299,11 +322,11 @@ struct Flash {
     contacts_preview: Option<String>,
     contacts_message: Option<String>,
     ortie_message: Option<String>,
-    neverest_message: Option<String>,
     mirador_message: Option<String>,
     plugins_message: Option<String>,
     ai_message: Option<String>,
     backup_message: Option<String>,
+    backup_data_message: Option<String>,
 }
 
 impl Flash {
@@ -316,11 +339,11 @@ impl Flash {
             contacts_preview: None,
             contacts_message: None,
             ortie_message: None,
-            neverest_message: None,
             mirador_message: None,
             plugins_message: None,
             ai_message: None,
             backup_message: None,
+            backup_data_message: None,
         }
     }
 }
@@ -356,17 +379,23 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
     let rail = prefs_snap.rail_order(&known);
     let color_accounts: Vec<ColorAccountRow> = rail
         .iter()
-        .map(|n| ColorAccountRow {
-            color: prefs_snap.account_color(n),
-            label: prefs_snap.account_label(n),
-            icon: prefs_snap.account_icon(n),
-            name: n.clone(),
-            kind: if prefs::Prefs::is_ntfy_key(n) {
-                "ntfy".into()
-            } else {
-                "mail".into()
-            },
-            ai_preprompt: prefs_snap.account_ai_preprompt_for(n),
+        .map(|n| {
+            let is_ntfy = prefs::Prefs::is_ntfy_key(n);
+            let backup_selected = is_ntfy
+                || prefs_snap.backup_mail_accounts.is_empty()
+                || prefs_snap
+                    .backup_mail_accounts
+                    .iter()
+                    .any(|a| a.eq_ignore_ascii_case(n));
+            ColorAccountRow {
+                color: prefs_snap.account_color(n),
+                label: prefs_snap.account_label(n),
+                icon: prefs_snap.account_icon(n),
+                name: n.clone(),
+                kind: if is_ntfy { "ntfy".into() } else { "mail".into() },
+                ai_preprompt: prefs_snap.account_ai_preprompt_for(n),
+                backup_selected,
+            }
         })
         .collect();
 
@@ -425,8 +454,22 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         .collect();
 
     let editable_raw = accounts_config::list_editable_accounts().unwrap_or_default();
-    let cardamum_accounts = contacts_import::list_cardamum_accounts().unwrap_or_default();
-    let calendula_accounts = calendar_import::list_calendula_accounts().unwrap_or_default();
+    let mut cardamum_accounts = contacts_import::list_cardamum_accounts().unwrap_or_default();
+    for a in &mut cardamum_accounts {
+        a.backup_selected = prefs_snap.backup_contact_accounts.is_empty()
+            || prefs_snap
+                .backup_contact_accounts
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(&a.name));
+    }
+    let mut calendula_accounts = calendar_import::list_calendula_accounts().unwrap_or_default();
+    for a in &mut calendula_accounts {
+        a.backup_selected = prefs_snap.backup_calendar_accounts.is_empty()
+            || prefs_snap
+                .backup_calendar_accounts
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(&a.name));
+    }
 
     // Un seul `list_mailboxes` par compte, partagé par les trois blocs
     // (édition, préférences dossiers, dossier de déplacement par défaut).
@@ -471,8 +514,17 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         let mut rows = Vec::with_capacity(editable_raw.len());
         for a in editable_raw {
             let copy_move = prefs_snap.uses_copy_move(&a.name);
+            let default_move = prefs_snap
+                .default_move_for(&a.name)
+                .unwrap_or("")
+                .to_string();
             let boxes = boxes_by_account.get(&a.name).cloned().unwrap_or_default();
-            rows.push(EditableAccountRow::from_edit(a, boxes, copy_move));
+            rows.push(EditableAccountRow::from_edit(
+                a,
+                boxes,
+                copy_move,
+                default_move,
+            ));
         }
         rows
     };
@@ -528,31 +580,6 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         groups
     };
 
-    let mut move_defaults: Vec<MoveDefaultRow> = Vec::new();
-    if state.himalaya_available {
-        for acc in &account_order {
-            let current = prefs_snap
-                .default_move_for(acc)
-                .unwrap_or("")
-                .to_string();
-            let options = boxes_by_account
-                .get(acc)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|name| MoveFolderOpt {
-                    selected: name.eq_ignore_ascii_case(&current),
-                    name,
-                })
-                .collect::<Vec<_>>();
-            move_defaults.push(MoveDefaultRow {
-                account: acc.clone(),
-                account_label: prefs_snap.account_label(acc),
-                options,
-            });
-        }
-    }
-
     let thunderbird_profiles = thunderbird::discover_profiles()
         .into_iter()
         .map(|p| p.display().to_string())
@@ -567,6 +594,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
             name: a.name.clone(),
             kind: "cal".into(),
             ai_preprompt: String::new(),
+            backup_selected: false,
         })
         .collect();
 
@@ -586,16 +614,34 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
                 let color = prefs_snap.calendar_color(&id);
                 let hidden = prefs_snap.is_calendar_hidden(&id);
                 let show_tasks = prefs_snap.is_task_calendar_visible(&id, &known);
+                let account = Prefs::cal_account_from_id(&id).to_string();
+                let account_label = if account.is_empty() {
+                    String::new()
+                } else {
+                    prefs_snap.cal_account_label(&account)
+                };
                 CalVisibilityRow {
                     id,
                     label,
                     color,
                     hidden,
                     show_tasks,
+                    account,
+                    account_label,
+                    show_account_header: false,
                 }
             })
             .collect();
-        rows.sort_by(|a, b| a.label.cmp(&b.label));
+        rows.sort_by(|a, b| {
+            a.account_label
+                .cmp(&b.account_label)
+                .then_with(|| a.label.cmp(&b.label))
+        });
+        let mut prev_acc = String::new();
+        for r in &mut rows {
+            r.show_account_header = r.account != prev_acc;
+            prev_acc = r.account.clone();
+        }
         rows
     };
 
@@ -632,7 +678,6 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         cardamum_accounts,
         calendula_accounts,
         color_accounts,
-        move_defaults,
         folder_groups,
         thunderbird_profiles,
         import_preview: flash.import_preview,
@@ -662,8 +707,49 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         mirador_enabled: prefs_snap.mirador_enabled,
         open_browser_on_start: prefs_snap.open_browser_on_start,
         ortie_message: flash.ortie_message,
-        neverest_message: flash.neverest_message,
         mirador_message: flash.mirador_message,
+        backup_data_dir: prefs_snap.backup_data_dir.clone(),
+        backup_include_mail: prefs_snap.backup_include_mail,
+        backup_include_contacts: prefs_snap.backup_include_contacts,
+        backup_include_calendars: prefs_snap.backup_include_calendars,
+        backup_browse_dir: prefs_snap.backup_browse_dir.clone(),
+        backup_snapshots: {
+            let browse = prefs_snap.backup_browse_dir.trim().to_string();
+            let mut rows: Vec<BackupSnapshotRow> =
+                crate::data_backup::list_snapshots(&prefs_snap.backup_data_dir)
+                    .into_iter()
+                    .map(|s| BackupSnapshotRow {
+                        selected: !browse.is_empty() && browse == s.path,
+                        id: s.id,
+                        path: s.path,
+                        label: s.label,
+                    })
+                    .collect();
+            if !rows.is_empty() && !rows.iter().any(|r| r.selected) {
+                rows[0].selected = true;
+            }
+            rows
+        },
+        backup_archive_active: crate::data_backup::is_archive_account(
+            prefs_snap.selected_account(),
+        ),
+        backup_data_running: {
+            let st = state.backup_status.lock().await;
+            st.running
+        },
+        backup_data_message: {
+            let st = state.backup_status.lock().await;
+            flash
+                .backup_data_message
+                .or_else(|| {
+                    if st.message.is_empty() {
+                        None
+                    } else {
+                        Some(st.message.clone())
+                    }
+                })
+        },
+        backup_data_ok: state.backup_status.lock().await.last_ok,
         plugins_dir: crate::plugins::plugins_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "(indisponible)".into()),
@@ -861,11 +947,15 @@ async fn save_move_defaults(
     let folders = crate::form_util::form_values(&map, "folder");
     {
         let mut prefs = state.prefs.lock().await;
-        prefs.default_move.clear();
         for (a, f) in accounts.iter().zip(folders.iter()) {
             let a = a.trim();
             let f = f.trim();
-            if !a.is_empty() && !f.is_empty() {
+            if a.is_empty() {
+                continue;
+            }
+            if f.is_empty() {
+                prefs.default_move.remove(a);
+            } else {
                 prefs.default_move.insert(a.to_string(), f.to_string());
             }
         }
@@ -874,7 +964,7 @@ async fn save_move_defaults(
     if quiet {
         return axum::http::StatusCode::NO_CONTENT.into_response();
     }
-    Redirect::to("/settings#folders").into_response()
+    Redirect::to("/settings#edit-accounts").into_response()
 }
 
 #[derive(Deserialize)]
@@ -1015,7 +1105,15 @@ async fn save_account_colors(
         }
         let _ = prefs.save();
     }
-    Redirect::to("/settings#accounts").into_response()
+    let return_to = crate::form_util::form_values(&map, "return_to")
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    let hash = match return_to.trim() {
+        "ai" => "#ai",
+        _ => "#accounts",
+    };
+    Redirect::to(&format!("/settings{hash}")).into_response()
 }
 
 #[derive(Deserialize)]
@@ -1033,6 +1131,7 @@ pub struct EditAccountForm {
     pub trash_alias: Option<String>,
     pub sent_alias: Option<String>,
     pub drafts_alias: Option<String>,
+    pub default_move: Option<String>,
     pub copy_move: Option<String>,
     pub signature: Option<String>,
     pub signature_html: Option<String>,
@@ -1078,6 +1177,18 @@ async fn edit_account(
             {
                 let mut prefs = state.prefs.lock().await;
                 prefs.set_copy_move(&form.name, copy_move);
+                let archive = form
+                    .default_move
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or("");
+                if archive.is_empty() {
+                    prefs.default_move.remove(&form.name);
+                } else {
+                    prefs
+                        .default_move
+                        .insert(form.name.clone(), archive.to_string());
+                }
                 let _ = prefs.save();
             }
             let mut flash = Flash::empty();
@@ -1126,7 +1237,7 @@ async fn save_folders(
         if quiet {
             return axum::http::StatusCode::BAD_REQUEST.into_response();
         }
-        return Redirect::to("/settings#folders").into_response();
+        return Redirect::to("/settings#edit-accounts").into_response();
     };
     let pinned = crate::form_util::form_values(&map, "pinned")
         .iter()
@@ -1170,7 +1281,7 @@ async fn save_folders(
     if quiet {
         return axum::http::StatusCode::NO_CONTENT.into_response();
     }
-    Redirect::to("/settings#folders").into_response()
+    Redirect::to("/settings#edit-accounts").into_response()
 }
 
 #[derive(Deserialize)]
@@ -1212,7 +1323,7 @@ async fn save_notify(
     if quiet {
         return axum::http::StatusCode::NO_CONTENT.into_response();
     }
-    Redirect::to("/settings#folders").into_response()
+    Redirect::to("/settings#edit-accounts").into_response()
 }
 
 #[derive(Deserialize)]
@@ -1687,33 +1798,236 @@ async fn ortie_auth(
     render_settings(state, flash).await
 }
 
-#[derive(Deserialize)]
-pub struct NeverestForm {
-    pub account: Option<String>,
+async fn backup_data_save(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::RawForm(raw): axum::extract::RawForm,
+) -> impl IntoResponse {
+    let quiet = headers.get("HX-Request").is_some();
+    let map = crate::form_util::parse_form_lists(&raw);
+    {
+        let mut prefs = state.prefs.lock().await;
+        if let Some(dir) = crate::form_util::form_values(&map, "backup_data_dir")
+            .first()
+            .map(|s| s.trim().to_string())
+        {
+            prefs.backup_data_dir = dir;
+        }
+        // checkboxes absentes = false sur POST classique ; HTMX envoie les checked
+        prefs.backup_include_mail = crate::form_util::form_values(&map, "backup_include_mail")
+            .iter()
+            .any(|v| v == "1" || v == "on");
+        prefs.backup_include_contacts =
+            crate::form_util::form_values(&map, "backup_include_contacts")
+                .iter()
+                .any(|v| v == "1" || v == "on");
+        prefs.backup_include_calendars =
+            crate::form_util::form_values(&map, "backup_include_calendars")
+                .iter()
+                .any(|v| v == "1" || v == "on");
+        prefs.backup_mail_accounts = crate::form_util::form_values(&map, "backup_mail_account")
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        prefs.backup_contact_accounts = crate::form_util::form_values(&map, "backup_contact_account")
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        prefs.backup_calendar_accounts =
+            crate::form_util::form_values(&map, "backup_calendar_account")
+                .iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        let _ = prefs.save();
+    }
+    if quiet {
+        return axum::http::StatusCode::NO_CONTENT.into_response();
+    }
+    Redirect::to("/settings#backup").into_response()
 }
 
-async fn neverest_sync(
-    State(state): State<Arc<AppState>>,
-    Form(form): Form<NeverestForm>,
-) -> impl IntoResponse {
+async fn backup_data_run(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut flash = Flash::empty();
-    let Some(client) = &state.neverest else {
-        flash.neverest_message = Some("Neverest introuvable — installez le binaire ou HIMAWEB_NEVEREST_BIN.".into());
+    let Some(client) = state.neverest.clone() else {
+        flash.backup_data_message =
+            Some("Neverest introuvable — installez le binaire (sync/backup Pimalaya).".into());
         return render_settings(state, flash).await;
     };
-    let _permit = state.cli_limit.acquire().await.ok();
-    match client.sync(form.account.as_deref()).await {
-        Ok(out) => {
-            flash.neverest_message = Some(if out.is_empty() {
-                "Sync Neverest terminée.".into()
-            } else {
-                out.chars().take(800).collect()
-            });
-        }
-        Err(e) => flash.neverest_message = Some(format!("Neverest: {e}")),
+    let prefs = state.prefs.lock().await.clone();
+    if prefs.backup_data_dir.trim().is_empty() {
+        flash.backup_data_message = Some("Indiquez un dossier de destination.".into());
+        return render_settings(state, flash).await;
     }
-    drop(_permit);
+    {
+        let mut st = state.backup_status.lock().await;
+        st.reset_for_run();
+        st.push_log("Demande de lancement reçue.");
+    }
+    let status = state.backup_status.clone();
+    let prefs_handle = state.prefs.clone();
+    let cardamum = state.cardamum.clone();
+    let calendula = state.calendula.clone();
+    tokio::spawn(async move {
+        match crate::data_backup::run_backup(
+            &client,
+            &prefs,
+            &status,
+            cardamum.as_ref(),
+            calendula.as_ref(),
+        )
+        .await
+        {
+            Ok((_msg, path)) => {
+                let mut p = prefs_handle.lock().await;
+                p.backup_browse_dir = path.display().to_string();
+                let _ = p.save();
+            }
+            Err(_) => {}
+        }
+    });
+    flash.backup_data_message = Some("Sauvegarde lancée…".into());
     render_settings(state, flash).await
+}
+
+async fn backup_data_cancel(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    crate::data_backup::cancel_backup(&state.backup_status).await;
+    let mut flash = Flash::empty();
+    flash.backup_data_message = Some("Sauvegarde réinitialisée.".into());
+    render_settings(state, flash).await
+}
+
+async fn backup_data_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let st = state.backup_status.lock().await;
+    axum::Json(serde_json::json!({
+        "running": st.running || crate::data_backup::is_running(),
+        "message": st.message,
+        "ok": st.last_ok,
+        "progress": st.progress,
+        "logs": st.logs,
+    }))
+}
+
+async fn backup_data_open(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    let dir = {
+        let prefs = state.prefs.lock().await;
+        crate::data_backup::effective_store_dir(&prefs)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| prefs.backup_data_dir.clone())
+    };
+    match crate::data_backup::open_folder(&dir) {
+        Ok(()) => {
+            flash.backup_data_message = Some(format!("Dossier ouvert : {dir}"));
+        }
+        Err(e) => flash.backup_data_message = Some(e),
+    }
+    render_settings(state, flash).await
+}
+
+async fn backup_data_archive(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    let store = {
+        let prefs = state.prefs.lock().await;
+        match crate::data_backup::effective_store_dir(&prefs) {
+            Ok(p) => p,
+            Err(e) => {
+                drop(prefs);
+                flash.backup_data_message = Some(e);
+                return render_settings(state, flash).await;
+            }
+        }
+    };
+    let prev_account = state.prefs.lock().await.account.clone();
+    let store_s = store.display().to_string();
+    // Alias inbox provisoire ; affiné après list_mailboxes
+    if let Err(e) = crate::data_backup::ensure_archive_himalaya_account(&store_s, None) {
+        flash.backup_data_message = Some(e);
+        return render_settings(state, flash).await;
+    }
+    let inbox = if state.himalaya_available {
+        let _permit = state.cli_limit.acquire().await.ok();
+        match state
+            .himalaya
+            .list_mailboxes(Some(crate::data_backup::ARCHIVE_ACCOUNT))
+            .await
+        {
+            Ok(boxes) => {
+                let names: Vec<String> = boxes.into_iter().map(|m| m.name).collect();
+                crate::data_backup::pick_default_pimdir_mailbox(&names)
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    if let Some(ref mb) = inbox {
+        let _ = crate::data_backup::ensure_archive_himalaya_account(&store_s, Some(mb));
+    }
+    {
+        let mut prefs = state.prefs.lock().await;
+        if !crate::data_backup::is_archive_account(prefs.selected_account()) {
+            prefs.backup_restore_account = prev_account;
+        }
+        prefs.backup_browse_dir = store_s.clone();
+        prefs.account = Some(crate::data_backup::ARCHIVE_ACCOUNT.into());
+        let _ = prefs.save();
+    }
+    let mb = inbox.unwrap_or_else(|| "Inbox".into());
+    Redirect::to(&format!(
+        "/?mailbox={}&account={}",
+        urlencoding::encode(&mb),
+        urlencoding::encode(crate::data_backup::ARCHIVE_ACCOUNT)
+    ))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct BackupBrowseForm {
+    pub path: String,
+}
+
+async fn backup_data_browse(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<BackupBrowseForm>,
+) -> impl IntoResponse {
+    let mut flash = Flash::empty();
+    let path = form.path.trim().to_string();
+    if path.is_empty() || !std::path::Path::new(&path).is_dir() {
+        flash.backup_data_message = Some("Snapshot introuvable.".into());
+        return render_settings(state, flash).await;
+    }
+    {
+        let mut prefs = state.prefs.lock().await;
+        prefs.backup_browse_dir = path;
+        let _ = prefs.save();
+    }
+    flash.backup_data_message =
+        Some("Snapshot sélectionné — cliquez « Lire dans HimaWeb ».".into());
+    render_settings(state, flash).await
+}
+
+async fn backup_data_exit_archive(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let restore = {
+        let mut prefs = state.prefs.lock().await;
+        let restore = prefs.backup_restore_account.take();
+        prefs.account = restore.clone().filter(|a| {
+            !a.is_empty() && a != crate::data_backup::ARCHIVE_ACCOUNT
+        });
+        let _ = prefs.save();
+        restore
+    };
+    let _ = crate::data_backup::remove_archive_himalaya_account();
+    let target = match restore.as_deref() {
+        Some(a) if !a.is_empty() && a != prefs::ACCOUNT_ALL => {
+            format!("/?mailbox=Inbox&account={}", urlencoding::encode(a))
+        }
+        Some(prefs::ACCOUNT_ALL) => "/?mailbox=Inbox".into(),
+        _ => "/?mailbox=Inbox".into(),
+    };
+    Redirect::to(&target).into_response()
 }
 
 #[derive(Deserialize)]
@@ -2218,9 +2532,10 @@ async fn save_cal_colors(
 
 async fn save_cal_visibility(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     axum::extract::RawForm(raw): axum::extract::RawForm,
 ) -> impl IntoResponse {
-    let mut flash = Flash::empty();
+    let quiet = headers.get("HX-Request").is_some();
     let map = crate::form_util::parse_form_lists(&raw);
     // Agendas explicitement masqués (checkbox name=hidden value=id)
     let hidden = crate::form_util::form_values(&map, "hidden");
@@ -2234,15 +2549,20 @@ async fn save_cal_visibility(
         *p = p.clone().normalize();
         let _ = p.save();
     }
+    if quiet {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let mut flash = Flash::empty();
     flash.calendar_message = Some("Visibilité des agendas enregistrée.".into());
     render_settings(state, flash).await
 }
 
 async fn save_cal_task_visibility(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     axum::extract::RawForm(raw): axum::extract::RawForm,
 ) -> impl IntoResponse {
-    let mut flash = Flash::empty();
+    let quiet = headers.get("HX-Request").is_some();
     let map = crate::form_util::parse_form_lists(&raw);
     let shown = crate::form_util::form_values(&map, "task_cal");
     {
@@ -2256,6 +2576,10 @@ async fn save_cal_task_visibility(
         *p = p.clone().normalize();
         let _ = p.save();
     }
+    if quiet {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let mut flash = Flash::empty();
     flash.calendar_message = Some("Agendas pour les tâches enregistrés.".into());
     render_settings(state, flash).await
 }

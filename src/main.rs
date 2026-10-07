@@ -11,6 +11,7 @@ mod calendar_import;
 mod cli;
 mod config_backup;
 mod config_fix;
+mod data_backup;
 mod contacts_import;
 mod form_util;
 mod i18n;
@@ -92,12 +93,12 @@ async fn main() {
         return;
     }
 
+    // HIMAWEB_CONSOLE=1 : rattache les logs au terminal parent (dev.ps1),
+    // pas AllocConsole (nouvelle fenêtre détachée + PowerShell qui ne wait pas les GUI).
     #[cfg(windows)]
     {
         if std::env::var_os("HIMAWEB_CONSOLE").is_some() {
-            unsafe {
-                let _ = windows_sys::Win32::System::Console::AllocConsole();
-            }
+            attach_parent_console();
         }
     }
 
@@ -160,6 +161,11 @@ async fn main() {
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            eprintln!(
+                "HimaWeb: le port 8787 est déjà pris — l’ancienne instance reste active.\n\
+                 Fermez-la (tray / Gestionnaire des tâches) puis relancez pour charger le nouveau binaire.\n\
+                 Ouverture de l’instance existante ({url})."
+            );
             tracing::warn!(
                 "port 8787 déjà pris — ouverture de l’instance existante ({url})"
             );

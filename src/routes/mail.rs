@@ -29,6 +29,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/mail/move", post(move_api))
         .route("/api/mail/delete", post(delete_api))
         .route("/api/mail/undo", post(undo_api))
+        .route("/api/mail/folder/mark-read", post(folder_mark_read))
+        .route("/api/mail/folder/watch", post(folder_toggle_watch))
+        .route("/api/mail/account/pause", post(account_toggle_pause))
+        .route("/api/mail/export/md", get(export_message_md))
         .route("/mailboxes", get(sidebar))
 }
 
@@ -54,6 +58,7 @@ struct SidebarTemplate {
     pub mailboxes: Vec<MailboxRow>,
     pub current: String,
     pub offline: bool,
+    pub archive_readonly: bool,
 }
 
 pub struct AccountRow {
@@ -61,6 +66,7 @@ pub struct AccountRow {
     pub label: String,
     pub is_default: bool,
     pub selected: bool,
+    pub paused: bool,
 }
 
 pub struct MailboxRow {
@@ -71,6 +77,7 @@ pub struct MailboxRow {
     pub icon: String,
     pub active: bool,
     pub pinned: bool,
+    pub watched: bool,
     pub depth: u8,
     pub pad: String,
     pub has_children: bool,
@@ -81,6 +88,8 @@ pub struct MailboxRow {
     pub account_label: String,
     pub color: String,
     pub is_account_header: bool,
+    /// Compte en pause (en-tête de compte uniquement).
+    pub paused: bool,
 }
 
 pub(crate) fn mailbox_icon(name: &str) -> &'static str {
@@ -171,6 +180,7 @@ async fn sidebar(
                     label: prefs_snap.account_label(&a.name),
                     is_default: a.is_default,
                     selected,
+                    paused: prefs_snap.is_account_paused(&a.name),
                 }
             })
         })
@@ -228,6 +238,7 @@ async fn sidebar(
             }
 
             let header_id = format!("@acc@{acc_name}");
+            let account_paused = prefs_snap.is_account_paused(acc_name);
             rows.push(MailboxRow {
                 name: String::new(),
                 name_enc: String::new(),
@@ -236,7 +247,7 @@ async fn sidebar(
                 icon: prefs_snap.account_icon(acc_name),
                 active: false,
                 pinned: false,
-
+                watched: false,
                 depth: 0,
                 pad: "0.75rem".into(),
                 has_children: true,
@@ -247,6 +258,7 @@ async fn sidebar(
                 account_label: prefs_snap.account_label(acc_name),
                 color: color.clone(),
                 is_account_header: true,
+                paused: account_paused,
             });
 
             for m in boxes {
@@ -266,7 +278,7 @@ async fn sidebar(
                     && (current_account.is_empty() || current_account == *acc_name);
                 let unread = m.unread.unwrap_or(0);
                 let idx = rows.len();
-                if m.unread.is_none() {
+                if m.unread.is_none() && !account_paused {
                     let watched = prefs_snap.is_watched(&key, &m.name);
                     if watched {
                         need_count.push((idx, m.name.clone(), Some(acc_name.clone())));
@@ -277,7 +289,7 @@ async fn sidebar(
                     label: mailbox_label(&m.name),
                     name_enc: urlencoding::encode(&m.name).into_owned(),
                     pinned: prefs_snap.is_pinned(&key),
-
+                    watched: prefs_snap.is_watched(&key, &m.name),
                     name: m.name.clone(),
                     unread,
                     active,
@@ -291,6 +303,7 @@ async fn sidebar(
                     account_label: prefs_snap.account_label(acc_name),
                     color: color.clone(),
                     is_account_header: false,
+                    paused: false,
                 });
             }
         }
@@ -298,20 +311,30 @@ async fn sidebar(
             offline = true;
         }
     } else {
+        let archive_mode = crate::data_backup::is_archive_account(account_ref);
         let (boxes, off) = if state.himalaya_available {
             let _permit = state.cli_limit.acquire().await.ok();
             match state.himalaya.list_mailboxes(account_ref).await {
                 Ok(list) => {
-                    let cache = state.cache.lock().await;
-                    let _ = cache.save_mailboxes(&list);
+                    // Ne pas polluer le cache global avec les ids pimdir `source/…`.
+                    if !archive_mode {
+                        let cache = state.cache.lock().await;
+                        let _ = cache.save_mailboxes(&list);
+                    }
                     (list, false)
                 }
                 Err(e) => {
                     tracing::warn!("mailbox list online échoué: {e}");
-                    let cache = state.cache.lock().await;
-                    (cache.load_mailboxes().unwrap_or_default(), true)
+                    if archive_mode {
+                        (vec![], true)
+                    } else {
+                        let cache = state.cache.lock().await;
+                        (cache.load_mailboxes().unwrap_or_default(), true)
+                    }
                 }
             }
+        } else if archive_mode {
+            (vec![], true)
         } else {
             let cache = state.cache.lock().await;
             (cache.load_mailboxes().unwrap_or_default(), true)
@@ -321,20 +344,34 @@ async fn sidebar(
             .map(|a| prefs_snap.account_color(a))
             .unwrap_or_else(|| "#64748b".into());
         let acc_label = account_ref.unwrap_or("").to_string();
+        let current_resolved = if archive_mode {
+            let names: Vec<String> = boxes.iter().map(|m| m.name.clone()).collect();
+            crate::data_backup::resolve_pimdir_mailbox(&current, &names)
+        } else {
+            current.clone()
+        };
 
         for m in boxes {
             let key = Prefs::folder_key(account_ref, &m.name);
             if prefs_snap.is_hidden(&key) {
                 continue;
             }
-            let active = m.name.eq_ignore_ascii_case(&current);
-            let depth = m.name.matches('/').count().min(8) as u8;
-            let pad = format!("{:.2}rem", 0.75 + f32::from(depth) * 0.85);
-            let parent = if let Some((p, _)) = m.name.rsplit_once('/') {
-                p.to_string()
+            let active = m.name.eq_ignore_ascii_case(&current_resolved);
+            let (depth, parent) = if archive_mode {
+                (
+                    crate::data_backup::pimdir_tree_depth(&m.name),
+                    crate::data_backup::pimdir_tree_parent(&m.name),
+                )
             } else {
-                String::new()
+                let depth = m.name.matches('/').count().min(8) as u8;
+                let parent = if let Some((p, _)) = m.name.rsplit_once('/') {
+                    p.to_string()
+                } else {
+                    String::new()
+                };
+                (depth, parent)
             };
+            let pad = format!("{:.2}rem", 0.75 + f32::from(depth) * 0.85);
             let unread = m.unread.unwrap_or(0);
             let idx = rows.len();
             if m.unread.is_none() {
@@ -351,7 +388,7 @@ async fn sidebar(
                 label: mailbox_label(&m.name),
                 name_enc: urlencoding::encode(&m.name).into_owned(),
                 pinned: prefs_snap.is_pinned(&key),
-
+                watched: prefs_snap.is_watched(&key, &m.name),
                 tree_id: m.name.clone(),
                 name: m.name,
                 unread,
@@ -369,6 +406,7 @@ async fn sidebar(
                 },
                 color: color.clone(),
                 is_account_header: false,
+                paused: false,
             });
         }
         // En mode compte unique : intercaler les ntfy selon rail_order (après les dossiers mail)
@@ -502,6 +540,8 @@ async fn sidebar(
     }
 
     let loc = crate::i18n::normalize_locale(&prefs_snap.locale);
+    let archive_readonly =
+        crate::data_backup::is_archive_account(prefs_snap.selected_account());
     render(SidebarTemplate {
         accounts,
         all_selected,
@@ -516,6 +556,7 @@ async fn sidebar(
         mailboxes,
         current,
         offline,
+        archive_readonly,
     })
 }
 
@@ -532,6 +573,7 @@ fn ntfy_sidebar_row(prefs: &Prefs, key: &str, current: &str) -> Option<MailboxRo
         icon: prefs.account_icon(key),
         active: current == key,
         pinned: prefs.is_pinned(&folder_key),
+        watched: prefs.is_watched(&folder_key, key),
         depth: 0,
         pad: "0.75rem".into(),
         has_children: false,
@@ -542,6 +584,7 @@ fn ntfy_sidebar_row(prefs: &Prefs, key: &str, current: &str) -> Option<MailboxRo
         account_label: prefs.account_label(key),
         color: prefs.account_color(key),
         is_account_header: false,
+        paused: false,
     })
 }
 
@@ -605,6 +648,7 @@ struct EnvelopesTemplate {
     pub base_qs: String,
     pub next_auto_pages: u32,
     pub auto_load: bool,
+    pub archive_readonly: bool,
 }
 
 #[derive(Clone)]
@@ -1133,7 +1177,7 @@ async fn envelopes(
     State(state): State<Arc<AppState>>,
     Query(q): Query<PageQuery>,
 ) -> impl IntoResponse {
-    let name = q.mailbox.unwrap_or_else(|| "Inbox".into());
+    let mut name = q.mailbox.unwrap_or_else(|| "Inbox".into());
     let page = q.page.unwrap_or(1).max(1);
     let page_size = ENVELOPE_PAGE_SIZE;
     let query = q.q.unwrap_or_default();
@@ -1165,6 +1209,12 @@ async fn envelopes(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+
+    // Archive pimdir : `archives` → `source/archives` (ids Neverest préfixés).
+    let archive_acc = filter_account
+        .as_deref()
+        .or(account.as_deref());
+    name = resolve_archive_mailbox(&state, archive_acc, &name).await;
 
     let mailbox_enc = urlencoding::encode(&name).into_owned();
     let query_enc = urlencoding::encode(&query).into_owned();
@@ -1236,6 +1286,12 @@ async fn envelopes(
 
     attach_envelope_avatars(&state, &mut rows).await;
 
+    let archive_readonly = crate::data_backup::is_archive_account(
+        filter_account
+            .as_deref()
+            .or(account.as_deref())
+            .or(prefs_snap.selected_account()),
+    );
     render(EnvelopesTemplate {
         mailbox_enc,
         mailbox: name,
@@ -1250,6 +1306,7 @@ async fn envelopes(
         base_qs,
         next_auto_pages: auto_pages.saturating_add(1),
         auto_load: auto_pages < AUTO_PAGES_MAX,
+        archive_readonly,
     })
 }
 
@@ -1440,6 +1497,7 @@ struct MessageTemplate {
     pub marked_read: bool,
     pub thread_count: u32,
     pub thread: Vec<ThreadPart>,
+    pub archive_readonly: bool,
 }
 
 pub struct ThreadPart {
@@ -1602,11 +1660,29 @@ async fn prefetch_message_body(
     StatusCode::NO_CONTENT.into_response()
 }
 
+async fn resolve_archive_mailbox(
+    state: &AppState,
+    account: Option<&str>,
+    mailbox: &str,
+) -> String {
+    if !crate::data_backup::is_archive_account(account) || !state.himalaya_available {
+        return mailbox.to_string();
+    }
+    let _permit = state.cli_limit.acquire().await.ok();
+    match state.himalaya.list_mailboxes(account).await {
+        Ok(boxes) => {
+            let names: Vec<String> = boxes.into_iter().map(|m| m.name).collect();
+            crate::data_backup::resolve_pimdir_mailbox(mailbox, &names)
+        }
+        Err(_) => mailbox.to_string(),
+    }
+}
+
 async fn message(
     State(state): State<Arc<AppState>>,
     Query(q): Query<MessageQuery>,
 ) -> impl IntoResponse {
-    let name = q.mailbox;
+    let mut name = q.mailbox;
     let focus_id = q.id;
     if q.prefetch.unwrap_or(0) == 1 {
         if Prefs::is_ntfy_key(&name) {
@@ -1617,6 +1693,7 @@ async fn message(
         } else {
             state.account().await
         };
+        name = resolve_archive_mailbox(&state, account.as_deref(), &name).await;
         return prefetch_message_body(&state, &name, &focus_id, account.as_deref()).await;
     }
     if Prefs::is_ntfy_key(&name) {
@@ -1628,6 +1705,7 @@ async fn message(
     } else {
         state.account().await
     };
+    name = resolve_archive_mailbox(&state, account.as_deref(), &name).await;
     let account_ref = account.as_deref();
     let prefs_snap = state.prefs.lock().await.clone();
 
@@ -1956,6 +2034,7 @@ async fn message(
     }
 
     let thread_count = thread_count_hint.max(thread_parts.len() as u32);
+    let archive_readonly = crate::data_backup::is_archive_account(account.as_deref());
     render(MessageTemplate {
         mailbox_enc: urlencoding::encode(&name).into_owned(),
         mailbox: name,
@@ -1969,6 +2048,7 @@ async fn message(
         thread: thread_parts,
         account_enc: urlencoding::encode(account.as_deref().unwrap_or("")).into_owned(),
         account: account.unwrap_or_default(),
+        archive_readonly,
     })
 }
 
@@ -2073,6 +2153,12 @@ if (window.HimaWeb) {{
         .account
         .filter(|s| !s.is_empty())
         .or(state.account().await);
+    if crate::data_backup::is_archive_account(account.as_deref()) {
+        return Html(
+            "<div class=\"offline-strip\">Archive — lecture seule</div>".to_string(),
+        )
+        .into_response();
+    }
     let _permit = state.cli_limit.acquire().await.ok();
     match state
         .himalaya
@@ -2152,11 +2238,17 @@ async fn move_msg(
         )
         .into_response();
     }
-    let _permit = state.cli_limit.acquire().await.ok();
     let account = form
         .account
         .filter(|s| !s.is_empty())
         .or(state.account().await);
+    if crate::data_backup::is_archive_account(account.as_deref()) {
+        return Html(
+            "<div class=\"offline-strip\">Archive — lecture seule</div>".to_string(),
+        )
+        .into_response();
+    }
+    let _permit = state.cli_limit.acquire().await.ok();
     let to_account = form
         .to_account
         .filter(|s| !s.is_empty())
@@ -2596,11 +2688,17 @@ async fn delete_msg(
         return ntfy_delete_ok_html(&form.id, &form.mailbox, &acc);
     }
 
-    let _permit = state.cli_limit.acquire().await.ok();
     let account = form
         .account
         .filter(|s| !s.is_empty())
         .or(state.account().await);
+    if crate::data_backup::is_archive_account(account.as_deref()) {
+        return Html(
+            "<div class=\"offline-strip\">Archive — lecture seule</div>".to_string(),
+        )
+        .into_response();
+    }
+    let _permit = state.cli_limit.acquire().await.ok();
     match state
         .himalaya
         .delete_message(&form.mailbox, &form.id, account.as_deref())
@@ -2768,18 +2866,249 @@ async fn select_account(
     State(state): State<Arc<AppState>>,
     Form(form): Form<SelectAccountForm>,
 ) -> impl IntoResponse {
+    let acc = form.account.trim().to_string();
+    let entering_archive = crate::data_backup::is_archive_account(Some(&acc));
+    let leaving_archive = {
+        let prefs = state.prefs.lock().await;
+        crate::data_backup::is_archive_account(prefs.selected_account()) && !entering_archive
+    };
     {
         let mut prefs = state.prefs.lock().await;
-        let acc = form.account.trim();
+        if entering_archive && !crate::data_backup::is_archive_account(prefs.selected_account())
+        {
+            prefs.backup_restore_account = prefs.account.clone();
+        }
+        if leaving_archive {
+            prefs.backup_restore_account = None;
+            let _ = crate::data_backup::remove_archive_himalaya_account();
+        }
         prefs.account = if acc.is_empty() {
             None
         } else {
-            Some(acc.to_string())
+            Some(acc.clone())
         };
         let _ = prefs.save();
     }
-    let mb = form.mailbox.unwrap_or_else(|| "Inbox".into());
-    Redirect::to(&format!("/?mailbox={}", urlencoding::encode(&mb))).into_response()
+    let mut mb = form.mailbox.unwrap_or_else(|| "Inbox".into());
+    if entering_archive
+        && (mb.eq_ignore_ascii_case("inbox") || mb.is_empty())
+        && state.himalaya_available
+    {
+        let _permit = state.cli_limit.acquire().await.ok();
+        if let Ok(boxes) = state.himalaya.list_mailboxes(Some(&acc)).await {
+            let names: Vec<String> = boxes.into_iter().map(|m| m.name).collect();
+            if let Some(picked) = crate::data_backup::pick_default_pimdir_mailbox(&names) {
+                mb = picked;
+            }
+        }
+    }
+    Redirect::to(&format!(
+        "/?mailbox={}&account={}",
+        urlencoding::encode(&mb),
+        urlencoding::encode(&acc)
+    ))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct FolderActionForm {
+    pub mailbox: String,
+    pub account: Option<String>,
+}
+
+async fn folder_mark_read(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<FolderActionForm>,
+) -> impl IntoResponse {
+    let mailbox = form.mailbox.trim();
+    if mailbox.is_empty() || Prefs::is_ntfy_key(mailbox) {
+        return axum::Json(serde_json::json!({ "ok": false, "error": "dossier invalide" }))
+            .into_response();
+    }
+    let account = form
+        .account
+        .filter(|s| !s.is_empty())
+        .or(state.account().await);
+    {
+        let prefs = state.prefs.lock().await;
+        if let Some(a) = account.as_deref() {
+            if prefs.is_account_paused(a) {
+                return axum::Json(serde_json::json!({
+                    "ok": false,
+                    "error": "compte en pause"
+                }))
+                .into_response();
+            }
+        }
+    }
+    let _permit = state.cli_limit.acquire().await.ok();
+    match state
+        .himalaya
+        .mark_folder_seen(mailbox, account.as_deref())
+        .await
+    {
+        Ok(n) => axum::Json(serde_json::json!({ "ok": true, "marked": n })).into_response(),
+        Err(e) => axum::Json(serde_json::json!({ "ok": false, "error": e.to_string() }))
+            .into_response(),
+    }
+}
+
+async fn folder_toggle_watch(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<FolderActionForm>,
+) -> impl IntoResponse {
+    let mailbox = form.mailbox.trim();
+    if mailbox.is_empty() {
+        return axum::Json(serde_json::json!({ "ok": false, "error": "dossier invalide" }))
+            .into_response();
+    }
+    let account = form.account.filter(|s| !s.is_empty());
+    let key = Prefs::folder_key(account.as_deref(), mailbox);
+    let watched = {
+        let mut prefs = state.prefs.lock().await;
+        let w = prefs.toggle_watched(&key, mailbox);
+        let _ = prefs.save();
+        w
+    };
+    axum::Json(serde_json::json!({ "ok": true, "watched": watched, "key": key })).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct AccountPauseForm {
+    pub account: String,
+}
+
+async fn account_toggle_pause(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<AccountPauseForm>,
+) -> impl IntoResponse {
+    let account = form.account.trim();
+    if account.is_empty() || Prefs::is_ntfy_key(account) {
+        return axum::Json(serde_json::json!({ "ok": false, "error": "compte invalide" }))
+            .into_response();
+    }
+    let paused = {
+        let mut prefs = state.prefs.lock().await;
+        let p = prefs.toggle_account_paused(account);
+        let _ = prefs.save();
+        p
+    };
+    axum::Json(serde_json::json!({ "ok": true, "paused": paused, "account": account }))
+        .into_response()
+}
+
+async fn export_message_md(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<MessageQuery>,
+) -> impl IntoResponse {
+    let mailbox = if q.mailbox.trim().is_empty() {
+        "Inbox"
+    } else {
+        q.mailbox.trim()
+    };
+    let id = q.id.trim();
+    if id.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            "id manquant",
+        )
+            .into_response();
+    }
+    let account = q
+        .account
+        .filter(|s| !s.is_empty())
+        .or(state.account().await);
+    let _permit = state.cli_limit.acquire().await.ok();
+    let msg = match state
+        .himalaya
+        .read_message(mailbox, id, account.as_deref())
+        .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_GATEWAY,
+                format!("lecture: {e}"),
+            )
+                .into_response();
+        }
+    };
+    let body = if !msg.body_text.trim().is_empty() {
+        msg.body_text.clone()
+    } else if !msg.body_html.trim().is_empty() {
+        html_to_approx_text(&msg.body_html)
+    } else {
+        String::new()
+    };
+    let md = format!(
+        "# {}\n\n- **De :** {}\n- **À :** {}\n- **Date :** {}\n\n---\n\n{}\n",
+        msg.subject.trim(),
+        msg.from.trim(),
+        msg.to.trim(),
+        msg.date.trim(),
+        body.trim()
+    );
+    let safe_name = msg
+        .subject
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(60)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    let filename = if safe_name.is_empty() {
+        format!("message-{id}.md")
+    } else {
+        format!("{safe_name}.md")
+    };
+    // ASCII fallback + filename* UTF-8 (accents conservés côté navigateur)
+    let ascii_fallback: String = filename
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let encoded = urlencoding::encode(&filename);
+    (
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/markdown; charset=utf-8".to_string(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!(
+                    "attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
+                ),
+            ),
+        ],
+        md,
+    )
+        .into_response()
+}
+
+fn html_to_approx_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[derive(serde::Serialize)]
@@ -2815,9 +3144,17 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     let ordered = prefs_snap.ordered_accounts(&known);
 
     let accounts: Vec<Option<String>> = if prefs_snap.is_all_accounts() {
-        ordered.into_iter().map(Some).collect()
+        ordered
+            .into_iter()
+            .filter(|a| !prefs_snap.is_account_paused(a))
+            .map(Some)
+            .collect()
     } else if let Some(a) = prefs_snap.selected_account() {
-        vec![Some(a.to_string())]
+        if prefs_snap.is_account_paused(a) {
+            vec![]
+        } else {
+            vec![Some(a.to_string())]
+        }
     } else {
         vec![None]
     };
@@ -3017,6 +3354,7 @@ async fn ntfy_envelopes(
             base_qs,
             next_auto_pages: auto_pages.saturating_add(1),
             auto_load: false,
+            archive_readonly: false,
         });
     }
 
@@ -3130,6 +3468,7 @@ async fn ntfy_envelopes(
         base_qs,
         next_auto_pages: auto_pages.saturating_add(1),
         auto_load: auto_pages < AUTO_PAGES_MAX,
+        archive_readonly: false,
     })
 }
 

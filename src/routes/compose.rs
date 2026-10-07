@@ -98,6 +98,11 @@ async fn compose_get(
         .filter(|s| !s.is_empty() && s != ACCOUNT_ALL)
         .or_else(|| prefs_snap.selected_account().map(str::to_string))
         .unwrap_or_default();
+    if crate::data_backup::is_archive_account(Some(preferred.as_str()))
+        || crate::data_backup::is_archive_account(prefs_snap.selected_account())
+    {
+        return Redirect::to("/?mailbox=Inbox").into_response();
+    }
 
     let mut draft = crate::cli::himalaya::ComposeDraft::default();
     let mut error = None;
@@ -506,6 +511,12 @@ async fn compose_send(
 }
 
 async fn finish_send(state: Arc<AppState>, form: ParsedCompose) -> axum::response::Response {
+    let prefs_acc = state.prefs.lock().await.selected_account().map(str::to_string);
+    if crate::data_backup::is_archive_account(form.account.as_deref())
+        || crate::data_backup::is_archive_account(prefs_acc.as_deref())
+    {
+        return compose_fail("Compte archive en lecture seule — impossible d’envoyer.");
+    }
     let to = match crate::cli::himalaya::smtp_address_list(&form.to) {
         Ok(t) => t,
         Err(e) => return compose_fail(format!("Destinataire : {e}")),

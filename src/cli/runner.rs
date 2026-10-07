@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -29,7 +30,7 @@ pub struct CliRunner {
 
 /// Évite le flash de console Windows quand le parent est `windows_subsystem`.
 #[cfg(windows)]
-fn hide_console(cmd: &mut Command) {
+pub(crate) fn hide_console_for(cmd: &mut Command) {
     #[allow(unused_imports)]
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -37,7 +38,11 @@ fn hide_console(cmd: &mut Command) {
 }
 
 #[cfg(not(windows))]
-fn hide_console(_cmd: &mut Command) {}
+pub(crate) fn hide_console_for(_cmd: &mut Command) {}
+
+fn hide_console(cmd: &mut Command) {
+    hide_console_for(cmd);
+}
 
 impl CliRunner {
     pub fn new(timeout: Duration) -> Self {
@@ -47,10 +52,29 @@ impl CliRunner {
     fn command(bin: &str) -> Command {
         let mut cmd = Command::new(bin);
         hide_console(&mut cmd);
+        // Évite le wizard interactif qui bloque indéfiniment si la config manque.
+        cmd.stdin(Stdio::null());
+        // Neverest découpe NEVEREST_CONFIG sur `:` → casse les chemins Windows `C:\…`.
+        cmd.env_remove("NEVEREST_CONFIG");
         cmd
     }
 
+    fn apply_cwd(cmd: &mut Command, cwd: Option<&Path>) {
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
+    }
+
     pub async fn run_json(&self, bin: &str, args: &[&str]) -> CliResult<Value> {
+        self.run_json_cwd(bin, args, None).await
+    }
+
+    pub async fn run_json_cwd(
+        &self,
+        bin: &str,
+        args: &[&str],
+        cwd: Option<&Path>,
+    ) -> CliResult<Value> {
         let mut full_args: Vec<&str> = Vec::with_capacity(args.len() + 1);
         // Prefer global --json early in argv
         if !args.iter().any(|a| *a == "--json") {
@@ -59,8 +83,9 @@ impl CliRunner {
         full_args.extend_from_slice(args);
 
         let output = timeout(self.timeout, async {
-            Self::command(bin)
-                .args(&full_args)
+            let mut cmd = Self::command(bin);
+            Self::apply_cwd(&mut cmd, cwd);
+            cmd.args(&full_args)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true)
@@ -113,9 +138,19 @@ impl CliRunner {
     }
 
     pub async fn run_raw(&self, bin: &str, args: &[&str]) -> CliResult<Vec<u8>> {
+        self.run_raw_cwd(bin, args, None).await
+    }
+
+    pub async fn run_raw_cwd(
+        &self,
+        bin: &str,
+        args: &[&str],
+        cwd: Option<&Path>,
+    ) -> CliResult<Vec<u8>> {
         let output = timeout(self.timeout, async {
-            Self::command(bin)
-                .args(args)
+            let mut cmd = Self::command(bin);
+            Self::apply_cwd(&mut cmd, cwd);
+            cmd.args(args)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true)
