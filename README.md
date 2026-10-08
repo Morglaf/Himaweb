@@ -269,6 +269,7 @@ Le workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) con
 - [x] Traductions UI : **espagnol**, **allemand**, **italien** (en plus du FR / EN)
 - [ ] **Pimconf** — découverte de services PIM et validation des configs
 - [ ] **Comodoro** — timers / focus liés à un mail ou un événement (optionnel)
+- [ ] **Matrix** — client intégré quand un vrai CLI Matrix existera (pas de second moteur ; iamb = TUI standalone, hors Pimalaya)
 
 **Règle**
 

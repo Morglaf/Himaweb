@@ -1884,9 +1884,33 @@ const LUCIDE_FALLBACK = [
   'circle-user', 'mail', 'briefcase', 'home', 'building-2', 'graduation-cap',
   'laptop', 'smartphone', 'globe', 'heart', 'star', 'zap', 'coffee', 'bookmark',
   'shield', 'users', 'inbox', 'send', 'at-sign', 'key', 'lock', 'cloud',
+  'calendar', 'calendar-days', 'calendar-check', 'calendar-clock', 'calendar-heart',
+  'calendar-range', 'calendar-plus', 'party-popper', 'cake', 'map-pin', 'plane',
+  'car', 'train', 'dumbbell', 'music', 'book-open', 'baby', 'dog', 'cat', 'sun',
+  'moon', 'gift', 'shopping-bag', 'utensils', 'wine', 'camera', 'video', 'palmtree',
+  'trees', 'mountain', 'bike', 'gamepad-2', 'headphones', 'stethoscope', 'pill',
+  'school', 'church', 'landmark', 'briefcase-business', 'handshake', 'bell',
+];
+
+/** Icônes mises en avant pour l’apparence agendas (si présentes dans Lucide). */
+const LUCIDE_CAL_PRESET = [
+  'calendar', 'calendar-days', 'calendar-check', 'calendar-clock', 'calendar-heart',
+  'calendar-range', 'calendar-plus', 'calendar-off', 'calendar-search', 'calendar-x',
+  'party-popper', 'cake', 'gift', 'heart', 'star', 'home', 'briefcase', 'briefcase-business',
+  'users', 'user', 'baby', 'dog', 'cat', 'map-pin', 'plane', 'car', 'train', 'bike',
+  'dumbbell', 'music', 'headphones', 'book-open', 'school', 'graduation-cap',
+  'utensils', 'coffee', 'wine', 'shopping-bag', 'camera', 'video', 'gamepad-2',
+  'sun', 'moon', 'cloud', 'trees', 'mountain', 'palmtree', 'stethoscope', 'pill',
+  'church', 'landmark', 'handshake', 'bell', 'zap', 'sparkles',
 ];
 
 window.__lucideIconNames = null;
+
+function lucideIconExists(name) {
+  const lu = window.lucide;
+  if (!lu || !lu.icons || !name) return true;
+  return !!lu.icons[hwIconPascal(name)];
+}
 
 async function loadLucideIconNames() {
   if (window.__lucideIconNames) return window.__lucideIconNames;
@@ -1897,9 +1921,13 @@ async function loadLucideIconNames() {
     );
     if (!res.ok) throw new Error('tags');
     const tags = await res.json();
-    window.__lucideIconNames = Object.keys(tags).sort();
+    let names = Object.keys(tags).sort();
+    // Ne garder que les icônes réellement présentes dans le bundle Lucide chargé
+    // (évite des cases vides dans la grille).
+    names = names.filter((n) => lucideIconExists(n));
+    window.__lucideIconNames = names.length ? names : LUCIDE_FALLBACK.filter(lucideIconExists);
   } catch (_) {
-    window.__lucideIconNames = LUCIDE_FALLBACK.slice();
+    window.__lucideIconNames = LUCIDE_FALLBACK.filter(lucideIconExists);
   }
   return window.__lucideIconNames;
 }
@@ -2025,6 +2053,7 @@ function accountAppearance(opts) {
   return {
     color: opts.color || '#2563eb',
     icon: opts.icon || 'circle-user',
+    preset: opts.preset || '',
     open: false,
     q: '',
     loading: false,
@@ -2050,16 +2079,23 @@ function accountAppearance(opts) {
     },
     filter() {
       const q = (this.q || '').trim().toLowerCase();
-      const matched = q
+      let matched = q
         ? this.all.filter((n) => n.includes(q) || n.replace(/-/g, ' ').includes(q))
-        : this.all;
+        : this.all.slice();
+      // Apparence agendas : remonter un preset utile en tête (sans limiter le total).
+      if (!q && this.preset === 'calendar') {
+        const pref = LUCIDE_CAL_PRESET.filter((n) => matched.includes(n));
+        const rest = matched.filter((n) => !pref.includes(n));
+        matched = pref.concat(rest);
+      }
       this.matchCount = matched.length;
-      this.shown = matched.slice(0, 240);
+      this.shown = matched.slice(0, 320);
       this.refreshIcons();
     },
     pick(name) {
       this.icon = name;
       this.open = false;
+      // x-for :key sur le trigger recrée un <i> ; createIcons le transforme ensuite.
       this.refreshIcons();
     },
     statusLabel() {
@@ -2071,8 +2107,13 @@ function accountAppearance(opts) {
       return `${this.matchCount} icône${this.matchCount > 1 ? 's' : ''}`;
     },
     refreshIcons() {
+      // Double nextTick : laisser Alpine remonter le <i :key="icon"> avant Lucide.
       this.$nextTick(() => {
-        if (window.lucide) lucide.createIcons();
+        this.$nextTick(() => {
+          const root = this.$el;
+          if (!root || !window.lucide) return;
+          lucide.createIcons(root);
+        });
       });
     },
   };
@@ -2293,18 +2334,144 @@ document.addEventListener('alpine:init', () => {
   }
 });
 
-function sideRss() {
+function sideRdvFilter(opts) {
+  opts = opts || {};
+  const KEY = 'himaweb-side-rdv-chips';
+  function loadSelected() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr.filter((s) => typeof s === 'string') : [];
+    } catch (_) {
+      return [];
+    }
+  }
+  function saveSelected(arr) {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(arr || []));
+    } catch (_) {}
+  }
   return {
+    selected: loadSelected(),
+    limit: opts.limit || 5,
+    isAll() {
+      return this.selected.length === 0;
+    },
+    isOn(acc) {
+      return this.isAll() || this.selected.includes(acc);
+    },
+    toggle(acc) {
+      if (this.isAll()) {
+        this.selected = [acc];
+      } else {
+        const i = this.selected.indexOf(acc);
+        if (i >= 0) this.selected.splice(i, 1);
+        else this.selected.push(acc);
+      }
+      saveSelected(this.selected);
+    },
+    clear() {
+      this.selected = [];
+      saveSelected(this.selected);
+    },
+    visibleCount() {
+      const rows = this.$refs.evList
+        ? this.$refs.evList.querySelectorAll('[data-cal-account]')
+        : [];
+      let n = 0;
+      for (const el of rows) {
+        if (this.isOn(el.dataset.calAccount) && n < this.limit) n++;
+      }
+      return n;
+    },
+    showRow(el) {
+      if (!this.isOn(el.dataset.calAccount)) return false;
+      const rows = this.$refs.evList
+        ? [...this.$refs.evList.querySelectorAll('[data-cal-account]')]
+        : [];
+      let shown = 0;
+      for (const r of rows) {
+        if (!this.isOn(r.dataset.calAccount)) continue;
+        if (r === el) return shown < this.limit;
+        shown++;
+      }
+      return false;
+    },
+  };
+}
+
+function sideContactPeek() {
+  return {
+    results: [],
+    openModal: false,
     busy: false,
     error: '',
-    items: [],
-    async load() {
-      this.busy = true;
+    selected: { name: '', email: '' },
+    detail: null,
+    _timer: null,
+    search(q) {
+      clearTimeout(this._timer);
+      this._timer = setTimeout(async () => {
+        const query = (q || '').trim();
+        if (query.length < 2) {
+          this.results = [];
+          return;
+        }
+        try {
+          const res = await fetch('/api/contacts/suggest?q=' + encodeURIComponent(query));
+          const data = await res.json();
+          this.results = (data.items || []).slice(0, 8).map((it) => ({
+            name: it.name || '',
+            email: it.email || '',
+          }));
+        } catch (_) {
+          this.results = [];
+        }
+      }, 200);
+    },
+    async open(it) {
+      this.selected = { name: it.name || '', email: it.email || '' };
+      this.detail = {
+        name: it.name || '',
+        email: it.email || '',
+        emails: it.email ? [it.email] : [],
+        tels: [],
+        org: '',
+        title: '',
+      };
       this.error = '';
+      this.openModal = true;
+      this.busy = true;
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+      });
       try {
-        const res = await fetch('/api/rss/items?limit=10');
+        const email = (it.email || '').trim();
+        if (!email) {
+          this.busy = false;
+          return;
+        }
+        const res = await fetch('/api/contacts/resolve?email=' + encodeURIComponent(email));
         const data = await res.json();
-        this.items = data.items || [];
+        if (data.error || !data.id || !data.book) {
+          this.busy = false;
+          return;
+        }
+        const qs =
+          'book=' +
+          encodeURIComponent(data.book) +
+          '&id=' +
+          encodeURIComponent(data.id) +
+          '&email=' +
+          encodeURIComponent(email);
+        const dres = await fetch('/api/contacts/detail?' + qs);
+        const detail = await dres.json();
+        if (detail.error) {
+          this.error = detail.error;
+        } else {
+          this.detail = detail;
+          if (detail.name) this.selected.name = detail.name;
+        }
       } catch (e) {
         this.error = e.message || String(e);
       } finally {
@@ -2312,6 +2479,104 @@ function sideRss() {
         this.$nextTick(() => {
           if (window.lucide) lucide.createIcons();
         });
+      }
+    },
+    close() {
+      this.openModal = false;
+    },
+  };
+}
+
+function sideRss(opts) {
+  const freshrss = !!(opts && opts.freshrss);
+  return {
+    busy: false,
+    error: '',
+    items: [],
+    filter: 'unread',
+    freshrss,
+    setFilter(f) {
+      this.filter = f;
+      this.load();
+    },
+    async load(force) {
+      this.busy = true;
+      this.error = '';
+      try {
+        const q = new URLSearchParams({ limit: '15' });
+        if (this.freshrss) q.set('filter', this.filter || 'unread');
+        if (force) q.set('_', String(Date.now()));
+        const res = await fetch('/api/rss/items?' + q.toString());
+        const data = await res.json();
+        if (data.error) this.error = data.error;
+        this.items = data.items || [];
+      } catch (e) {
+        this.error = e.message || String(e);
+        this.items = [];
+      } finally {
+        this.busy = false;
+        this.$nextTick(() => {
+          if (window.lucide) lucide.createIcons();
+        });
+      }
+    },
+    async postAction(url, body) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(body).toString(),
+      });
+      return res.json();
+    },
+    async markRead(it) {
+      if (!it || !it.id) return;
+      const data = await this.postAction('/api/rss/mark-read', { id: it.id, value: '1' });
+      if (data && data.ok) {
+        it.unread = false;
+        if (this.filter === 'unread') {
+          this.items = this.items.filter((x) => x.id !== it.id);
+        }
+      } else if (data && data.error) {
+        this.error = data.error;
+      }
+    },
+    async onOpen(it) {
+      if (this.freshrss && it && it.id && it.unread !== false) {
+        this.markRead(it);
+      }
+    },
+    async toggleStar(it) {
+      if (!it || !it.id) return;
+      const next = !it.starred;
+      const data = await this.postAction('/api/rss/star', {
+        id: it.id,
+        value: next ? '1' : '0',
+      });
+      if (data && data.ok) {
+        it.starred = next;
+        if (this.filter === 'starred' && !next) {
+          this.items = this.items.filter((x) => x.id !== it.id);
+        }
+      } else if (data && data.error) {
+        this.error = data.error;
+      }
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+      });
+    },
+    async markAllRead() {
+      this.busy = true;
+      try {
+        const data = await this.postAction('/api/rss/mark-all-read', {});
+        if (data && data.ok) {
+          await this.load();
+        } else if (data && data.error) {
+          this.error = data.error;
+        }
+      } catch (e) {
+        this.error = e.message || String(e);
+      } finally {
+        this.busy = false;
       }
     },
   };
@@ -2408,7 +2673,8 @@ function inboxSummaryModal() {
       });
       const items = [{ id: it.id, mailbox: mb, account: acc, messageId: '' }];
       try {
-        await window.HimaWeb.moveMailsToFolder(items, 'Archive', acc);
+        const dest = window.HimaWeb.resolveSpecialFolder('archive', acc);
+        await window.HimaWeb.moveMailsToFolder(items, dest, acc);
       } catch (_) {
         /* Archive peut ne pas exister — lu suffit */
       }
@@ -2679,6 +2945,7 @@ window.HimaWeb = {
 
 
   _lastUnreadTotal: null,
+  _lastNotifyTotal: null,
   _lastUnreadByFolder: null,
   _folderClicksBound: false,
   _folderTreeBound: false,
@@ -3321,10 +3588,53 @@ window.HimaWeb = {
         if (typeof d.closeModal === 'function') d.closeModal();
       } catch (_) {}
     }
+    this.refreshSideWidget();
+  },
+
+  refreshSideWidget() {
     const body = document.querySelector('#side-widget .side-widget-body');
     if (body && window.htmx) {
       window.htmx.ajax('GET', '/partials/side-widget', { target: body, swap: 'innerHTML' });
     }
+  },
+
+  /** Toggle tâche sidebar : maj DOM locale, sans recharger le panneau. */
+  onSideTodoToggled(form) {
+    if (!form) return;
+    const li = form.closest('li.todo-row');
+    if (!li) return;
+    const wasDone = (form.querySelector('[name="completed"]') || {}).value === '1';
+    if (!wasDone) {
+      // Vient d’être cochée → retirer des tâches ouvertes
+      li.remove();
+      return;
+    }
+    // Rouvrir : rester visible, basculer l’état local
+    li.classList.remove('is-done');
+    const completed = form.querySelector('[name="completed"]');
+    if (completed) completed.value = '0';
+    const btn = form.querySelector('.todo-check');
+    if (btn) {
+      btn.title = 'Terminer';
+      const icon = btn.querySelector('[data-lucide], i');
+      if (icon) {
+        icon.setAttribute('data-lucide', 'square');
+        if (window.lucide) lucide.createIcons({ nodes: [icon] });
+      }
+    }
+  },
+
+  /** Nouvelle tâche sidebar : reset form + refresh panneau (liste à jour). */
+  onSideTodoCreated(form) {
+    if (form) {
+      const summary = form.querySelector('[name="summary"]');
+      const due = form.querySelector('[name="due"]');
+      if (summary) summary.value = '';
+      if (due) due.value = '';
+      const details = form.closest('details');
+      if (details) details.open = false;
+    }
+    this.refreshSideWidget();
   },
 
   openCompose(url) {
@@ -3561,6 +3871,11 @@ window.HimaWeb = {
         const w = Math.min(420, Math.max(160, drag.startW + dx));
         root().style.setProperty('--rail', w + 'px');
         drag.current = w;
+      } else if (drag.kind === 'side') {
+        // Poignée à gauche du panneau : tirer à gauche élargit.
+        const w = Math.min(480, Math.max(200, drag.startW - dx));
+        root().style.setProperty('--side', w + 'px');
+        drag.current = w;
       } else {
         const w = Math.min(560, Math.max(240, drag.startW + dx));
         root().style.setProperty('--list', w + 'px');
@@ -3578,6 +3893,7 @@ window.HimaWeb = {
       if (val == null) return;
       const body = new URLSearchParams();
       if (kind === 'rail') body.set('rail', String(Math.round(val)));
+      else if (kind === 'side') body.set('side', String(Math.round(val)));
       else body.set('list', String(Math.round(val)));
       fetch('/settings/ui/sizes', { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }).catch(() => {});
     };
@@ -3589,7 +3905,10 @@ window.HimaWeb = {
       ev.preventDefault();
       const kind = handle.getAttribute('data-resize');
       const cs = getComputedStyle(root());
-      const startW = parseFloat(cs.getPropertyValue(kind === 'rail' ? '--rail' : '--list')) || (kind === 'rail' ? 260 : 380);
+      let startW;
+      if (kind === 'rail') startW = parseFloat(cs.getPropertyValue('--rail')) || 260;
+      else if (kind === 'side') startW = parseFloat(cs.getPropertyValue('--side')) || 280;
+      else startW = parseFloat(cs.getPropertyValue('--list')) || 380;
       drag = { kind, startX: ev.clientX, startW, current: startW };
       handle.classList.add('dragging');
       document.body.style.cursor = 'col-resize';
@@ -3947,13 +4266,8 @@ window.HimaWeb = {
       }
     }
 
-    // Sync mémoire avec l’état réel (chemins encore présents)
-    const openIds = [];
-    nav.querySelectorAll('.folder-twist[aria-expanded="true"]').forEach((btn) => {
-      const path = btn.getAttribute('data-twist');
-      if (path) openIds.push(path);
-    });
-    this.saveExpandedFolders(openIds);
+    // Fusionner : ne pas écraser les dossiers d’autres comptes absents de ce rendu.
+    this.persistExpandedFoldersFromNav(nav);
 
     if (window.lucide) lucide.createIcons();
     void force;
@@ -3961,7 +4275,17 @@ window.HimaWeb = {
 
   getExpandedFolders() {
     try {
-      const raw = sessionStorage.getItem('himaweb-folder-expand');
+      let raw = localStorage.getItem('himaweb-folder-expand');
+      // Migration depuis sessionStorage (ancienne clé)
+      if (!raw) {
+        raw = sessionStorage.getItem('himaweb-folder-expand');
+        if (raw) {
+          localStorage.setItem('himaweb-folder-expand', raw);
+          try {
+            sessionStorage.removeItem('himaweb-folder-expand');
+          } catch (_) {}
+        }
+      }
       const arr = raw ? JSON.parse(raw) : [];
       return Array.isArray(arr) ? arr : [];
     } catch (_) {
@@ -3971,8 +4295,25 @@ window.HimaWeb = {
 
   saveExpandedFolders(ids) {
     try {
-      sessionStorage.setItem('himaweb-folder-expand', JSON.stringify([...new Set(ids)]));
+      localStorage.setItem('himaweb-folder-expand', JSON.stringify([...new Set(ids)]));
     } catch (_) {}
+  },
+
+  /** Met à jour la mémoire pour les twists présents, conserve le reste (autres comptes). */
+  persistExpandedFoldersFromNav(nav) {
+    if (!nav) return;
+    const present = new Set();
+    nav.querySelectorAll('.folder-twist').forEach((btn) => {
+      const p = btn.getAttribute('data-twist');
+      if (p) present.add(p);
+    });
+    const openNow = [];
+    nav.querySelectorAll('.folder-twist[aria-expanded="true"]').forEach((btn) => {
+      const p = btn.getAttribute('data-twist');
+      if (p) openNow.push(p);
+    });
+    const kept = this.getExpandedFolders().filter((id) => !present.has(id));
+    this.saveExpandedFolders(kept.concat(openNow));
   },
 
   setFolderExpanded(nav, path, expanded, skipPersist) {
@@ -3997,12 +4338,7 @@ window.HimaWeb = {
       }
     });
     if (!skipPersist) {
-      const openIds = [];
-      nav.querySelectorAll('.folder-twist[aria-expanded="true"]').forEach((btn) => {
-        const p = btn.getAttribute('data-twist');
-        if (p) openIds.push(p);
-      });
-      this.saveExpandedFolders(openIds);
+      this.persistExpandedFoldersFromNav(nav);
     }
   },
 
@@ -4060,19 +4396,35 @@ window.HimaWeb = {
           this._notifAsked = true;
           Notification.requestPermission().catch(() => {});
         }
+        const notifyTotal =
+          typeof data.notify_total === 'number' ? data.notify_total : total;
         if (
-          this._lastUnreadTotal !== null &&
-          total > this._lastUnreadTotal &&
+          this._lastNotifyTotal !== null &&
+          this._lastNotifyTotal !== undefined &&
+          notifyTotal > this._lastNotifyTotal &&
           Notification.permission === 'granted'
         ) {
-          const delta = total - this._lastUnreadTotal;
-          const first = folders[0] || null;
-          new Notification('HimaWeb', {
-            body: first
-              ? `${delta} nouveau(x) — ${first.label} (${first.unread})`
-              : `${delta} nouveau(x) message(s) non lu(s)`,
-            tag: 'himaweb-unread',
-          });
+          const delta = notifyTotal - this._lastNotifyTotal;
+          const items = Array.isArray(data.notify_items) ? data.notify_items : [];
+          if (items.length > 0) {
+            const first = items[0];
+            const title = first.account_label || 'HimaWeb';
+            let body = [first.from, first.subject].filter(Boolean).join(' — ');
+            if (items.length > 1) {
+              body += ` (+${items.length - 1})`;
+            } else if (delta > 1) {
+              body += ` (+${delta - 1})`;
+            }
+            new Notification(title, { body: body || `${delta} nouveau(x)`, tag: 'himaweb-unread' });
+          } else {
+            const first = folders.find((f) => f.notifies) || folders[0] || null;
+            new Notification('HimaWeb', {
+              body: first
+                ? `${delta} nouveau(x) — ${first.label} (${first.unread})`
+                : `${delta} nouveau(x) message(s) non lu(s)`,
+              tag: 'himaweb-unread',
+            });
+          }
         }
       }
       const prevMap = this._lastUnreadByFolder;
@@ -4087,6 +4439,8 @@ window.HimaWeb = {
       }
       this._lastUnreadByFolder = nextMap;
       this._lastUnreadTotal = total;
+      this._lastNotifyTotal =
+        typeof data.notify_total === 'number' ? data.notify_total : total;
       const disco = Array.isArray(data.disconnected) ? data.disconnected.slice().sort() : [];
       const prevDisco = this._lastDisconnected || [];
       const discoChanged =
@@ -4911,34 +5265,6 @@ window.HimaWeb = {
     if (window.lucide) lucide.createIcons();
   },
 
-  sideContactSearch(q) {
-    clearTimeout(this._sideContactTimer);
-    this._sideContactTimer = setTimeout(async () => {
-      const list = document.getElementById('side-contact-results');
-      if (!list) return;
-      const query = (q || '').trim();
-      if (query.length < 2) {
-        list.innerHTML = '';
-        return;
-      }
-      try {
-        const res = await fetch('/api/contacts/suggest?q=' + encodeURIComponent(query));
-        const data = await res.json();
-        const items = data.items || [];
-        list.innerHTML = items
-          .slice(0, 8)
-          .map((it) => {
-            const email = (it.email || '').replace(/"/g, '&quot;');
-            const label = (it.label || it.name || email).replace(/</g, '&lt;');
-            return `<li><a href="/compose?to=${encodeURIComponent(email)}">${label}</a><span class="muted tiny">${email}</span></li>`;
-          })
-          .join('');
-      } catch (_) {
-        list.innerHTML = '';
-      }
-    }, 200);
-  },
-
   bindContextMenus() {
     if (this._ctxBound) return;
     this._ctxBound = true;
@@ -5203,7 +5529,7 @@ window.HimaWeb = {
     if (kind === 'archive') {
       return find(
         [
-          (n) => n === 'archive' || n.endsWith('/archive'),
+          (n) => n === 'archive' || n === 'archives' || n.endsWith('/archive') || n.endsWith('/archives'),
           (n) => n.includes('archive') && !n.includes('inbox'),
         ],
         'Archive'

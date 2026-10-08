@@ -1,12 +1,32 @@
 //! Client FreshRSS via API Google Reader (`/api/greader.php`).
 
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
 use crate::plugins::RssItem;
+
+const TAG_READ: &str = "user/-/state/com.google/read";
+const TAG_STARRED: &str = "user/-/state/com.google/starred";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RssFilter {
+    Unread,
+    Starred,
+    All,
+}
+
+impl RssFilter {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "starred" | "star" | "favoris" | "favorite" => Self::Starred,
+            "all" | "tous" => Self::All,
+            _ => Self::Unread,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct FreshRssCreds {
@@ -48,42 +68,142 @@ pub fn is_configured(api_base: &str, user: &str, api_password: &str) -> bool {
     !api_base.trim().is_empty() && !user.trim().is_empty() && !api_password.is_empty()
 }
 
-pub async fn fetch_items(creds: &FreshRssCreds, limit: usize) -> Result<Vec<RssItem>, String> {
+pub async fn fetch_items(
+    creds: &FreshRssCreds,
+    limit: usize,
+    filter: RssFilter,
+) -> Result<Vec<RssItem>, String> {
     let base = normalize_api_base(&creds.api_base);
     if !is_configured(&base, &creds.user, &creds.api_password) {
         return Err("FreshRSS non configuré".into());
     }
     let auth = login(&base, &creds.user, &creds.api_password).await?;
     let n = limit.clamp(1, 50);
-    let url = format!(
-        "{base}/reader/api/0/stream/contents/reading-list?output=json&n={n}&xt=user/-/state/com.google/read"
-    );
+    let url = match filter {
+        RssFilter::Unread => format!(
+            "{base}/reader/api/0/stream/contents/reading-list?output=json&n={n}&xt={TAG_READ}"
+        ),
+        RssFilter::Starred => format!(
+            "{base}/reader/api/0/stream/contents/{TAG_STARRED}?output=json&n={n}"
+        ),
+        RssFilter::All => {
+            format!("{base}/reader/api/0/stream/contents/reading-list?output=json&n={n}")
+        }
+    };
     let client = http_client()?;
-    let res = client
-        .get(&url)
-        .header("Authorization", format!("GoogleLogin auth={auth}"))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let res = auth_get(&client, &url, &auth).await?;
     if !res.status().is_success() {
-        // Auth peut avoir expiré : invalider et réessayer une fois
         {
             let mut guard = auth_cache().lock().await;
             *guard = None;
         }
         let auth = login(&base, &creds.user, &creds.api_password).await?;
-        let res = client
-            .get(&url)
-            .header("Authorization", format!("GoogleLogin auth={auth}"))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let res = auth_get(&client, &url, &auth).await?;
         if !res.status().is_success() {
             return Err(format!("FreshRSS HTTP {}", res.status()));
         }
         return parse_stream(res.json().await.map_err(|e| e.to_string())?, n);
     }
     parse_stream(res.json().await.map_err(|e| e.to_string())?, n)
+}
+
+pub async fn set_read(creds: &FreshRssCreds, item_id: &str, read: bool) -> Result<(), String> {
+    edit_tag(creds, item_id, TAG_READ, read).await
+}
+
+pub async fn set_starred(
+    creds: &FreshRssCreds,
+    item_id: &str,
+    starred: bool,
+) -> Result<(), String> {
+    edit_tag(creds, item_id, TAG_STARRED, starred).await
+}
+
+pub async fn mark_all_read(creds: &FreshRssCreds) -> Result<(), String> {
+    let base = normalize_api_base(&creds.api_base);
+    if !is_configured(&base, &creds.user, &creds.api_password) {
+        return Err("FreshRSS non configuré".into());
+    }
+    let auth = login(&base, &creds.user, &creds.api_password).await?;
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let body = format!(
+        "s={}&ts={}",
+        urlencoding_form("user/-/state/com.google/reading-list"),
+        ts
+    );
+    let url = format!("{base}/reader/api/0/mark-all-as-read");
+    let client = http_client()?;
+    let res = client
+        .post(&url)
+        .header("Authorization", format!("GoogleLogin auth={auth}"))
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.status().is_success() {
+        return Err(format!("FreshRSS mark-all-as-read HTTP {}", res.status()));
+    }
+    Ok(())
+}
+
+async fn edit_tag(
+    creds: &FreshRssCreds,
+    item_id: &str,
+    tag: &str,
+    add: bool,
+) -> Result<(), String> {
+    let id = item_id.trim();
+    if id.is_empty() {
+        return Err("id article manquant".into());
+    }
+    let base = normalize_api_base(&creds.api_base);
+    if !is_configured(&base, &creds.user, &creds.api_password) {
+        return Err("FreshRSS non configuré".into());
+    }
+    let auth = login(&base, &creds.user, &creds.api_password).await?;
+    let op = if add { "a" } else { "r" };
+    let body = format!(
+        "i={}&{op}={}",
+        urlencoding_form(id),
+        urlencoding_form(tag)
+    );
+    let url = format!("{base}/reader/api/0/edit-tag");
+    let client = http_client()?;
+    let res = client
+        .post(&url)
+        .header("Authorization", format!("GoogleLogin auth={auth}"))
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.status().is_success() {
+        return Err(format!("FreshRSS edit-tag HTTP {}", res.status()));
+    }
+    Ok(())
+}
+
+async fn auth_get(
+    client: &reqwest::Client,
+    url: &str,
+    auth: &str,
+) -> Result<reqwest::Response, String> {
+    client
+        .get(url)
+        .header("Authorization", format!("GoogleLogin auth={auth}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 async fn login(api_base: &str, user: &str, pass: &str) -> Result<String, String> {
@@ -122,7 +242,9 @@ async fn login(api_base: &str, user: &str, pass: &str) -> Result<String, String>
         .lines()
         .find_map(|l| l.strip_prefix("Auth=").map(|s| s.trim().to_string()))
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "FreshRSS: Auth manquant (vérifiez utilisateur / mot de passe API)".to_string())?;
+        .ok_or_else(|| {
+            "FreshRSS: Auth manquant (vérifiez utilisateur / mot de passe API)".to_string()
+        })?;
     {
         let mut guard = auth_cache().lock().await;
         *guard = Some(AuthCache {
@@ -166,6 +288,8 @@ struct StreamResp {
 #[derive(Debug, Deserialize)]
 struct StreamItem {
     #[serde(default)]
+    id: String,
+    #[serde(default)]
     title: String,
     #[serde(default)]
     canonical: Vec<HrefObj>,
@@ -173,6 +297,8 @@ struct StreamItem {
     alternate: Vec<HrefObj>,
     #[serde(default)]
     origin: Option<Origin>,
+    #[serde(default)]
+    categories: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -213,10 +339,18 @@ fn parse_stream(v: serde_json::Value, limit: usize) -> Result<Vec<RssItem>, Stri
             .as_ref()
             .map(|o| o.title.clone())
             .unwrap_or_else(|| "FreshRSS".into());
+        let unread = !it.categories.iter().any(|c| c.ends_with("/state/com.google/read"));
+        let starred = it
+            .categories
+            .iter()
+            .any(|c| c.ends_with("/state/com.google/starred"));
         out.push(RssItem {
+            id: it.id,
             title,
             link,
             feed_title: feed,
+            unread,
+            starred,
         });
         if out.len() >= limit {
             break;

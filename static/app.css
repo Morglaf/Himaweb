@@ -744,6 +744,7 @@ a.legend-item:hover {
 }
 .icon-picker {
   position: relative;
+  --acct-color: var(--accent, #2563eb);
 }
 .icon-picker-trigger {
   display: inline-flex;
@@ -751,19 +752,22 @@ a.legend-item:hover {
   justify-content: center;
   width: 2.25rem;
   height: 2.25rem;
-  border: 1px solid var(--line);
+  border: 2px solid var(--acct-color, var(--line));
   border-radius: var(--radius, 0.4rem);
-  background: var(--surface, #fff);
-  color: inherit;
+  background: var(--surface-2, var(--surface, #fff));
+  /* Toujours lisible (évite couleur compte trop sombre en dark). */
+  color: var(--ink);
   cursor: pointer;
 }
 .icon-picker-trigger:hover {
-  border-color: color-mix(in srgb, currentColor 40%, var(--line));
+  background: color-mix(in srgb, var(--acct-color) 18%, var(--surface-2, var(--surface)));
 }
 .icon-picker-trigger i,
 .icon-picker-trigger svg {
   width: 1.15rem;
   height: 1.15rem;
+  stroke: currentColor;
+  color: var(--ink);
 }
 .icon-picker-panel {
   position: absolute;
@@ -785,7 +789,7 @@ a.legend-item:hover {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
   gap: 0.25rem;
-  max-height: 14rem;
+  max-height: 18rem;
   overflow: auto;
   padding: 0.15rem;
 }
@@ -805,8 +809,9 @@ a.legend-item:hover {
   background: color-mix(in srgb, var(--ink) 8%, transparent);
 }
 .icon-picker-item.is-active {
-  border-color: currentColor;
-  color: inherit;
+  border-color: var(--accent, var(--ink));
+  background: color-mix(in srgb, var(--accent, var(--ink)) 16%, transparent);
+  color: var(--ink);
 }
 .icon-picker-item i,
 .icon-picker-item svg {
@@ -3247,8 +3252,39 @@ input.toggle:checked::after {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
   font-weight: 650;
   font-size: 0.85rem;
+  margin-bottom: 0.25rem;
+}
+.side-widget-head .side-head-title {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
+.side-contact-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 0.25rem 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+.side-contact-hit:hover span:first-child { color: var(--accent); }
+.side-contact-modal {
+  max-width: 22rem;
+  width: min(22rem, 92vw);
+}
+.side-contact-list {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
 }
 .side-block-title {
   display: flex;
@@ -3270,17 +3306,37 @@ input.toggle:checked::after {
   flex-direction: column;
   gap: 0.35rem;
 }
-.side-rss-list li {
+.side-rss-list li,
+.side-rss-item {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+.side-rss-main {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 0.1rem;
-  font-size: 0.85rem;
 }
+.side-rss-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.1rem;
+}
+.side-rss-item.is-read a { opacity: 0.65; }
+.side-rss-toolbar { margin-bottom: 0.4rem; flex-wrap: wrap; }
 .side-rss-list a {
   color: var(--ink);
   text-decoration: none;
 }
 .side-rss-list a:hover { color: var(--accent); }
+.side-rss-actions .is-filled {
+  fill: currentColor;
+  color: var(--accent, #ca8a04);
+}
 .plugin-panel-body {
   font-size: 0.85rem;
   overflow: auto;

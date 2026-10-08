@@ -245,10 +245,12 @@
                  x-data="accountAppearance({ color: '{{ a.color }}', icon: '{{ a.icon }}' })">
               <input type="hidden" name="name" value="{{ a.name }}" />
               <input type="hidden" name="icon" :value="icon" />
-              <div class="icon-picker" :style="{ color: color }">
+              <div class="icon-picker" :style="{ '--acct-color': color }">
                 <button type="button" class="icon-picker-trigger" @click="toggle()"
                         :title="'Icône : ' + icon">
-                  <i :data-lucide="icon"></i>
+                  <template x-for="ic in [icon]" :key="ic">
+                    <i :data-lucide="ic"></i>
+                  </template>
                 </button>
                 <div class="icon-picker-panel" x-show="open" x-cloak
                      @click.outside="open = false" @keydown.escape.window="open = false">
@@ -416,7 +418,7 @@
               <h3 class="settings-subhead" data-i18n="settings.folders_title">Dossiers — épingler / masquer / surveiller</h3>
               <p class="muted tiny mb-2" data-i18n="settings.folders_hint">
                 Épinglés en tête · non-système dans « Plus » · Masquer retire des menus.
-                Surveiller active le compteur / notifications (par défaut : toutes les Inbox si rien n’est coché).
+                Surveiller active le compteur. Total = badge global. Notif = pop-up (décoché = reste dans le total sans notification).
               </p>
               <form method="post" action="/settings/folders" class="settings-autosave folder-pref-form"
                     hx-post="/settings/folders" hx-trigger="change" hx-swap="none"
@@ -440,6 +442,10 @@
                   <label class="toggle-mini" title="Inclure dans le badge non-lus de la barre du haut">
                     <span data-i18n="settings.total">Total</span>
                     <input class="toggle" type="checkbox" name="count_total" value="{{ f.key }}" {% if f.count_in_total %}checked{% endif %} />
+                  </label>
+                  <label class="toggle-mini" title="Notifications navigateur / NTFY (reste dans le total si décoché)">
+                    <span data-i18n="settings.notify_folder">Notif</span>
+                    <input class="toggle" type="checkbox" name="notify" value="{{ f.key }}" {% if f.notifies %}checked{% endif %} />
                   </label>
                 </div>
                 {% endfor %}
@@ -484,6 +490,10 @@
                 <label class="toggle-mini" title="Inclure dans le badge non-lus de la barre du haut">
                   <span data-i18n="settings.total">Total</span>
                   <input class="toggle" type="checkbox" name="count_total" value="{{ f.key }}" {% if f.count_in_total %}checked{% endif %} />
+                </label>
+                <label class="toggle-mini" title="Notifications navigateur / NTFY (reste dans le total si décoché)">
+                  <span data-i18n="settings.notify_folder">Notif</span>
+                  <input class="toggle" type="checkbox" name="notify" value="{{ f.key }}" {% if f.notifies %}checked{% endif %} />
                 </label>
               </div>
               {% endfor %}
@@ -805,13 +815,15 @@
           <div class="color-accounts">
             {% for a in cal_color_accounts %}
             <div class="acct-identity-row"
-                 x-data="accountAppearance({ color: '{{ a.color }}', icon: '{{ a.icon }}' })">
+                 x-data="accountAppearance({ color: '{{ a.color }}', icon: '{{ a.icon }}', preset: 'calendar' })">
               <input type="hidden" name="name" value="{{ a.name }}" />
               <input type="hidden" name="icon" :value="icon" />
-              <div class="icon-picker" :style="{ color: color }">
+              <div class="icon-picker" :style="{ '--acct-color': color }">
                 <button type="button" class="icon-picker-trigger" @click="toggle()"
                         :title="'Icône : ' + icon">
-                  <i :data-lucide="icon"></i>
+                  <template x-for="ic in [icon]" :key="ic">
+                    <i :data-lucide="ic"></i>
+                  </template>
                 </button>
                 <div class="icon-picker-panel" x-show="open" x-cloak
                      @click.outside="open = false" @keydown.escape.window="open = false">
@@ -826,6 +838,7 @@
                       </button>
                     </template>
                   </div>
+                  <p class="muted tiny" x-text="statusLabel()"></p>
                 </div>
               </div>
               <input type="color" name="color" :value="color"
@@ -956,10 +969,6 @@
           <label class="toggle-row">
             <span data-i18n="plugins.enable_rss">Flux RSS locaux</span>
             <input class="toggle" type="checkbox" name="plugin_rss" value="1" {% if plugin_rss %}checked{% endif %} />
-          </label>
-          <label class="toggle-row">
-            <span data-i18n="plugins.enable_matrix">Matrix</span>
-            <input class="toggle" type="checkbox" name="plugin_matrix" value="1" {% if plugin_matrix %}checked{% endif %} />
           </label>
           <p class="settings-saved muted tiny" hidden data-i18n="settings.saved">Enregistré</p>
         </form>
@@ -1102,20 +1111,6 @@
           <button type="submit" class="btn secondary" data-i18n="plugins.rss_save">Enregistrer les flux</button>
         </form>
 
-        <h3 class="settings-subhead" data-i18n="plugins.matrix_title">Matrix</h3>
-        <p class="muted text-sm mb-2" data-i18n="plugins.matrix_hint">
-          Lien vers un client Matrix (Element Web, etc.) — ouverture externe, hors cœur Pimalaya.
-        </p>
-        <form method="post" action="/settings/matrix" class="space-y-2">
-          <input class="input w-full" name="matrix_url" value="{{ matrix_url }}"
-                 placeholder="https://app.element.io/" />
-          <div class="btn-row">
-            <button type="submit" class="btn secondary" data-i18n="plugins.matrix_save">Enregistrer</button>
-            {% if !matrix_url.is_empty() %}
-            <a class="btn" href="{{ matrix_url }}" target="_blank" rel="noopener" data-i18n="plugins.matrix_open">Ouvrir Matrix</a>
-            {% endif %}
-          </div>
-        </form>
       </section>
 
       <p class="settings-group-label settings-span" id="ai" data-i18n="settings.group.ai">IA</p>

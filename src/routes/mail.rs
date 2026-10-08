@@ -230,6 +230,10 @@ async fn sidebar(
             match res {
                 Ok(list) => {
                     any_ok = true;
+                    {
+                        let cache = state.cache.lock().await;
+                        let _ = cache.save_mailboxes(&acc_name, &list);
+                    }
                     boxes_by_account.insert(acc_name, list);
                 }
                 Err(e) => {
@@ -354,10 +358,10 @@ async fn sidebar(
             let _permit = state.cli_limit.acquire().await.ok();
             match state.himalaya.list_mailboxes(account_ref).await {
                 Ok(list) => {
-                    // Ne pas polluer le cache global avec les ids pimdir `source/…`.
+                    // Ne pas polluer le cache avec les ids pimdir `source/…`.
                     if !archive_mode {
                         let cache = state.cache.lock().await;
-                        let _ = cache.save_mailboxes(&list);
+                        let _ = cache.save_mailboxes(account_ref.unwrap_or(""), &list);
                     }
                     (list, false)
                 }
@@ -374,7 +378,7 @@ async fn sidebar(
                         (stub_mailboxes_for_account(&prefs_snap, a), true)
                     } else {
                         let cache = state.cache.lock().await;
-                        (cache.load_mailboxes().unwrap_or_default(), true)
+                        (cache.load_mailboxes("").unwrap_or_default(), true)
                     }
                 }
             }
@@ -382,7 +386,12 @@ async fn sidebar(
             (vec![], true)
         } else {
             let cache = state.cache.lock().await;
-            (cache.load_mailboxes().unwrap_or_default(), true)
+            (
+                cache
+                    .load_mailboxes(account_ref.unwrap_or(""))
+                    .unwrap_or_default(),
+                true,
+            )
         };
         offline = off;
         let color = account_ref
@@ -1643,6 +1652,37 @@ pub struct MoveOpt {
     pub selected: bool,
 }
 
+fn move_opts_for_account(
+    names: &[String],
+    default_move: Option<&str>,
+    acct_label: &str,
+) -> Vec<MoveOpt> {
+    let mut names = names.to_vec();
+    if let Some(d) = default_move.map(str::trim).filter(|s| !s.is_empty()) {
+        if !names.iter().any(|n| n.eq_ignore_ascii_case(d)) {
+            names.insert(0, d.to_string());
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| {
+            let selected = default_move
+                .map(|d| d.eq_ignore_ascii_case(&name))
+                .unwrap_or(false);
+            let label = if acct_label.is_empty() {
+                name.clone()
+            } else {
+                format!("{acct_label} · {name}")
+            };
+            MoveOpt {
+                value: name,
+                label,
+                selected,
+            }
+        })
+        .collect()
+}
+
 pub struct AttRow {
     pub id: String,
     pub filename: String,
@@ -1840,67 +1880,51 @@ async fn message(
 
     let thread_count_hint = thread_ids.len() as u32;
 
-    // Mailboxes depuis le cache (instantané) — évite un `mailbox list` à chaque ouverture.
+    // Dossiers du **même compte** que le message (cache par compte).
+    // L’ancien cache global mélangeait les listes → défaut « archives » non
+    // sélectionné, ou MOVE vers un dossier inexistant sur ce serveur IMAP.
     let default_move = account
         .as_deref()
         .and_then(|a| prefs_snap.default_move_for(a).map(str::to_string));
     let mailboxes: Vec<MoveOpt> = {
-        let cache = state.cache.lock().await;
-        let cached = cache.load_mailboxes().unwrap_or_default();
+        let acc_key = account.as_deref().unwrap_or("");
         let acct_label = account
             .as_deref()
             .map(|a| prefs_snap.account_label(a))
             .unwrap_or_default();
-        if !cached.is_empty() {
-            cached
-                .into_iter()
-                .map(|m| {
-                    let selected = default_move
-                        .as_deref()
-                        .map(|d| d.eq_ignore_ascii_case(&m.name))
-                        .unwrap_or(false);
-                    let label = if acct_label.is_empty() {
-                        m.name.clone()
-                    } else {
-                        format!("{acct_label} · {}", m.name)
-                    };
-                    MoveOpt {
-                        value: m.name,
-                        label,
-                        selected,
-                    }
-                })
-                .collect()
-        } else {
-            drop(cache);
-            if state.himalaya_available {
+        let names = {
+            let cached = {
+                let cache = state.cache.lock().await;
+                cache.load_mailboxes(acc_key).unwrap_or_default()
+            };
+            if !cached.is_empty() {
+                cached.into_iter().map(|m| m.name).collect::<Vec<_>>()
+            } else if state.himalaya_available {
                 let _permit = state.cli_limit.acquire().await.ok();
                 match state.himalaya.list_mailboxes(account_ref).await {
-                    Ok(boxes) => boxes
-                        .into_iter()
-                        .map(|m| {
-                            let selected = default_move
-                                .as_deref()
-                                .map(|d| d.eq_ignore_ascii_case(&m.name))
-                                .unwrap_or(false);
-                            let label = if acct_label.is_empty() {
-                                m.name.clone()
-                            } else {
-                                format!("{acct_label} · {}", m.name)
-                            };
-                            MoveOpt {
-                                value: m.name,
-                                label,
-                                selected,
-                            }
-                        })
-                        .collect(),
+                    Ok(boxes) => {
+                        let names: Vec<String> = boxes.into_iter().map(|m| m.name).collect();
+                        {
+                            let cache = state.cache.lock().await;
+                            let list: Vec<_> = names
+                                .iter()
+                                .map(|n| crate::cli::himalaya::Mailbox {
+                                    name: n.clone(),
+                                    desc: None,
+                                    unread: None,
+                                })
+                                .collect();
+                            let _ = cache.save_mailboxes(acc_key, &list);
+                        }
+                        names
+                    }
                     Err(_) => vec![],
                 }
             } else {
                 vec![]
             }
-        }
+        };
+        move_opts_for_account(&names, default_move.as_deref(), &acct_label)
     };
 
     // Cache d'abord : un prefetch au survol (ou une ouverture précédente)
@@ -3259,6 +3283,7 @@ struct UnreadFolder {
     mailbox: String,
     unread: u64,
     in_total: bool,
+    notifies: bool,
 }
 
 async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -3355,9 +3380,13 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
                     return None;
                 }
                 let in_total = prefs_snap.contributes_to_unread_total(&key, &m.name);
+                let notifies = prefs_snap.contributes_to_notify(&key, &m.name);
+                let account_label = acc_ref
+                    .map(|a| prefs_snap.account_label(a))
+                    .unwrap_or_else(|| mailbox_label(&m.name));
                 Some(UnreadFolder {
-                    label: if let Some(a) = acc_ref {
-                        format!("{a} / {}", mailbox_label(&m.name))
+                    label: if acc_ref.is_some() {
+                        format!("{account_label} / {}", mailbox_label(&m.name))
                     } else {
                         mailbox_label(&m.name)
                     },
@@ -3366,6 +3395,7 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
                     unread,
                     key,
                     in_total,
+                    notifies,
                 })
             });
         }
@@ -3394,8 +3424,9 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             account: String::new(),
             mailbox: key.clone(),
             unread,
-            key: folder_key,
-            in_total: prefs_snap.contributes_to_unread_total(&Prefs::ntfy_folder_key(&key), &key),
+            key: folder_key.clone(),
+            in_total: prefs_snap.contributes_to_unread_total(&folder_key, &key),
+            notifies: prefs_snap.contributes_to_notify(&folder_key, &key),
         });
     }
 
@@ -3404,20 +3435,114 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         .filter(|f| f.in_total)
         .map(|f| f.unread)
         .sum();
+    let notify_total: u64 = folders
+        .iter()
+        .filter(|f| f.notifies)
+        .map(|f| f.unread)
+        .sum();
 
-    // Plugin NTFY push : notifie seulement si le total augmente
+    // Détecter quels dossiers notifiables ont augmenté → enrichir with from/subject.
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static LAST_NOTIFY_BY_FOLDER: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    let prev_map = LAST_NOTIFY_BY_FOLDER
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    let mut increased: Vec<&UnreadFolder> = folders
+        .iter()
+        .filter(|f| f.notifies)
+        .filter(|f| f.unread > *prev_map.get(&f.key).unwrap_or(&0))
+        .collect();
+    increased.sort_by(|a, b| b.unread.cmp(&a.unread));
+
+    let mut notify_items: Vec<serde_json::Value> = Vec::new();
+    if !prev_map.is_empty() && !increased.is_empty() {
+        for f in increased.iter().take(2) {
+            if Prefs::is_ntfy_key(&f.mailbox) || f.key.contains("__ntfy__") {
+                continue;
+            }
+            let acc = if f.account.is_empty() {
+                None
+            } else {
+                Some(f.account.as_str())
+            };
+            let account_label = if f.account.is_empty() {
+                f.label.clone()
+            } else {
+                prefs_snap.account_label(&f.account)
+            };
+            let _permit = state.cli_bg_limit.acquire().await.ok();
+            let envs = state
+                .himalaya
+                .search_envelopes(&f.mailbox, &["not", "flag", "seen"], 1, 2, acc)
+                .await
+                .unwrap_or_default();
+            for e in envs.into_iter().take(2) {
+                if notify_items.len() >= 3 {
+                    break;
+                }
+                notify_items.push(serde_json::json!({
+                    "account_label": account_label,
+                    "from": e.from,
+                    "subject": e.subject,
+                    "mailbox": f.mailbox,
+                }));
+            }
+            if notify_items.len() >= 3 {
+                break;
+            }
+        }
+    }
+    if let Ok(mut guard) = LAST_NOTIFY_BY_FOLDER
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        guard.clear();
+        for f in folders.iter().filter(|f| f.notifies) {
+            guard.insert(f.key.clone(), f.unread);
+        }
+    }
+
+    // Plugin NTFY push : notifie seulement si le total notifiable augmente
     if prefs_snap.ntfy_sources.iter().any(|s| s.enabled && !s.topic.is_empty()) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static LAST_NTFY_TOTAL: AtomicU64 = AtomicU64::new(0);
         let prev = LAST_NTFY_TOTAL.load(Ordering::Relaxed);
-        if total > prev {
-            LAST_NTFY_TOTAL.store(total, Ordering::Relaxed);
-            let title = format!("HimaWeb — {total} non-lu(s)");
-            let body = folders
-                .iter()
-                .map(|f| format!("{}: {}", f.label, f.unread))
-                .collect::<Vec<_>>()
-                .join("\n");
+        if notify_total > prev && !prev_map.is_empty() {
+            LAST_NTFY_TOTAL.store(notify_total, Ordering::Relaxed);
+            let title = if let Some(first) = notify_items.first() {
+                first
+                    .get("account_label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("HimaWeb")
+                    .to_string()
+            } else {
+                format!("HimaWeb — {notify_total} non-lu(s)")
+            };
+            let body = if !notify_items.is_empty() {
+                notify_items
+                    .iter()
+                    .map(|it| {
+                        let from = it.get("from").and_then(|v| v.as_str()).unwrap_or("");
+                        let subject = it.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+                        [from, subject]
+                            .into_iter()
+                            .filter(|s| !s.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" — ")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                folders
+                    .iter()
+                    .filter(|f| f.notifies)
+                    .map(|f| format!("{}: {}", f.label, f.unread))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
             let targets: Vec<(String, String)> = prefs_snap
                 .ntfy_sources
                 .iter()
@@ -3432,8 +3557,8 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
                     }
                 }
             });
-        } else if total < prev {
-            LAST_NTFY_TOTAL.store(total, Ordering::Relaxed);
+        } else if notify_total != prev {
+            LAST_NTFY_TOTAL.store(notify_total, Ordering::Relaxed);
         }
     }
 
@@ -3445,6 +3570,8 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     axum::Json(serde_json::json!({
         "notifications": notifications,
         "total": total,
+        "notify_total": notify_total,
+        "notify_items": notify_items,
         "folders": folders,
         "mirador": prefs_snap.mirador_enabled,
         "disconnected": disconnected,

@@ -49,6 +49,9 @@ pub struct Prefs {
     /// Sous-ensemble des dossiers surveillés : badge dossier seulement, hors total global
     #[serde(default)]
     pub badge_only_folders: Vec<String>,
+    /// Dossiers dans le total mais exclus des notifications (navigateur / NTFY)
+    #[serde(default)]
+    pub silent_folders: Vec<String>,
     /// Comptes mis en pause (pas de poll unread / Mirador pour eux)
     #[serde(default)]
     pub paused_accounts: Vec<String>,
@@ -148,6 +151,9 @@ pub struct Prefs {
     /// Largeur colonne liste (px)
     #[serde(default = "default_list")]
     pub ui_list: u16,
+    /// Largeur panneau latéral (px)
+    #[serde(default = "default_side")]
+    pub ui_side: u16,
     /// Watch Mirador (complète le poll)
     #[serde(default)]
     pub mirador_enabled: bool,
@@ -283,6 +289,10 @@ fn default_list() -> u16 {
     380
 }
 
+fn default_side() -> u16 {
+    280
+}
+
 fn default_ntfy_server() -> String {
     "https://ntfy.sh".into()
 }
@@ -335,6 +345,7 @@ impl Default for Prefs {
             watched_folders: vec![],
             watch_excluded: vec![],
             badge_only_folders: vec![],
+            silent_folders: vec![],
             paused_accounts: vec![],
             disconnected_accounts: vec![],
             backup_data_dir: String::new(),
@@ -370,6 +381,7 @@ impl Default for Prefs {
             ui_space: default_font_scale(),
             ui_rail: default_rail(),
             ui_list: default_list(),
+            ui_side: default_side(),
             mirador_enabled: false,
             ntfy_enabled: false,
             ntfy_server: default_ntfy_server(),
@@ -463,6 +475,7 @@ impl Prefs {
         self.ui_radius = self.ui_radius.clamp(0, 28);
         self.ui_rail = self.ui_rail.clamp(160, 420);
         self.ui_list = self.ui_list.clamp(240, 560);
+        self.ui_side = self.ui_side.clamp(200, 480);
         self.pinned_folders.sort();
         self.pinned_folders.dedup();
         self.hidden_folders.sort();
@@ -483,6 +496,13 @@ impl Prefs {
         self.badge_only_folders.dedup();
         self.badge_only_folders
             .retain(|b| self.watched_folders.iter().any(|w| w == b));
+        self.silent_folders.sort();
+        self.silent_folders.dedup();
+        self.silent_folders
+            .retain(|s| self.watched_folders.iter().any(|w| w == s));
+        // Un dossier badge-only n’est pas dans le total → mute notif redondant
+        self.silent_folders
+            .retain(|s| !self.badge_only_folders.iter().any(|b| b == s));
         self.hidden_folders
             .retain(|h| !self.pinned_folders.iter().any(|p| p == h));
         self.migrate_ntfy_sources();
@@ -651,8 +671,8 @@ impl Prefs {
 
     pub fn ui_style_attr(&self) -> String {
         format!(
-            "--font-scale:{:.2};--radius:{}px;--ui-space:{:.2};--rail:{}px;--list:{}px",
-            self.ui_font_scale, self.ui_radius, self.ui_space, self.ui_rail, self.ui_list
+            "--font-scale:{:.2};--radius:{}px;--ui-space:{:.2};--rail:{}px;--list:{}px;--side:{}px",
+            self.ui_font_scale, self.ui_radius, self.ui_space, self.ui_rail, self.ui_list, self.ui_side
         )
     }
 
@@ -791,6 +811,16 @@ impl Prefs {
 
     pub fn contributes_to_unread_total(&self, key: &str, mailbox: &str) -> bool {
         self.is_watched(key, mailbox) && !self.is_badge_only(key, mailbox)
+    }
+
+    /// Mute notifs tout en restant dans le total global.
+    pub fn is_silent(&self, key: &str, mailbox: &str) -> bool {
+        self.silent_folders.iter().any(|s| s == key)
+            || self.silent_folders.iter().any(|s| s == mailbox)
+    }
+
+    pub fn contributes_to_notify(&self, key: &str, mailbox: &str) -> bool {
+        self.contributes_to_unread_total(key, mailbox) && !self.is_silent(key, mailbox)
     }
 
     pub fn account_color(&self, name: &str) -> String {

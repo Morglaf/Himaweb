@@ -31,12 +31,6 @@ impl Cache {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS mailboxes (
-                name TEXT PRIMARY KEY,
-                desc TEXT,
-                unread INTEGER NOT NULL DEFAULT 0,
-                synced_at TEXT
-            );
             CREATE TABLE IF NOT EXISTS messages (
                 mailbox TEXT NOT NULL,
                 id TEXT NOT NULL,
@@ -74,8 +68,36 @@ impl Cache {
             "#,
         )?;
         self.migrate_envelopes()?;
+        self.migrate_mailboxes()?;
         self.migrate_cal_events()?;
         self.migrate_contacts_photos()?;
+        Ok(())
+    }
+
+    /// Les dossiers IMAP sont par compte : l’ancien schéma global mélangeait
+    /// les listes (menu Déplacer proposait `archives` d’un compte sur un autre).
+    fn migrate_mailboxes(&self) -> Result<(), CacheError> {
+        const SCHEMA: &str = "2";
+        let current = self.get_meta("mailboxes_schema")?;
+        let outdated = current.as_deref() != Some(SCHEMA);
+        if outdated {
+            self.conn.execute_batch("DROP TABLE IF EXISTS mailboxes;")?;
+        }
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS mailboxes (
+                account TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL,
+                desc TEXT,
+                unread INTEGER NOT NULL DEFAULT 0,
+                synced_at TEXT,
+                PRIMARY KEY (account, name)
+            );
+            "#,
+        )?;
+        if outdated {
+            self.set_meta("mailboxes_schema", SCHEMA)?;
+        }
         Ok(())
     }
 
@@ -174,16 +196,18 @@ impl Cache {
     }
 
 
-    pub fn save_mailboxes(&self, boxes: &[Mailbox]) -> Result<(), CacheError> {
+    /// `account` vide = compte Himalaya par défaut (pas de `--account`).
+    pub fn save_mailboxes(&self, account: &str, boxes: &[Mailbox]) -> Result<(), CacheError> {
         let now = chrono::Utc::now().to_rfc3339();
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM mailboxes", [])?;
+        tx.execute("DELETE FROM mailboxes WHERE account = ?1", params![account])?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO mailboxes(name, desc, unread, synced_at) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO mailboxes(account, name, desc, unread, synced_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             )?;
             for m in boxes {
                 stmt.execute(params![
+                    account,
                     m.name,
                     m.desc,
                     m.unread.unwrap_or(0) as i64,
@@ -196,11 +220,11 @@ impl Cache {
         Ok(())
     }
 
-    pub fn load_mailboxes(&self) -> Result<Vec<Mailbox>, CacheError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT name, desc, unread FROM mailboxes ORDER BY name")?;
-        let rows = stmt.query_map([], |r| {
+    pub fn load_mailboxes(&self, account: &str) -> Result<Vec<Mailbox>, CacheError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name, desc, unread FROM mailboxes WHERE account = ?1 ORDER BY name",
+        )?;
+        let rows = stmt.query_map(params![account], |r| {
             Ok(Mailbox {
                 name: r.get(0)?,
                 desc: r.get(1)?,
@@ -208,6 +232,14 @@ impl Cache {
             })
         })?;
         Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    /// Au moins un dossier en cache (tous comptes) — utile pour le mode hors-ligne.
+    pub fn has_any_mailboxes(&self) -> Result<bool, CacheError> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM mailboxes", [], |r| r.get(0))?;
+        Ok(n > 0)
     }
 
     /// `account` vide = compte Himalaya par défaut (pas de `--account`).

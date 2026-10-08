@@ -16,11 +16,13 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/updates/check", get(updates_check))
         .route("/api/i18n", get(i18n_catalog))
         .route("/api/rss/items", get(rss_items))
+        .route("/api/rss/mark-read", post(rss_mark_read))
+        .route("/api/rss/star", post(rss_star))
+        .route("/api/rss/mark-all-read", post(rss_mark_all_read))
         .route("/plugins/{id}/{*path}", get(plugin_asset))
         .route("/settings/locale", post(save_locale))
         .route("/settings/rss", post(save_rss))
         .route("/settings/freshrss", post(save_freshrss))
-        .route("/settings/matrix", post(save_matrix))
         .route("/settings/builtin-plugins", post(save_builtin_plugins))
 }
 
@@ -48,6 +50,36 @@ async fn i18n_catalog(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 #[derive(Deserialize)]
 struct RssQuery {
     limit: Option<usize>,
+    filter: Option<String>,
+}
+
+fn rss_item_json(i: &crate::plugins::RssItem) -> serde_json::Value {
+    serde_json::json!({
+        "id": i.id,
+        "title": i.title,
+        "link": i.link,
+        "feed": i.feed_title,
+        "unread": i.unread,
+        "starred": i.starred,
+    })
+}
+
+fn freshrss_creds(prefs: &crate::prefs::Prefs) -> Option<crate::freshrss::FreshRssCreds> {
+    if prefs.plugin_freshrss
+        && crate::freshrss::is_configured(
+            &prefs.freshrss_url,
+            &prefs.freshrss_user,
+            &prefs.freshrss_api_password,
+        )
+    {
+        Some(crate::freshrss::FreshRssCreds {
+            api_base: prefs.freshrss_url.clone(),
+            user: prefs.freshrss_user.clone(),
+            api_password: prefs.freshrss_api_password.clone(),
+        })
+    } else {
+        None
+    }
 }
 
 async fn rss_items(
@@ -56,29 +88,20 @@ async fn rss_items(
 ) -> impl IntoResponse {
     let prefs = state.prefs.lock().await.clone();
     let limit = q.limit.unwrap_or(10).clamp(1, 40);
+    let filter = crate::freshrss::RssFilter::parse(q.filter.as_deref().unwrap_or("unread"));
 
     // Priorité FreshRSS si activé + configuré
-    if prefs.plugin_freshrss
-        && crate::freshrss::is_configured(
-            &prefs.freshrss_url,
-            &prefs.freshrss_user,
-            &prefs.freshrss_api_password,
-        )
-    {
-        let creds = crate::freshrss::FreshRssCreds {
-            api_base: prefs.freshrss_url.clone(),
-            user: prefs.freshrss_user.clone(),
-            api_password: prefs.freshrss_api_password.clone(),
-        };
-        match crate::freshrss::fetch_items(&creds, limit).await {
+    if let Some(creds) = freshrss_creds(&prefs) {
+        match crate::freshrss::fetch_items(&creds, limit, filter).await {
             Ok(items) => {
                 return Json(serde_json::json!({
                     "source": "freshrss",
-                    "items": items.iter().map(|i| serde_json::json!({
-                        "title": i.title,
-                        "link": i.link,
-                        "feed": i.feed_title,
-                    })).collect::<Vec<_>>(),
+                    "filter": match filter {
+                        crate::freshrss::RssFilter::Unread => "unread",
+                        crate::freshrss::RssFilter::Starred => "starred",
+                        crate::freshrss::RssFilter::All => "all",
+                    },
+                    "items": items.iter().map(rss_item_json).collect::<Vec<_>>(),
                 }));
             }
             Err(e) => {
@@ -124,12 +147,56 @@ async fn rss_items(
     items.truncate(limit);
     Json(serde_json::json!({
         "source": "rss",
-        "items": items.iter().map(|i| serde_json::json!({
-            "title": i.title,
-            "link": i.link,
-            "feed": i.feed_title,
-        })).collect::<Vec<_>>(),
+        "items": items.iter().map(rss_item_json).collect::<Vec<_>>(),
     }))
+}
+
+#[derive(Deserialize)]
+struct RssItemAction {
+    id: String,
+    #[serde(default)]
+    value: Option<String>,
+}
+
+async fn rss_mark_read(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<RssItemAction>,
+) -> impl IntoResponse {
+    let prefs = state.prefs.lock().await.clone();
+    let Some(creds) = freshrss_creds(&prefs) else {
+        return Json(serde_json::json!({ "ok": false, "error": "FreshRSS non configuré" }));
+    };
+    let read = form.value.as_deref() != Some("0");
+    match crate::freshrss::set_read(&creds, &form.id, read).await {
+        Ok(()) => Json(serde_json::json!({ "ok": true })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
+async fn rss_star(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<RssItemAction>,
+) -> impl IntoResponse {
+    let prefs = state.prefs.lock().await.clone();
+    let Some(creds) = freshrss_creds(&prefs) else {
+        return Json(serde_json::json!({ "ok": false, "error": "FreshRSS non configuré" }));
+    };
+    let starred = form.value.as_deref() != Some("0");
+    match crate::freshrss::set_starred(&creds, &form.id, starred).await {
+        Ok(()) => Json(serde_json::json!({ "ok": true })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
+async fn rss_mark_all_read(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let prefs = state.prefs.lock().await.clone();
+    let Some(creds) = freshrss_creds(&prefs) else {
+        return Json(serde_json::json!({ "ok": false, "error": "FreshRSS non configuré" }));
+    };
+    match crate::freshrss::mark_all_read(&creds).await {
+        Ok(()) => Json(serde_json::json!({ "ok": true })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
 }
 
 async fn plugin_asset(
@@ -257,7 +324,6 @@ struct BuiltinPluginsForm {
     plugin_ntfy: Option<String>,
     plugin_freshrss: Option<String>,
     plugin_rss: Option<String>,
-    plugin_matrix: Option<String>,
 }
 
 async fn save_builtin_plugins(
@@ -272,36 +338,10 @@ async fn save_builtin_plugins(
         p.plugin_ntfy = on(&form.plugin_ntfy);
         p.plugin_freshrss = on(&form.plugin_freshrss);
         p.plugin_rss = on(&form.plugin_rss);
-        p.plugin_matrix = on(&form.plugin_matrix);
         let _ = p.save();
     }
     if quiet {
         return axum::http::StatusCode::NO_CONTENT.into_response();
     }
     axum::response::Redirect::to("/settings#plugins").into_response()
-}
-
-#[derive(Deserialize)]
-struct MatrixForm {
-    matrix_url: String,
-}
-
-async fn save_matrix(
-    State(state): State<Arc<AppState>>,
-    Form(form): Form<MatrixForm>,
-) -> impl IntoResponse {
-    let url = form.matrix_url.trim().to_string();
-    {
-        let mut p = state.prefs.lock().await;
-        p.matrix_url = if url.is_empty()
-            || url.starts_with("http://")
-            || url.starts_with("https://")
-        {
-            url
-        } else {
-            String::new()
-        };
-        let _ = p.save();
-    }
-    axum::response::Redirect::to("/settings#plugins")
 }

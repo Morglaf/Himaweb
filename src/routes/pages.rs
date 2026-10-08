@@ -60,10 +60,10 @@ struct SideWidgetTemplate {
     show_calendar: bool,
     show_tasks: bool,
     show_contacts: bool,
+    side_widget_events: u16,
     has_rss: bool,
     has_freshrss: bool,
     plugin_panels: Vec<SidePluginPanel>,
-    matrix_url: String,
 }
 
 struct SidePluginPanel {
@@ -76,6 +76,10 @@ struct SideEventRow {
     when: String,
     location: String,
     maps_url: String,
+    account: String,
+    calendar_id: String,
+    calendar_name: String,
+    color: String,
 }
 
 struct SideCalOpt {
@@ -130,7 +134,10 @@ fn format_event_when(start: &str) -> String {
 
 async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let prefs = state.prefs.lock().await.clone();
-    let limit = prefs.side_widget_events.max(1) as usize;
+    let display_limit = prefs.side_widget_events.max(1) as usize;
+    // Charger plus que la limite affichée pour que le filtre multi-agenda
+    // côté client ait encore assez d’événements.
+    let fetch_limit = display_limit.saturating_mul(4).clamp(30, 80);
     // Toujours servir le cache tout de suite : le rafraîchissement Calendula
     // (deux mois × tous les agendas) ne doit pas bloquer le premier rendu.
     if state.calendula_available {
@@ -144,48 +151,57 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
     let (events, calendars) = {
         let cache = state.cache.lock().await;
+        let cal_rows = cache.load_calendars().unwrap_or_default();
         let events = cache
-            .load_upcoming_events(limit)
+            .load_upcoming_events(fetch_limit)
             .unwrap_or_default()
             .into_iter()
             .filter(|(_id, _summary, _start, cal, _location)| !prefs.is_calendar_hidden(cal))
-            .map(|(_id, summary, start, _cal, location)| {
+            .map(|(_id, summary, start, cal, location)| {
                 let maps_url = crate::routes::calendar::build_maps_url(
                     &prefs.maps_provider,
                     &prefs.home_address,
                     &location,
                 );
+                let account = crate::prefs::Prefs::cal_account_from_id(&cal).to_string();
+                // Nom d’apparence du compte (pas « Lea — Leaaa »)
+                let calendar_name = prefs.cal_account_label(&account);
+                let color = prefs.calendar_color(&cal);
                 SideEventRow {
                     summary,
                     when: format_event_when(&start),
                     location,
                     maps_url,
+                    account,
+                    calendar_id: cal,
+                    calendar_name,
+                    color,
                 }
             })
             .collect::<Vec<_>>();
+        // Chips : un par compte (label d’apparence), pas un par agenda Google
         let calendars: Vec<SideCalOpt> = {
             let prefs_c = prefs.clone();
-            cache
-                .load_calendars()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|(id, _, _)| !prefs_c.is_calendar_hidden(id))
-                .map(|(id, name, _)| {
-                    let color = prefs_c.calendar_color(&id);
-                    let account = crate::prefs::Prefs::cal_account_from_id(&id).to_string();
-                    let name = prefs_c.calendar_display_name(&id, &name);
-                    SideCalOpt {
-                        id,
-                        account,
-                        name,
-                        color,
-                    }
-                })
-                .collect()
+            let mut seen = std::collections::HashSet::new();
+            let mut out = Vec::new();
+            for (id, _, _) in &cal_rows {
+                if prefs_c.is_calendar_hidden(id) {
+                    continue;
+                }
+                let account = crate::prefs::Prefs::cal_account_from_id(id).to_string();
+                if !seen.insert(account.clone()) {
+                    continue;
+                }
+                out.push(SideCalOpt {
+                    id: account.clone(),
+                    account: account.clone(),
+                    name: prefs_c.cal_account_label(&account),
+                    color: prefs_c.calendar_color(id),
+                });
+            }
+            out.sort_by(|a, b| a.name.cmp(&b.name));
+            out
         };
-        // Trier comme le calendrier principal
-        let mut calendars = calendars;
-        calendars.sort_by(|a, b| a.name.cmp(&b.name));
         (events, calendars)
     };
     let all_cal_rows: Vec<crate::routes::calendar::CalRow> = {
@@ -216,14 +232,11 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let task_calendars: Vec<SideCalOpt> =
         crate::routes::calendar::select_task_calendars(&prefs, &all_cal_rows, &todos)
             .into_iter()
-            .map(|c| {
-                let account = crate::prefs::Prefs::cal_account_from_id(&c.id).to_string();
-                SideCalOpt {
-                    id: c.id,
-                    account,
-                    name: c.name,
-                    color: c.color,
-                }
+            .map(|c| SideCalOpt {
+                id: c.id,
+                account: c.account,
+                name: c.name,
+                color: c.color,
             })
             .collect();
     let default_date = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -265,14 +278,10 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         show_calendar: prefs.side_show_calendar,
         show_tasks: prefs.side_show_tasks,
         show_contacts: prefs.side_show_contacts,
+        side_widget_events: prefs.side_widget_events.max(1),
         has_rss: freshrss_ok || rss_ok,
         has_freshrss: freshrss_ok,
         plugin_panels,
-        matrix_url: if prefs.plugin_matrix {
-            prefs.matrix_url.clone()
-        } else {
-            String::new()
-        },
     })
     .render()
     {
@@ -347,11 +356,11 @@ async fn home(
     let ui_style = state.ui_style().await;
 
     if !state.himalaya_available {
-        let cached = {
+        let has_cached = {
             let cache = state.cache.lock().await;
-            cache.load_mailboxes().unwrap_or_default()
+            cache.has_any_mailboxes().unwrap_or(false)
         };
-        if cached.is_empty() {
+        if !has_cached {
             return render_shell(
                 &state,
                 ShellTemplate {
@@ -489,7 +498,7 @@ async fn home(
     let side_widget_html = if prefs_snap.side_widget {
         r#"<div class="col-resizer" data-resize="side" title="Redimensionner" data-i18n-title="mail.resize"></div>
           <aside class="side-widget" id="side-widget" data-open="1">
-            <button type="button" class="side-widget-tab" title="Aperçu" data-i18n-title="side.preview" onclick="window.HimaWeb && HimaWeb.toggleSideWidget()">
+            <button type="button" class="side-widget-tab" title="Panneau latéral" data-i18n-title="side.panel" onclick="window.HimaWeb && HimaWeb.toggleSideWidget()">
               <i data-lucide="panel-right"></i>
             </button>
             <div class="side-widget-body"

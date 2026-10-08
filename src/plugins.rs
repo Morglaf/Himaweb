@@ -50,9 +50,12 @@ struct ManifestHook {
 
 #[derive(Debug, Clone)]
 pub struct RssItem {
+    pub id: String,
     pub title: String,
     pub link: String,
     pub feed_title: String,
+    pub unread: bool,
+    pub starred: bool,
 }
 
 pub fn plugins_dir() -> Result<PathBuf, String> {
@@ -327,6 +330,7 @@ fn item_from_block(block: &str, feed_title: &str) -> Option<RssItem> {
         return None;
     }
     Some(RssItem {
+        id: String::new(),
         title: if title.is_empty() {
             link.clone()
         } else {
@@ -334,6 +338,8 @@ fn item_from_block(block: &str, feed_title: &str) -> Option<RssItem> {
         },
         link,
         feed_title: feed_title.to_string(),
+        unread: true,
+        starred: false,
     })
 }
 

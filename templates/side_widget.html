@@ -7,25 +7,48 @@
   mapsProvider: '{{ maps_provider }}'
 })">
   <div class="side-widget-head">
-    <span data-i18n="side.preview">Aperçu</span>
+    {% if show_calendar %}
+    <div class="side-block-title side-head-title">
+      <i data-lucide="calendar"></i> <span data-i18n="side.upcoming">Prochains RDV</span>
+    </div>
+    {% else %}
+    <span class="side-head-spacer" aria-hidden="true"></span>
+    {% endif %}
     <button type="button" class="icon-btn" data-i18n-title="side.collapse" title="Replier" onclick="window.HimaWeb && HimaWeb.toggleSideWidget(false)">
       <i data-lucide="panel-right-close"></i>
     </button>
   </div>
 
   {% if show_calendar %}
-  <section class="side-block">
-    <div class="side-block-title">
-      <i data-lucide="calendar"></i> <span data-i18n="side.upcoming">Prochains RDV</span>
+  <section class="side-block" x-data="sideRdvFilter({ limit: {{ side_widget_events }} })">
+    {% if !calendars.is_empty() %}
+    <div class="todo-cal-filters side-todo-filters" role="toolbar" aria-label="Filtrer par agenda">
+      <button type="button" class="todo-cal-chip"
+              :class="{ 'is-active': isAll() }"
+              @click="clear()"
+              data-i18n="cal.all">Tous</button>
+      {% for c in calendars %}
+      <button type="button" class="todo-cal-chip"
+              style="--cal-color: {{ c.color }}"
+              :class="{ 'is-active': !isAll() && isOn('{{ c.account }}') }"
+              @click="toggle('{{ c.account }}')">
+        <span class="todo-cal-dot" aria-hidden="true"></span>{{ c.name }}
+      </button>
+      {% endfor %}
     </div>
+    {% endif %}
     {% if events.is_empty() %}
     <p class="muted tiny" data-i18n="side.no_events">Aucun événement à venir</p>
     {% else %}
-    <ul class="side-event-list">
+    <p class="muted tiny" x-show="visibleCount() === 0" x-cloak data-i18n="side.no_events_filter">Aucun événement pour cet agenda.</p>
+    <ul class="side-event-list" x-ref="evList">
       {% for e in events %}
-      <li>
+      <li style="--cal-color: {{ e.color }}"
+          data-cal-id="{{ e.calendar_id }}"
+          data-cal-account="{{ e.account }}"
+          x-show="showRow($el)">
         <span class="side-ev-title">{{ e.summary }}</span>
-        <span class="muted tiny">{{ e.when }}</span>
+        <span class="muted tiny">{{ e.when }}{% if !e.calendar_name.is_empty() %} · {{ e.calendar_name }}{% endif %}</span>
         {% if !e.location.is_empty() %}
         <span class="side-ev-loc muted tiny">
           <i data-lucide="map-pin"></i> {{ e.location }}
@@ -88,7 +111,8 @@
           x-show="show($el.dataset.calAccount)">
         <span class="todo-cal-bar" aria-hidden="true"></span>
         <form method="post" action="/calendar/todo/toggle"
-              hx-post="/calendar/todo/toggle" hx-target="#htmx-sink" hx-swap="innerHTML">
+              hx-post="/calendar/todo/toggle" hx-target="#htmx-sink" hx-swap="innerHTML"
+              hx-on::after-request="if(event.detail.successful && window.HimaWeb) HimaWeb.onSideTodoToggled(this)">
           <input type="hidden" name="stay" value="1" />
           <input type="hidden" name="calendar" value="{{ t.calendar_id }}" />
           <input type="hidden" name="id" value="{{ t.id }}" />
@@ -113,7 +137,8 @@
     <details class="todo-create mt-2">
       <summary class="btn secondary sm" data-i18n="side.new_task">Nouvelle tâche</summary>
       <form method="post" action="/calendar/todo/create" class="space-y-2 mt-2"
-            hx-post="/calendar/todo/create" hx-target="#htmx-sink" hx-swap="innerHTML">
+            hx-post="/calendar/todo/create" hx-target="#htmx-sink" hx-swap="innerHTML"
+            hx-on::after-request="if(event.detail.successful && window.HimaWeb) HimaWeb.onSideTodoCreated(this)">
         <input type="hidden" name="stay" value="1" />
         <select name="calendar" class="select w-full" required>
           {% for c in task_calendars %}
@@ -130,20 +155,64 @@
   {% endif %}
 
   {% if show_contacts %}
-  <section class="side-block">
+  <section class="side-block" x-data="sideContactPeek()">
     <div class="side-block-title">
       <i data-lucide="contact"></i> <span data-i18n="side.contacts">Contacts</span>
     </div>
     <input class="input w-full" type="search" id="side-contact-q"
            data-i18n-placeholder="side.contacts_search" placeholder="Rechercher…" autocomplete="off"
-           oninput="window.HimaWeb && HimaWeb.sideContactSearch(this.value)" />
-    <ul class="side-contact-list" id="side-contact-results"></ul>
-    <a class="btn secondary sm side-cta" href="/contacts" data-i18n="side.open_contacts">Ouvrir contacts</a>
+           @input="search($event.target.value)" />
+    <ul class="side-contact-list" id="side-contact-results">
+      <template x-for="it in results" :key="it.email">
+        <li>
+          <button type="button" class="side-contact-hit" @click="open(it)">
+            <span x-text="it.name || it.email"></span>
+            <span class="muted tiny" x-text="it.email" x-show="it.name"></span>
+          </button>
+        </li>
+      </template>
+    </ul>
+    <div class="modal-backdrop" x-show="openModal" x-cloak
+         @keydown.escape.window="openModal && close()"
+         @click.self="close()">
+      <div class="modal-panel side-contact-modal" role="dialog" aria-modal="true" @click.stop>
+        <div class="modal-head">
+          <h2 class="font-display text-xl" x-text="detail.name || selected.name || selected.email || ''"></h2>
+          <button type="button" class="icon-btn" @click="close()" data-i18n-title="common.close" title="Fermer">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <p class="muted tiny" x-show="busy" data-i18n="contacts.loading_detail">Chargement de la fiche…</p>
+        <p class="muted tiny" x-show="error" x-text="error"></p>
+        <dl class="contact-fields" x-show="!busy && detail">
+          <template x-for="(em, i) in (detail.emails || [])" :key="'e'+i">
+            <div class="contact-field">
+              <dt data-i18n="contacts.email">Email</dt>
+              <dd><a :href="'mailto:' + em" x-text="em"></a></dd>
+            </div>
+          </template>
+          <template x-for="(tel, i) in (detail.tels || [])" :key="'t'+i">
+            <div class="contact-field">
+              <dt data-i18n="contacts.phone">Téléphone</dt>
+              <dd><a :href="'tel:' + tel" x-text="tel"></a></dd>
+            </div>
+          </template>
+          <div class="contact-field" x-show="detail.org">
+            <dt data-i18n="contacts.org">Organisation</dt>
+            <dd x-text="detail.org"></dd>
+          </div>
+          <div class="contact-field" x-show="detail.address">
+            <dt data-i18n="contacts.address">Adresse</dt>
+            <dd class="contact-pre" x-text="detail.address"></dd>
+          </div>
+        </dl>
+      </div>
+    </div>
   </section>
   {% endif %}
 
   {% if has_rss %}
-  <section class="side-block" x-data="sideRss()" x-init="load()">
+  <section class="side-block" x-data="sideRss({ freshrss: {{ has_freshrss }} })" x-init="load()">
     <div class="side-block-title">
       <i data-lucide="rss"></i>
       {% if has_freshrss %}
@@ -152,17 +221,49 @@
       <span data-i18n="side.rss">Flux RSS</span>
       {% endif %}
     </div>
+    {% if has_freshrss %}
+    <div class="todo-cal-filters side-todo-filters side-rss-toolbar" role="toolbar">
+      <button type="button" class="todo-cal-chip" :class="{ 'is-active': filter === 'unread' }"
+              @click="setFilter('unread')" data-i18n="side.rss_unread">Non lus</button>
+      <button type="button" class="todo-cal-chip" :class="{ 'is-active': filter === 'starred' }"
+              @click="setFilter('starred')" data-i18n="side.rss_starred">Favoris</button>
+      <button type="button" class="todo-cal-chip" :class="{ 'is-active': filter === 'all' }"
+              @click="setFilter('all')" data-i18n="side.rss_all">Tous</button>
+      <button type="button" class="icon-btn" @click="load(true)" :disabled="busy"
+              data-i18n-title="side.rss_refresh" title="Actualiser">
+        <i data-lucide="refresh-cw"></i>
+      </button>
+      <button type="button" class="icon-btn" @click="markAllRead()" :disabled="busy"
+              data-i18n-title="side.rss_mark_all" title="Tout marquer comme lu">
+        <i data-lucide="check-check"></i>
+      </button>
+    </div>
+    {% endif %}
     <p class="muted tiny" x-show="busy" data-i18n="side.loading">Chargement…</p>
-    <p class="muted tiny" x-show="error" x-text="error"></p>
+    <p class="muted tiny" x-show="error" x-text="error" x-cloak></p>
+    <p class="muted tiny" x-show="!busy && !error && items.length === 0" data-i18n="side.rss_empty">Aucun article.</p>
     <ul class="side-rss-list" x-show="!busy">
-      <template x-for="it in items" :key="it.link + it.title">
-        <li>
-          <a :href="it.link" target="_blank" rel="noopener" x-text="it.title"></a>
-          <span class="muted tiny" x-text="it.feed"></span>
+      <template x-for="it in items" :key="(it.id || '') + it.link + it.title">
+        <li class="side-rss-item" :class="{ 'is-read': it.unread === false }">
+          <div class="side-rss-main">
+            <a :href="it.link" target="_blank" rel="noopener" x-text="it.title"
+               @click="onOpen(it)"></a>
+            <span class="muted tiny" x-text="it.feed"></span>
+          </div>
+          <div class="side-rss-actions" x-show="freshrss && it.id">
+            <button type="button" class="icon-btn" @click="toggleStar(it)"
+                    :title="it.starred ? 'Retirer des favoris' : 'Favori'"
+                    :data-i18n-title="it.starred ? 'side.rss_unstar' : 'side.rss_star'">
+              <i data-lucide="star" :class="{ 'is-filled': it.starred }"></i>
+            </button>
+            <button type="button" class="icon-btn" @click="markRead(it)" x-show="it.unread !== false"
+                    data-i18n-title="side.rss_mark_read" title="Marquer comme lu">
+              <i data-lucide="check"></i>
+            </button>
+          </div>
         </li>
       </template>
     </ul>
-    <a class="btn secondary sm side-cta" href="/settings#plugins" data-i18n="side.configure">Configurer</a>
   </section>
   {% endif %}
 
@@ -174,15 +275,6 @@
     <div class="plugin-panel-body">{{ panel.html|safe }}</div>
   </section>
   {% endfor %}
-
-  {% if !matrix_url.is_empty() %}
-  <section class="side-block">
-    <div class="side-block-title">
-      <i data-lucide="messages-square"></i> <span data-i18n="side.matrix">Matrix</span>
-    </div>
-    <a class="btn secondary sm side-cta" href="{{ matrix_url }}" target="_blank" rel="noopener" data-i18n="side.open_matrix">Ouvrir le client</a>
-  </section>
-  {% endif %}
 
   <div class="modal-backdrop" x-show="modalOpen" x-cloak
        @keydown.escape.window="modalOpen && closeModal()"

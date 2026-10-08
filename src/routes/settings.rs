@@ -129,7 +129,6 @@ struct SettingsTemplate {
     pub plugin_ntfy: bool,
     pub plugin_rss: bool,
     pub plugin_freshrss: bool,
-    pub plugin_matrix: bool,
     pub calendula_available: bool,
     pub cardamum_available: bool,
     pub ortie_available: bool,
@@ -180,7 +179,6 @@ struct SettingsTemplate {
     pub freshrss_user: String,
     pub freshrss_api_password_set: bool,
     pub freshrss_web_url: String,
-    pub matrix_url: String,
     pub app_version: String,
 }
 
@@ -235,6 +233,7 @@ pub struct FolderPrefRow {
     pub hidden: bool,
     pub watched: bool,
     pub count_in_total: bool,
+    pub notifies: bool,
 }
 
 pub struct FolderPrefGroup {
@@ -542,6 +541,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
                             hidden: prefs_snap.is_hidden(&key),
                             watched: prefs_snap.is_watched(&key, &name),
                             count_in_total: prefs_snap.contributes_to_unread_total(&key, &name),
+                            notifies: prefs_snap.contributes_to_notify(&key, &name),
                             label: name,
                             key,
                         }
@@ -566,6 +566,7 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
                     hidden: prefs_snap.is_hidden(&key),
                     watched: prefs_snap.is_watched(&key, &mailbox_key),
                     count_in_total: prefs_snap.contributes_to_unread_total(&key, &mailbox_key),
+                    notifies: prefs_snap.contributes_to_notify(&key, &mailbox_key),
                     label: prefs_snap.account_label(&mailbox_key),
                     key,
                 }
@@ -698,7 +699,6 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         plugin_ntfy: prefs_snap.plugin_ntfy,
         plugin_rss: prefs_snap.plugin_rss,
         plugin_freshrss: prefs_snap.plugin_freshrss,
-        plugin_matrix: prefs_snap.plugin_matrix,
         calendula_available: state.calendula_available,
         cardamum_available: state.cardamum_available,
         ortie_available: state.ortie_available,
@@ -812,7 +812,6 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
             })
             .collect::<Vec<_>>()
             .join("\n"),
-        matrix_url: prefs_snap.matrix_url.clone(),
         freshrss_url: prefs_snap.freshrss_url.clone(),
         freshrss_user: prefs_snap.freshrss_user.clone(),
         freshrss_api_password_set: !prefs_snap.freshrss_api_password.is_empty(),
@@ -916,6 +915,7 @@ async fn save_ui(
 pub struct UiSizesForm {
     pub rail: Option<u16>,
     pub list: Option<u16>,
+    pub side: Option<u16>,
 }
 
 async fn save_ui_sizes(
@@ -929,6 +929,9 @@ async fn save_ui_sizes(
         }
         if let Some(v) = form.list {
             prefs.ui_list = v;
+        }
+        if let Some(v) = form.side {
+            prefs.ui_side = v;
         }
         *prefs = prefs.clone().normalize();
         let _ = prefs.save();
@@ -1255,6 +1258,10 @@ async fn save_folders(
         .iter()
         .map(|s| s.to_string())
         .collect::<Vec<_>>();
+    let notify = crate::form_util::form_values(&map, "notify")
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
     {
         let mut prefs = state.prefs.lock().await;
         merge_pref_keys(&mut prefs.pinned_folders, &account, pinned);
@@ -1265,9 +1272,17 @@ async fn save_folders(
         prefs
             .badge_only_folders
             .retain(|k| !k.starts_with(&prefix));
+        prefs.silent_folders.retain(|k| !k.starts_with(&prefix));
         for k in &watched {
             if k.starts_with(&prefix) && !count_total.iter().any(|t| t == k) {
                 prefs.badge_only_folders.push(k.clone());
+            }
+            // Dans le total mais Notif décoché → silent
+            if k.starts_with(&prefix)
+                && count_total.iter().any(|t| t == k)
+                && !notify.iter().any(|n| n == k)
+            {
+                prefs.silent_folders.push(k.clone());
             }
         }
         *prefs = prefs.clone().normalize();

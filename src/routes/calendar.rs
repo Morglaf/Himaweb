@@ -2494,11 +2494,8 @@ async fn create_todo(
     match client.create_todo(cal, ical.as_bytes()).await {
         Ok(_) => {
             if stay {
-                return Html(
-                    r##"<script>if(window.HimaWeb){window.HimaWeb.onQuickEventCreated();}</script>"##
-                        .to_string(),
-                )
-                .into_response();
+                // Le front rafraîchit localement (pas de reload panneau via onQuickEventCreated).
+                return Html("".to_string()).into_response();
             }
             Redirect::to(&format!(
                 "/calendar?calendar={}&msg=Tâche%20créée",
@@ -2563,11 +2560,8 @@ async fn toggle_todo(
     match client.update_todo(cal, &form.id, ical.as_bytes()).await {
         Ok(()) => {
             if stay {
-                return Html(
-                    r##"<script>if(window.HimaWeb){window.HimaWeb.onQuickEventCreated();}</script>"##
-                        .to_string(),
-                )
-                .into_response();
+                // Le front met à jour la ligne sans recharger tout le panneau.
+                return Html("".to_string()).into_response();
             }
             Redirect::to(&format!(
                 "/calendar?calendar={}&msg=Tâche%20mise%20à%20jour",
