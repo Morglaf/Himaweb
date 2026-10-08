@@ -7,7 +7,7 @@
          @keydown.enter="openEditJson($event.currentTarget.getAttribute('data-ev'))"
          data-ev="{{ ev.ev_json }}">
   <div class="cal-event-head">
-    <h3>{% if !ev.time.is_empty() %}<span class="cal-ev-time" style="color: {{ ev.color }}">{{ ev.time }}</span> {% endif %}{{ ev.summary }}</h3>
+    <h3>{% if !ev.time.is_empty() %}<span class="cal-ev-time" style="color: {{ ev.color }}">{{ ev.time }}</span> {% endif %}{% if ev.occ_n > 0 %}<span class="cal-occ-n">#{{ ev.occ_n }}</span> {% endif %}{{ ev.summary }}</h3>
   </div>
   <div class="muted text-sm">{{ ev.when }}</div>
   {% if !ev.location.is_empty() %}

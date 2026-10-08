@@ -572,6 +572,18 @@ pub fn merge_thunderbird_accounts(
 
 /// Crée/complète les comptes Ortie Gmail (client Thunderbird public + stockage fichier).
 pub fn ensure_ortie_gmail_accounts(accounts: &[(String, String)]) -> Result<String, String> {
+    ensure_ortie_accounts(accounts, &["https://mail.google.com/"])
+}
+
+/// Compte Ortie pour Google Calendar (scope calendar) — utilisé par Calendula `gcal`.
+pub fn ensure_ortie_calendar_accounts(accounts: &[(String, String)]) -> Result<String, String> {
+    ensure_ortie_accounts(accounts, &["https://www.googleapis.com/auth/calendar"])
+}
+
+pub fn ensure_ortie_accounts(
+    accounts: &[(String, String)],
+    scopes: &[&str],
+) -> Result<String, String> {
     let path = ortie_config_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -630,11 +642,7 @@ pub fn ensure_ortie_gmail_accounts(accounts: &[(String, String)]) -> Result<Stri
                 "https://oauth2.googleapis.com/token",
             );
             set_path(account, &["endpoints", "redirection"], "http://localhost");
-            set_path_str_array(
-                account,
-                &["scopes"],
-                &["https://mail.google.com/"],
-            );
+            set_path_str_array(account, &["scopes"], scopes);
             set_path(account, &["extras", "access_type"], "offline");
             set_path(account, &["extras", "prompt"], "consent");
             set_path(account, &["extras", "login_hint"], email);

@@ -699,9 +699,29 @@
             <div>
               <strong>{{ a.name }}</strong>
               {% if a.is_default %}<span class="muted tiny" data-i18n="settings.default">défaut</span>{% endif %}
-              {% if a.has_password %}<span class="ok tiny" data-i18n="settings.pwd_set">mdp défini</span>{% else %}<span class="badge-warn tiny" data-i18n="settings.pwd_missing">mdp manquant</span>{% endif %}
+              {% if a.is_google %}<span class="ok tiny" data-i18n="settings.google_calendar">Calendrier Google</span>
+              {% else if a.has_password %}<span class="ok tiny" data-i18n="settings.pwd_set">mdp défini</span>
+              {% else %}<span class="badge-warn tiny" data-i18n="settings.pwd_missing">mdp manquant</span>{% endif %}
               <div class="muted tiny">{{ a.username }} · {{ a.server }}</div>
+              {% if a.suggest_google %}
+              <p class="badge-warn tiny mt-1" data-i18n="settings.google_suggest">Ce compte ressemble à Google CalDAV Basic (401 fréquent). Basculez vers Google / Ortie.</p>
+              {% endif %}
             </div>
+            {% if a.is_google %}
+            <form method="post" action="/settings/ortie/auth" class="creds-actions-row">
+              <input type="hidden" name="account" value="{{ a.name }}" />
+              <button type="submit" class="btn secondary" data-i18n="settings.ortie_oauth">Lancer OAuth Ortie</button>
+            </form>
+            {% else if a.suggest_google %}
+            <form method="post" action="/settings/calendar/add" class="creds-actions-row">
+              <input type="hidden" name="name" value="{{ a.name }}" />
+              <input type="hidden" name="username" value="{{ a.username }}" />
+              <input type="hidden" name="calendar_id" value="{{ a.username }}" />
+              <input type="hidden" name="server" value="{{ a.server }}" />
+              <input type="hidden" name="is_google" value="1" />
+              <button type="submit" class="btn secondary" data-i18n="settings.convert_google">Passer en Google (gcal)</button>
+            </form>
+            {% else %}
             <form method="post" action="/settings/calendar/password" class="creds-actions-row" style="flex:1;align-items:end">
               <input type="hidden" name="name" value="{{ a.name }}" />
               <label class="block" style="flex:1;min-width:10rem">
@@ -710,6 +730,7 @@
               </label>
               <button type="submit" class="btn secondary" data-i18n="common.save">Enregistrer</button>
             </form>
+            {% endif %}
             <form method="post" action="/settings/calendar/delete"
                   onsubmit="return window.HimaWeb.confirmSubmit(event, 'Supprimer le calendrier {{ a.name }} ?');">
               <input type="hidden" name="name" value="{{ a.name }}" />
@@ -721,32 +742,52 @@
         {% endif %}
 
         <h3 class="settings-subhead" data-i18n="settings.add_caldav">Ajouter un compte CalDAV</h3>
-        <form method="post" action="/settings/calendar/add" class="space-y-3">
+        <form method="post" action="/settings/calendar/add" class="space-y-3"
+              x-data="{ google: false }">
+          <label class="toggle-row">
+            <span data-i18n="settings.google_calendar">Calendrier Google</span>
+            <input class="toggle" type="checkbox" name="is_google" value="1" x-model="google" />
+          </label>
+          <p class="muted tiny" x-show="google" x-cloak data-i18n="settings.google_calendar_hint">
+            Google = OAuth via Ortie (gcal), pas un mot de passe / jeton Thunderbird. Après enregistrement, lancez OAuth avec le même nom de compte.
+          </p>
           <div class="form-row">
             <label class="block">
               <span class="label" data-i18n="settings.name">Nom</span>
               <input class="input w-full" name="name" required placeholder="perso" />
             </label>
-            <label class="block">
+            <label class="block" x-show="!google">
               <span class="label" data-i18n="settings.server_url">URL serveur</span>
-              <input class="input w-full" name="server" required placeholder="https://mail.exemple.com/SOGo/dav/user@domaine/Calendar/" />
+              <input class="input w-full" name="server" :required="!google"
+                     placeholder="https://mail.exemple.com/SOGo/dav/user@domaine/Calendar/" />
+            </label>
+            <label class="block" x-show="google" x-cloak>
+              <span class="label" data-i18n="settings.google_cal_id">Agenda Google (e-mail / id)</span>
+              <input class="input w-full" name="calendar_id"
+                     placeholder="lea@gmail.com" />
             </label>
           </div>
           <div class="form-row">
             <label class="block">
-              <span class="label" data-i18n="settings.username">Utilisateur</span>
-              <input class="input w-full" name="username" required />
+              <span class="label" x-text="google ? ($el.dataset.oauthLabel || 'Compte Google OAuth') : ($el.dataset.userLabel || 'Utilisateur')"
+                    data-oauth-label="Compte Google OAuth"
+                    data-user-label="Utilisateur"
+                    data-i18n="settings.username">Utilisateur</span>
+              <input class="input w-full" name="username" required
+                     :placeholder="google ? 'vous@gmail.com' : ''" />
             </label>
-            <label class="block">
+            <label class="block" x-show="!google">
               <span class="label" data-i18n="settings.password">Mot de passe</span>
-              <input class="input w-full" type="password" name="password" required autocomplete="new-password" />
+              <input class="input w-full" type="password" name="password" :required="!google" autocomplete="new-password" />
             </label>
           </div>
           <label class="toggle-row">
             <span data-i18n="settings.default_calendar_acct">Compte calendrier par défaut</span>
             <input class="toggle" type="checkbox" name="make_default" value="1" checked />
           </label>
-          <button type="submit" class="btn" data-i18n="settings.save_caldav">Enregistrer CalDAV</button>
+          <button type="submit" class="btn"
+                  x-text="google ? 'Enregistrer Google' : 'Enregistrer CalDAV'"
+                  data-i18n="settings.save_caldav">Enregistrer CalDAV</button>
         </form>
 
         {% if let Some(msg) = calendar_message %}

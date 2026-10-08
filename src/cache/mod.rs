@@ -114,6 +114,12 @@ impl Cache {
                     [],
                 )?;
         }
+        if !cols.iter().any(|c| c == "rrule") {
+            self.conn.execute(
+                "ALTER TABLE cal_events ADD COLUMN rrule TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -744,13 +750,13 @@ impl Cache {
 
 
     /// Remplace uniquement les événements du mois indiqué (préserve les autres mois en cache).
-    /// Tuple: (id, summary, start, end, description, location)
+    /// Tuple: (id, summary, start, end, description, location, rrule)
     pub fn replace_calendar_events_in_month(
         &self,
         calendar_id: &str,
         year: i32,
         month: u32,
-        events: &[(String, String, String, String, String, String)],
+        events: &[(String, String, String, String, String, String, String)],
     ) -> Result<(), CacheError> {
         let prefix_compact = format!("{year:04}{month:02}");
         let prefix_dash = format!("{year:04}-{month:02}");
@@ -766,40 +772,53 @@ impl Cache {
             let mut del = tx.prepare(
                 "DELETE FROM cal_events WHERE calendar_id = ?1 AND id = ?2",
             )?;
-            for (id, _, _, _, _, _) in events {
+            for (id, _, _, _, _, _, _) in events {
                 del.execute(params![calendar_id, id])?;
             }
         }
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO cal_events(calendar_id, id, summary, start_raw, end_raw, description, location)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO cal_events(calendar_id, id, summary, start_raw, end_raw, description, location, rrule)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
-            for (id, summary, start, end, desc, loc) in events {
-                stmt.execute(params![calendar_id, id, summary, start, end, desc, loc])?;
+            for (id, summary, start, end, desc, loc, rrule) in events {
+                stmt.execute(params![calendar_id, id, summary, start, end, desc, loc, rrule])?;
             }
         }
         tx.commit()?;
         Ok(())
     }
 
-    /// Events dont start_raw commence par YYYYMM (compact) ou YYYY-MM
-    /// Retourne (calendar_id, id, summary, start, end, description, location)
-    pub fn load_events_in_month(
+    /// Vue mois : événements du mois **+** masters récurrents (DTSTART hors mois, RRULE non vide).
+    /// Retourne (calendar_id, id, summary, start, end, description, location, rrule).
+    pub fn load_events_for_month_view(
         &self,
         calendar_ids: &[String],
         year: i32,
         month: u32,
-    ) -> Result<Vec<(String, String, String, String, String, String, String)>, CacheError> {
+    ) -> Result<Vec<(String, String, String, String, String, String, String, String)>, CacheError>
+    {
+        self.load_events_in_month_inner(calendar_ids, year, month, true)
+    }
+
+    fn load_events_in_month_inner(
+        &self,
+        calendar_ids: &[String],
+        year: i32,
+        month: u32,
+        include_recurring_masters: bool,
+    ) -> Result<Vec<(String, String, String, String, String, String, String, String)>, CacheError>
+    {
         if calendar_ids.is_empty() {
             return Ok(vec![]);
         }
         let prefix_compact = format!("{year:04}{month:02}");
         let prefix_dash = format!("{year:04}-{month:02}");
         let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::<(String, String)>::new();
         for cid in calendar_ids {
             let mut stmt = self.conn.prepare(
-                "SELECT calendar_id, id, summary, start_raw, end_raw, description, location
+                "SELECT calendar_id, id, summary, start_raw, end_raw, description, location, COALESCE(rrule, '')
                  FROM cal_events
                  WHERE calendar_id = ?1
                    AND (start_raw LIKE ?2 OR start_raw LIKE ?3)
@@ -809,18 +828,92 @@ impl Cache {
             let like_d = format!("{prefix_dash}%");
             let rows = stmt.query_map(params![cid, like_c, like_d], |r| {
                 Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
                     r.get::<_, String>(6).unwrap_or_default(),
+                    r.get::<_, String>(7).unwrap_or_default(),
                 ))
             })?;
-            out.extend(rows.filter_map(Result::ok));
+            for row in rows.filter_map(Result::ok) {
+                seen.insert((row.0.clone(), row.1.clone()));
+                out.push(row);
+            }
+            if include_recurring_masters {
+                let mut stmt = self.conn.prepare(
+                    "SELECT calendar_id, id, summary, start_raw, end_raw, description, location, COALESCE(rrule, '')
+                     FROM cal_events
+                     WHERE calendar_id = ?1
+                       AND TRIM(COALESCE(rrule, '')) != ''
+                       AND TRIM(COALESCE(rrule, '')) != 'none'",
+                )?;
+                let rows = stmt.query_map(params![cid], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
+                        r.get::<_, String>(6).unwrap_or_default(),
+                        r.get::<_, String>(7).unwrap_or_default(),
+                    ))
+                })?;
+                for row in rows.filter_map(Result::ok) {
+                    if seen.insert((row.0.clone(), row.1.clone())) {
+                        out.push(row);
+                    }
+                }
+            }
         }
         Ok(out)
+    }
+
+    /// RRULE déjà en cache pour préserver l’enrichissement si un warm sans enrich réécrit le mois.
+    pub fn load_rrules_for_calendar(
+        &self,
+        calendar_id: &str,
+    ) -> Result<std::collections::HashMap<String, String>, CacheError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, COALESCE(rrule, '') FROM cal_events
+             WHERE calendar_id = ?1 AND TRIM(COALESCE(rrule, '')) != ''",
+        )?;
+        let rows = stmt.query_map(params![calendar_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    pub fn mark_month_synced(&self, year: i32, month: u32) -> Result<(), CacheError> {
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS cal_month_sync (
+                year INTEGER NOT NULL,
+                month INTEGER NOT NULL,
+                synced_at TEXT NOT NULL,
+                PRIMARY KEY (year, month)
+             )",
+            [],
+        )?;
+        let now = chrono::Local::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO cal_month_sync(year, month, synced_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(year, month) DO UPDATE SET synced_at = excluded.synced_at",
+            params![year, month as i64, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn is_month_synced(&self, year: i32, month: u32) -> bool {
+        self.conn
+            .query_row(
+                "SELECT 1 FROM cal_month_sync WHERE year = ?1 AND month = ?2",
+                params![year, month as i64],
+                |_| Ok(()),
+            )
+            .is_ok()
     }
 
     /// Prochains événements (start_raw >= aujourd'hui, limite N).

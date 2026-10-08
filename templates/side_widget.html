@@ -230,14 +230,19 @@
         </div>
         <div class="compose-inline-row">
           <span class="label">Début</span>
-          <input class="input event-dt" type="date" name="start_date" x-model="startDate" required />
-          <input class="input event-tm" type="time" name="start_time" x-model="startTime" required />
+          <input class="input event-dt" type="date" name="start_date" x-model="startDate"
+                 @change="onStartDateChange()" required />
+          <input class="input event-tm" type="time" name="start_time" x-model="startTime"
+                 @change="onStartTimeChange()" required />
         </div>
         <div class="compose-inline-row">
-          <span class="label">Fin</span>
-          <input class="input event-dt" type="date" name="end_date" x-model="endDate" />
+          <span class="label" data-i18n="cal.end">Fin</span>
+          <input class="input event-dt" type="date" name="end_date" x-model="endDate"
+                 @change="clampRecurringEndUi()" />
           <input class="input event-tm" type="time" name="end_time" x-model="endTime" />
         </div>
+        <p class="muted tiny rrule-hint" x-show="rrule && rrule !== 'none'" x-cloak
+           data-i18n="cal.rrule.span_hint">Fin = durée d’une occurrence ; « Jusqu’au » borne la série.</p>
         <div class="compose-inline-row">
           <span class="label">Lieu</span>
           <div class="cal-location-row grow">
@@ -249,15 +254,70 @@
           </div>
         </div>
         <div class="compose-inline-row">
-          <span class="label">Récurrence</span>
-          <select name="rrule" class="select grow" x-model="rrule">
-            <option value="none">Aucune</option>
-            <option value="daily">Quotidienne</option>
-            <option value="weekly">Hebdomadaire</option>
-            <option value="monthly">Mensuelle</option>
-            <option value="yearly">Annuelle</option>
+          <span class="label" data-i18n="cal.rrule">Récurrence</span>
+          <select name="rrule" class="select grow" x-model="rrule" @change="onRruleModeChange()">
+            <option value="none" data-i18n="cal.rrule.none">Aucune</option>
+            <option value="daily" data-i18n="cal.rrule.daily">Quotidienne</option>
+            <option value="weekly" data-i18n="cal.rrule.weekly">Hebdomadaire</option>
+            <option value="monthly" data-i18n="cal.rrule.monthly">Mensuelle</option>
+            <option value="yearly" data-i18n="cal.rrule.yearly">Annuelle</option>
+            <option value="custom" data-i18n="cal.rrule.custom">Personnalisée</option>
           </select>
         </div>
+        <template x-if="rrule === 'custom'">
+          <div class="rrule-custom">
+            <div class="compose-inline-row">
+              <span class="label" data-i18n="cal.rrule.freq">Fréquence</span>
+              <select name="rrule_frequency" class="select grow" x-model="rruleFrequency">
+                <option value="daily" data-i18n="cal.rrule.daily">Quotidienne</option>
+                <option value="weekly" data-i18n="cal.rrule.weekly">Hebdomadaire</option>
+                <option value="monthly" data-i18n="cal.rrule.monthly">Mensuelle</option>
+                <option value="yearly" data-i18n="cal.rrule.yearly">Annuelle</option>
+              </select>
+            </div>
+            <div class="compose-inline-row">
+              <span class="label" data-i18n="cal.rrule.interval">Intervalle</span>
+              <input class="input event-tm" type="number" name="rrule_interval" min="1" max="99"
+                     x-model="rruleInterval" placeholder="1" />
+              <span class="muted tiny" data-i18n="cal.rrule.interval_hint">tous les N</span>
+            </div>
+            <div class="compose-inline-row rrule-days-row">
+              <span class="label" data-i18n="cal.rrule.days">Jours</span>
+              <div class="rrule-chip-row grow">
+                <label class="rrule-chip"><input type="checkbox" value="mo" x-model="rruleDays" /><span>Lun</span></label>
+                <label class="rrule-chip"><input type="checkbox" value="tu" x-model="rruleDays" /><span>Mar</span></label>
+                <label class="rrule-chip"><input type="checkbox" value="we" x-model="rruleDays" /><span>Mer</span></label>
+                <label class="rrule-chip"><input type="checkbox" value="th" x-model="rruleDays" /><span>Jeu</span></label>
+                <label class="rrule-chip"><input type="checkbox" value="fr" x-model="rruleDays" /><span>Ven</span></label>
+                <label class="rrule-chip"><input type="checkbox" value="sa" x-model="rruleDays" /><span>Sam</span></label>
+                <label class="rrule-chip"><input type="checkbox" value="su" x-model="rruleDays" /><span>Dim</span></label>
+              </div>
+            </div>
+            <div class="compose-inline-row rrule-ords-row">
+              <span class="label" data-i18n="cal.rrule.ordinals">Occurrence</span>
+              <div class="rrule-chip-row grow">
+                <label class="rrule-chip"><input type="checkbox" value="1" x-model="rruleOrdinals" /><span>1er</span></label>
+                <label class="rrule-chip"><input type="checkbox" value="2" x-model="rruleOrdinals" /><span>2e</span></label>
+                <label class="rrule-chip"><input type="checkbox" value="3" x-model="rruleOrdinals" /><span>3e</span></label>
+                <label class="rrule-chip"><input type="checkbox" value="4" x-model="rruleOrdinals" /><span>4e</span></label>
+                <label class="rrule-chip"><input type="checkbox" value="-1" x-model="rruleOrdinals" /><span>Dern.</span></label>
+              </div>
+            </div>
+            <p class="muted tiny rrule-hint" data-i18n="cal.rrule.ordinal_hint">Sans 2e/4e… = chaque jour coché du mois (ex. tous les mardis).</p>
+            <input type="hidden" name="rrule_byday" :value="rruleBydayCsv" />
+            <div class="compose-inline-row">
+              <span class="label" data-i18n="cal.rrule.until">Jusqu’au</span>
+              <input class="input event-dt" type="date" name="rrule_until" x-model="rruleUntil"
+                     :disabled="!!rruleCount" />
+            </div>
+            <div class="compose-inline-row">
+              <span class="label" data-i18n="cal.rrule.count">Nombre</span>
+              <input class="input event-tm" type="number" name="rrule_count" min="1" max="999"
+                     x-model="rruleCount" placeholder="—" :disabled="!!rruleUntil" />
+              <span class="muted tiny" data-i18n="cal.rrule.count_hint">occurrences</span>
+            </div>
+          </div>
+        </template>
         <div class="compose-inline-row event-desc-row">
           <span class="label">Notes</span>
           <textarea class="input grow" name="description" rows="2" x-model="description"

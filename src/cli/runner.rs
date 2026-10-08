@@ -23,6 +23,29 @@ pub enum CliError {
 
 pub type CliResult<T> = Result<T, CliError>;
 
+/// Timeout / serveur IMAP qui ne répond plus — candidat à l’auto-déconnexion.
+pub fn is_connectivity_error(err: &CliError) -> bool {
+    match err {
+        CliError::Timeout(_) => true,
+        CliError::Spawn(m) | CliError::Message(m) | CliError::Json(m) => {
+            connectivity_message(m)
+        }
+        CliError::Exit { stderr, .. } => connectivity_message(stderr),
+    }
+}
+
+fn connectivity_message(m: &str) -> bool {
+    let l = m.to_ascii_lowercase();
+    l.contains("timeout")
+        || l.contains("timed out")
+        || l.contains("stopped responding")
+        || l.contains("connection reset")
+        || l.contains("connection refused")
+        || l.contains("broken pipe")
+        || l.contains("network is unreachable")
+        || l.contains("temporarily unavailable")
+}
+
 #[derive(Clone)]
 pub struct CliRunner {
     timeout: Duration,

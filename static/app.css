@@ -424,6 +424,33 @@ html[data-topbar="text"] .tab > i { display: none; }
   flex-shrink: 0;
   margin-right: 0.25rem;
 }
+.folder-disco-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0 0.2rem 0 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: #c27803;
+  border-radius: 3px;
+  flex-shrink: 0;
+  line-height: 0;
+}
+.folder-disco-btn:hover {
+  color: #a16207;
+  background: color-mix(in srgb, #c27803 18%, transparent);
+}
+.folder-disco-ico {
+  width: 14px;
+  height: 14px;
+}
+[data-theme="dark"] .folder-disco-btn { color: #f0d070; }
+[data-theme="dark"] .folder-disco-btn:hover {
+  color: #fde68a;
+  background: color-mix(in srgb, #f0d070 18%, transparent);
+}
 .compose-icon-btn.is-disabled {
   opacity: 0.45;
   pointer-events: none;
@@ -1791,6 +1818,43 @@ a.legend-item:hover {
   flex: 1;
   min-width: 0;
 }
+.rrule-hint {
+  margin: -0.15rem 0 0.15rem 5.5rem;
+  line-height: 1.3;
+}
+.rrule-custom {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.35rem 0 0.15rem;
+  border-top: 1px solid color-mix(in srgb, var(--border, #ccc) 70%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #ccc) 70%, transparent);
+  margin: 0.1rem 0 0.15rem;
+}
+.rrule-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+}
+.rrule-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+  padding: 0.15rem 0.4rem;
+  border: 1px solid color-mix(in srgb, var(--border, #ccc) 80%, transparent);
+  border-radius: 0.35rem;
+  cursor: pointer;
+  user-select: none;
+}
+.rrule-chip:has(input:checked) {
+  background: color-mix(in srgb, var(--accent, #3b82f6) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #3b82f6) 55%, transparent);
+}
+.rrule-chip input {
+  margin: 0;
+}
 .confirm-backdrop {
   position: fixed;
   inset: 0;
@@ -1837,6 +1901,50 @@ a.legend-item:hover {
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   font-size: 0.9rem;
+}
+.app-toast {
+  position: fixed;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 120;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: min(28rem, calc(100vw - 2rem));
+  padding: 0.6rem 1rem;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  font-size: 0.92rem;
+  animation: app-toast-in 0.22s ease-out;
+}
+.app-toast.is-success {
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
+  background: color-mix(in srgb, var(--ok) 10%, var(--surface));
+}
+.app-toast.is-leaving {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-0.4rem);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.app-toast-icon {
+  width: 1.1rem;
+  height: 1.1rem;
+  color: var(--ok);
+  flex-shrink: 0;
+}
+@keyframes app-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-0.4rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
 }
 .modal-backdrop {
   position: fixed;
@@ -2885,12 +2993,34 @@ input.toggle:checked::after {
 }
 .cal-day-events .cal-more { background: transparent; color: var(--muted); }
 .cal-ev-time { font-weight: 650; opacity: 0.85; }
+.cal-occ-n {
+  font-weight: 700;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+.cal-day.is-picked {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+}
 .cal-day.selected {
   border-color: var(--accent);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
+.cal-day.is-today {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.cal-day.is-today .cal-day-num {
+  color: var(--accent);
+  font-weight: 800;
+}
 .cal-day.has-events .cal-day-num { color: var(--accent); }
 .cal-day.empty { background: transparent; border: 0; min-height: 0; }
+.cal-today-btn {
+  margin-left: 0.35rem;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.8rem;
+}
 .cal-week {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
@@ -2905,6 +3035,10 @@ input.toggle:checked::after {
   min-width: 0;
 }
 .cal-week-col.selected { border-color: var(--accent); }
+.cal-week-col.is-today {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .cal-week-head {
   display: block;
   font-weight: 650;

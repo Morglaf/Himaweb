@@ -1068,7 +1068,35 @@ function composeForm() {
           this.$nextTick(() => {
             if (window.lucide) lucide.createIcons();
           });
-          if (window.HimaWeb && HimaWeb.closeComposeOverlay) {
+
+          if (!isDraft) {
+            const msg =
+              (window.HimaWeb && HimaWeb.t && HimaWeb.t('compose.sent_ok')) ||
+              'Message bien envoyé';
+            const closed =
+              window.HimaWeb && HimaWeb.closeComposeOverlay
+                ? HimaWeb.closeComposeOverlay()
+                : false;
+            if (closed) {
+              if (window.HimaWeb.showAppToast) {
+                HimaWeb.showAppToast(msg, { variant: 'success' });
+              }
+              if (window.HimaWeb.scheduleMailRefresh) {
+                HimaWeb.scheduleMailRefresh({
+                  envelopes: true,
+                  sidebar: true,
+                  unread: true,
+                });
+              }
+              return;
+            }
+            try {
+              sessionStorage.setItem(
+                'himaweb-flash',
+                JSON.stringify({ type: 'success', message: msg }),
+              );
+            } catch (_) {}
+          } else if (window.HimaWeb && HimaWeb.closeComposeOverlay) {
             HimaWeb.closeComposeOverlay();
           }
           window.location.href = loc;
@@ -1274,6 +1302,8 @@ function eventModal(opts) {
     month: opts.month,
     day: opts.day,
     view: opts.view || 'month',
+    focusDay: opts.focusDay || '',
+    monthEvents: Array.isArray(opts.monthEvents) ? opts.monthEvents : [],
     filterCalendar: opts.filterCalendar || '__all__',
     id: '',
     calendar: firstCal,
@@ -1282,9 +1312,35 @@ function eventModal(opts) {
     startTime: '10:00',
     endDate: opts.defaultDate || '',
     endTime: '11:00',
+    /** Sélection multi-jours (vue mois) — ISO YYYY-MM-DD */
+    pickedDays: [],
     location: '',
     description: '',
     rrule: 'none',
+    rruleFrequency: 'monthly',
+    rruleInterval: '',
+    rruleCount: '',
+    rruleUntil: '',
+    rruleDays: [],
+    rruleOrdinals: [],
+    recurScope: 'all',
+    occurrenceStart: '',
+    occN: 0,
+    _seriesRecurring: false,
+    _submitArmed: false,
+    get rruleBydayCsv() {
+      const days = Array.isArray(this.rruleDays) ? this.rruleDays : [];
+      const ords = (Array.isArray(this.rruleOrdinals) ? this.rruleOrdinals : [])
+        .map((n) => String(n))
+        .filter((n) => n !== '' && !Number.isNaN(Number(n)));
+      if (!days.length) return '';
+      if (!ords.length) return days.join(',');
+      const out = [];
+      for (const o of ords) {
+        for (const d of days) out.push(o + d);
+      }
+      return out.join(',');
+    },
     get displayTitle() {
       const s = (this.summary || '').trim();
       if (s) return s;
@@ -1298,7 +1354,62 @@ function eventModal(opts) {
     mapsLink() {
       return mapsDirectionsUrl(this.mapsProvider, this.homeAddress, this.location);
     },
-    openCreate(presetDate) {
+    resetRruleExtras() {
+      this.rruleFrequency = 'monthly';
+      this.rruleInterval = '';
+      this.rruleCount = '';
+      this.rruleUntil = '';
+      this.rruleDays = [];
+      this.rruleOrdinals = [];
+    },
+    onRruleModeChange() {
+      if (this.rrule === 'custom' && !this.rruleFrequency) {
+        this.rruleFrequency = 'monthly';
+      }
+      this.clampRecurringEndUi();
+      this.$nextTick(() => {
+        if (window.HimaWeb && HimaWeb.applyI18n && this.$el) {
+          HimaWeb.applyI18n(this.$el);
+        }
+      });
+    },
+    applyRruleExtras(obj) {
+      this.rruleFrequency = obj.rruleFrequency || obj.frequency || 'monthly';
+      const iv = obj.rruleInterval != null ? obj.rruleInterval : obj.interval;
+      this.rruleInterval = iv != null && iv !== '' ? String(iv) : '';
+      const ct = obj.rruleCount != null ? obj.rruleCount : obj.count;
+      this.rruleCount = ct != null && ct !== '' ? String(ct) : '';
+      this.rruleUntil = obj.rruleUntil || obj.until || '';
+      const raw = obj.rruleByday || obj.byday || '';
+      const list = Array.isArray(raw)
+        ? raw
+        : String(raw)
+            .split(/[,\s;]+/)
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean);
+      const days = [];
+      const ords = [];
+      const daySet = new Set();
+      const ordSet = new Set();
+      for (const token of list) {
+        const m = token.match(/^(-?\d+)?(mo|tu|we|th|fr|sa|su)$/);
+        if (!m) continue;
+        if (!daySet.has(m[2])) {
+          daySet.add(m[2]);
+          days.push(m[2]);
+        }
+        if (m[1]) {
+          const n = String(Number(m[1])); // normalise "-1", "2"
+          if (!ordSet.has(n)) {
+            ordSet.add(n);
+            ords.push(n);
+          }
+        }
+      }
+      this.rruleDays = days;
+      this.rruleOrdinals = ords;
+    },
+    openCreate(presetDate, presetEndDate) {
       this.mode = 'create';
       this.id = '';
       this.summary = '';
@@ -1307,17 +1418,148 @@ function eventModal(opts) {
         typeof presetDate === 'string' && /^\d{4}-\d{2}-\d{2}/.test(presetDate)
           ? presetDate
           : opts.defaultDate || '';
+      const end =
+        typeof presetEndDate === 'string' && /^\d{4}-\d{2}-\d{2}/.test(presetEndDate)
+          ? presetEndDate
+          : d;
       this.startDate = d;
-      this.endDate = d;
+      this.endDate = end;
       this.startTime = '10:00';
       this.endTime = '11:00';
       this.location = '';
       this.description = '';
       this.rrule = 'none';
+      this.resetRruleExtras();
+      this.recurScope = 'all';
+      this.occurrenceStart = '';
+      this.occN = 0;
+      this._seriesRecurring = false;
+      this._submitArmed = false;
       this.aiPrompt = '';
       this.aiError = '';
       if (firstCal) this.calendar = firstCal;
       this._openModal();
+    },
+    isDayPicked(iso) {
+      return Array.isArray(this.pickedDays) && this.pickedDays.includes(iso);
+    },
+    focusDayEvents() {
+      const d = this.focusDay || '';
+      if (!d) return [];
+      return (this.monthEvents || []).filter((e) => (e.date || '') === d);
+    },
+    focusDayLabel() {
+      const d = this.focusDay || '';
+      const m = d.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!m) return d;
+      const months = [
+        '',
+        'janvier',
+        'février',
+        'mars',
+        'avril',
+        'mai',
+        'juin',
+        'juillet',
+        'août',
+        'septembre',
+        'octobre',
+        'novembre',
+        'décembre',
+      ];
+      const mo = months[Number(m[2])] || m[2];
+      return Number(m[3]) + ' ' + mo + ' ' + m[1];
+    },
+    padIsoParts(iso) {
+      const m = String(iso || '').match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+      if (!m) return '';
+      return (
+        m[1] +
+        '-' +
+        String(m[2]).padStart(2, '0') +
+        '-' +
+        String(m[3]).padStart(2, '0')
+      );
+    },
+    onMonthGridClick(ev) {
+      const cell = ev.target.closest('.cal-day[data-date]');
+      if (!cell || ev.target.closest('.cal-ev-click')) return;
+      const iso = this.padIsoParts(cell.getAttribute('data-date') || '');
+      if (!iso) return;
+      this.focusDay = iso;
+      if (ev.shiftKey && this.pickedDays.length) {
+        const anchor = this.pickedDays[this.pickedDays.length - 1];
+        const a = new Date(anchor + 'T12:00:00');
+        const b = new Date(iso + 'T12:00:00');
+        if (!Number.isNaN(a.getTime()) && !Number.isNaN(b.getTime())) {
+          const lo = a < b ? a : b;
+          const hi = a < b ? b : a;
+          const range = [];
+          for (let d = new Date(lo); d <= hi; d.setDate(d.getDate() + 1)) {
+            const y = d.getFullYear();
+            const mo = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            range.push(y + '-' + mo + '-' + day);
+          }
+          this.pickedDays = range;
+          return;
+        }
+      }
+      if (ev.ctrlKey || ev.metaKey) {
+        if (this.pickedDays.includes(iso)) {
+          this.pickedDays = this.pickedDays.filter((x) => x !== iso);
+        } else {
+          this.pickedDays = this.pickedDays.concat([iso]);
+        }
+      } else {
+        this.pickedDays = this.pickedDays.length === 1 && this.pickedDays[0] === iso ? [] : [iso];
+      }
+    },
+    onMonthGridContextMenu(ev) {
+      const cell = ev.target.closest('.cal-day[data-date]');
+      if (!cell || ev.target.closest('.cal-ev-click')) return;
+      const iso = this.padIsoParts(cell.getAttribute('data-date') || '');
+      if (!iso) return;
+      this.focusDay = iso;
+      if (!this.pickedDays.includes(iso)) {
+        this.pickedDays = [iso];
+      }
+      const sorted = this.pickedDays.slice().sort();
+      const start = sorted[0];
+      const end = sorted[sorted.length - 1] || start;
+      const t = (k, fb) => (window.HimaWeb && HimaWeb.t && HimaWeb.t(k)) || fb;
+      const label = t('cal.create_event_here', 'Créer un événement');
+      let menu = document.getElementById('ctx-menu');
+      if (!menu) {
+        menu = document.createElement('div');
+        menu.id = 'ctx-menu';
+        menu.className = 'ctx-menu';
+        document.body.appendChild(menu);
+      }
+      const hide = () => menu.classList.remove('open');
+      menu.innerHTML = `<button type="button" data-cal-create="1"><i data-lucide="plus"></i> ${label}</button>`;
+      menu.classList.add('open');
+      const rect = menu.getBoundingClientRect();
+      let left = ev.clientX;
+      let top = ev.clientY;
+      if (left + rect.width > window.innerWidth - 8) left = window.innerWidth - rect.width - 8;
+      if (top + rect.height > window.innerHeight - 8) top = window.innerHeight - rect.height - 8;
+      menu.style.left = Math.max(8, left) + 'px';
+      menu.style.top = Math.max(8, top) + 'px';
+      if (window.lucide) lucide.createIcons();
+      const btn = menu.querySelector('[data-cal-create]');
+      const self = this;
+      const onCreate = (e) => {
+        e.preventDefault();
+        hide();
+        self.openCreate(start, end);
+      };
+      btn.addEventListener('click', onCreate, { once: true });
+      const onDoc = () => {
+        hide();
+        document.removeEventListener('click', onDoc, true);
+      };
+      setTimeout(() => document.addEventListener('click', onDoc, true), 0);
     },
     openEdit(ds) {
       if (!ds) return;
@@ -1332,6 +1574,11 @@ function eventModal(opts) {
         location: ds.location,
         description: ds.description,
         rrule: ds.rrule,
+        rruleFrequency: ds.rruleFrequency,
+        rruleInterval: ds.rruleInterval,
+        rruleCount: ds.rruleCount,
+        rruleUntil: ds.rruleUntil,
+        rruleByday: ds.rruleByday,
       });
     },
     openEditJson(raw) {
@@ -1348,7 +1595,13 @@ function eventModal(opts) {
       this.mode = 'edit';
       this.id = obj.id || '';
       this.calendar = obj.calendar || firstCal;
-      this.summary = obj.summary || '';
+      const rawSummary = obj.summary || '';
+      const occFromTitle = (() => {
+        const m = String(rawSummary).match(/^#(\d+)\s*[·•\-–—]\s*/);
+        return m ? Number(m[1]) : 0;
+      })();
+      this.occN = Number(obj.occN || obj.occ_n || occFromTitle || 0) || 0;
+      this.summary = rawSummary.replace(/^#\d+\s*[·•\-–—]\s*/, '');
       this.startDate = obj.date || opts.defaultDate || '';
       this.endDate = obj.endDate || obj.date || opts.defaultDate || '';
       this.startTime = obj.startTime || '10:00';
@@ -1356,15 +1609,172 @@ function eventModal(opts) {
       this.location = obj.location || '';
       this.description = obj.description || '';
       this.rrule = obj.rrule || 'none';
+      this.applyRruleExtras(obj);
+      this.clampRecurringEndUi();
+      this.recurScope = 'all';
+      this._submitArmed = false;
+      this.occurrenceStart =
+        (this.startDate || '') +
+        (this.startTime ? ' ' + this.startTime : '');
+      this._seriesRecurring = this.isRecurringSeries();
       this.aiPrompt = '';
       this.aiError = '';
       this._openModal();
+      // Le cache mois n’a pas la RRULE : recharger via tcal pour l’édition.
+      if (this.id && this.calendar) {
+        this.loadEventRecurrence();
+      }
+    },
+    isRecurringSeries() {
+      const r = (this.rrule || 'none').toLowerCase();
+      if (r && r !== 'none') return true;
+      if ((this.rruleBydayCsv || '').trim()) return true;
+      if ((this.rruleUntil || '').trim()) return true;
+      if (this.rruleCount) return true;
+      return false;
+    },
+    async askRecurScope(actionLabel) {
+      const t = (k, fb) =>
+        (window.HimaWeb && HimaWeb.t && HimaWeb.t(k)) || fb;
+      const choice = await HimaWeb.choiceDialog(
+        t(
+          'cal.recur_scope_msg',
+          'Cet événement se répète. Appliquer à…'
+        ),
+        {
+          title: actionLabel,
+          choices: [
+            {
+              id: 'this',
+              label: t('cal.recur_this', 'Cette occurrence'),
+            },
+            {
+              id: 'all',
+              label: t('cal.recur_all', 'Toute la série'),
+              danger: true,
+            },
+          ],
+          cancelLabel: t('common.cancel', 'Annuler'),
+        }
+      );
+      return choice;
+    },
+    async onEventSubmit(ev) {
+      if (this.mode !== 'edit' || !this._seriesRecurring) return;
+      if (this._submitArmed) {
+        this._submitArmed = false;
+        return;
+      }
+      ev.preventDefault();
+      const t = (k, fb) =>
+        (window.HimaWeb && HimaWeb.t && HimaWeb.t(k)) || fb;
+      const scope = await this.askRecurScope(
+        t('common.save', 'Enregistrer')
+      );
+      if (!scope) return;
+      this.recurScope = scope;
+      this._submitArmed = true;
+      const form = ev.target;
+      // Forcer les hidden avant submit : Alpine peut ne pas avoir flushé :value.
+      const scopeInput = form.querySelector('[name="recur_scope"]');
+      if (scopeInput) scopeInput.value = scope;
+      const occInput = form.querySelector('[name="occurrence_start"]');
+      if (occInput && this.occurrenceStart) {
+        occInput.value = this.occurrenceStart;
+      }
+      const occNInput = form.querySelector('[name="occ_n"]');
+      if (occNInput && this.occN) {
+        occNInput.value = String(this.occN);
+      }
+      await this.$nextTick();
+      if (typeof form.requestSubmit === 'function') form.requestSubmit();
+      else form.submit();
+    },
+    clampRecurringEndUi() {
+      if (!this.rrule || this.rrule === 'none') return;
+      const s = this.startDate || '';
+      const e = this.endDate || '';
+      if (!s || !e || e <= s) return;
+      const sd = new Date(s + 'T00:00:00');
+      const ed = new Date(e + 'T00:00:00');
+      if (Number.isNaN(sd.getTime()) || Number.isNaN(ed.getTime())) return;
+      const days = (ed - sd) / 86400000;
+      if (days > 1) {
+        this.endDate = s;
+      }
+    },
+    /** Préremplit la fin = même jour que le début (modifiable ensuite). */
+    onStartDateChange() {
+      if (!this.startDate) return;
+      this.endDate = this.startDate;
+      this.clampRecurringEndUi();
+    },
+    /** Préremplit la fin = début + 1 h (modifiable ensuite). */
+    onStartTimeChange() {
+      const raw = (this.startTime || '').trim();
+      const m = raw.match(/^(\d{1,2}):(\d{2})/);
+      if (!m) return;
+      let h = Number(m[1]);
+      let min = Number(m[2]);
+      if (Number.isNaN(h) || Number.isNaN(min)) return;
+      h += 1;
+      let bumpDay = false;
+      if (h >= 24) {
+        h -= 24;
+        bumpDay = true;
+      }
+      this.endTime =
+        String(h).padStart(2, '0') + ':' + String(min).padStart(2, '0');
+      if (this.startDate) {
+        if (bumpDay) {
+          const d = new Date(this.startDate + 'T12:00:00');
+          if (!Number.isNaN(d.getTime())) {
+            d.setDate(d.getDate() + 1);
+            const y = d.getFullYear();
+            const mo = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            this.endDate = y + '-' + mo + '-' + day;
+          }
+        } else if (!this.endDate || this.endDate < this.startDate) {
+          this.endDate = this.startDate;
+        }
+      }
+      this.clampRecurringEndUi();
+    },
+    async loadEventRecurrence() {
+      const cal = this.calendar;
+      const id = this.id;
+      if (!cal || !id) return;
+      try {
+        const res = await fetch(
+          '/calendar/event.json?calendar=' +
+            encodeURIComponent(cal) +
+            '&id=' +
+            encodeURIComponent(id)
+        );
+        const data = await res.json();
+        if (data.error) return;
+        // Garder la date de l’occurrence cliquée ; ne prendre que métadonnées + RRULE.
+        if (data.summary) this.summary = data.summary;
+        if (data.location != null) this.location = data.location;
+        if (data.description != null) this.description = data.description;
+        if (data.rrule) this.rrule = data.rrule;
+        this.applyRruleExtras(data);
+        this.clampRecurringEndUi();
+        this._seriesRecurring = this.isRecurringSeries();
+        this.onRruleModeChange();
+      } catch (e) {
+        console.warn('event.json', e);
+      }
     },
     _openModal() {
       this._suppressBackdrop = true;
       this.modalOpen = true;
       this.$nextTick(() => {
         if (window.lucide) lucide.createIcons();
+        if (window.HimaWeb && HimaWeb.applyI18n && this.$el) {
+          HimaWeb.applyI18n(this.$el);
+        }
         setTimeout(() => {
           this._suppressBackdrop = false;
         }, 200);
@@ -1379,19 +1789,29 @@ function eventModal(opts) {
       if (this._suppressBackdrop || !this.modalOpen) return;
       this.closeModal();
     },
-    confirmDelete() {
+    async confirmDelete() {
       if (!this.id) return;
-      const msg =
-        (window.HimaWeb && HimaWeb.t && HimaWeb.t('cal.delete_event')) ||
-        'Supprimer cet événement ?';
       if (!window.HimaWeb || !HimaWeb.confirmDialog) return;
-      HimaWeb.confirmDialog(msg, {
+      const t = (k, fb) =>
+        (window.HimaWeb && HimaWeb.t && HimaWeb.t(k)) || fb;
+      this._seriesRecurring = this.isRecurringSeries();
+      if (this._seriesRecurring) {
+        const scope = await this.askRecurScope(t('common.delete', 'Supprimer'));
+        if (!scope) return;
+        this.recurScope = scope;
+        this.$nextTick(() => {
+          if (this.$refs.delForm) this.$refs.delForm.submit();
+        });
+        return;
+      }
+      const msg = t('cal.delete_event', 'Supprimer cet événement ?');
+      const ok = await HimaWeb.confirmDialog(msg, {
         danger: true,
-        confirmLabel: (HimaWeb.t && HimaWeb.t('common.delete')) || 'Supprimer',
-      }).then((ok) => {
-        if (!ok) return;
-        if (this.$refs.delForm) this.$refs.delForm.submit();
+        confirmLabel: t('common.delete', 'Supprimer'),
       });
+      if (!ok) return;
+      this.recurScope = 'all';
+      if (this.$refs.delForm) this.$refs.delForm.submit();
     },
     async fillAi() {
       if (!this.ai || this.aiBusy) return;
@@ -2517,6 +2937,68 @@ window.HimaWeb = {
     });
   },
 
+  /**
+   * Choix multi-boutons. Résout `null` (annuler) ou l’`id` du choix.
+   * opts.choices = [{ id, label, danger? }, ...]
+   */
+  choiceDialog(message, opts = {}) {
+    return new Promise((resolve) => {
+      let backdrop = document.getElementById('himaweb-choice-dlg');
+      if (backdrop) backdrop.remove();
+      backdrop = document.createElement('div');
+      backdrop.id = 'himaweb-choice-dlg';
+      backdrop.className = 'confirm-backdrop';
+      const title = opts.title || this.t('common.confirm') || 'Confirmation';
+      const cancelLabel = opts.cancelLabel || this.t('common.cancel') || 'Annuler';
+      const choices = Array.isArray(opts.choices) ? opts.choices : [];
+      const buttons = choices
+        .map(
+          (c, i) =>
+            `<button type="button" class="btn${c.danger ? ' danger' : ''}" data-choice="${i}"></button>`
+        )
+        .join('');
+      backdrop.innerHTML = `
+        <div class="modal-panel confirm-panel" role="dialog" aria-modal="true">
+          <h2 class="font-display text-xl" data-choice-title></h2>
+          <p class="confirm-message"></p>
+          <div class="btn-row confirm-actions" style="flex-wrap:wrap">
+            <button type="button" class="btn ghost" data-choice="cancel"></button>
+            ${buttons}
+          </div>
+        </div>`;
+      backdrop.querySelector('[data-choice-title]').textContent = title;
+      backdrop.querySelector('.confirm-message').textContent = message || '';
+      backdrop.querySelector('[data-choice="cancel"]').textContent = cancelLabel;
+      choices.forEach((c, i) => {
+        const btn = backdrop.querySelector(`[data-choice="${i}"]`);
+        if (btn) btn.textContent = c.label || c.id;
+      });
+      const finish = (val) => {
+        backdrop.remove();
+        resolve(val);
+      };
+      backdrop.addEventListener('click', (ev) => {
+        if (ev.target === backdrop) finish(null);
+      });
+      backdrop.querySelector('[data-choice="cancel"]').onclick = () => finish(null);
+      choices.forEach((c, i) => {
+        const btn = backdrop.querySelector(`[data-choice="${i}"]`);
+        if (btn) btn.onclick = () => finish(c.id);
+      });
+      document.addEventListener(
+        'keydown',
+        function onKey(ev) {
+          if (ev.key === 'Escape') {
+            document.removeEventListener('keydown', onKey);
+            finish(null);
+          }
+        },
+        { once: true }
+      );
+      document.body.appendChild(backdrop);
+    });
+  },
+
   /** Intercepte un submit de formulaire → modale, puis resoumet si OK. */
   confirmSubmit(ev, message, opts) {
     const form = ev && ev.target;
@@ -2596,6 +3078,58 @@ window.HimaWeb = {
     this._undoToastTimer = setTimeout(() => {
       if (toast) toast.remove();
     }, 8000);
+  },
+
+  showAppToast(message, opts = {}) {
+    const text = String(message || '').trim();
+    if (!text) return;
+    const variant = opts.variant || 'info';
+    const duration = typeof opts.duration === 'number' ? opts.duration : 3500;
+    let toast = document.getElementById('app-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'app-toast';
+      toast.setAttribute('role', 'status');
+      toast.setAttribute('aria-live', 'polite');
+      document.body.appendChild(toast);
+    }
+    toast.className = 'app-toast' + (variant === 'success' ? ' is-success' : '');
+    toast.innerHTML =
+      (variant === 'success'
+        ? '<i data-lucide="check-circle-2" class="app-toast-icon"></i>'
+        : '') +
+      '<span class="app-toast-text"></span>';
+    const label = toast.querySelector('.app-toast-text');
+    if (label) label.textContent = text;
+    hwRenderIcons(toast);
+    clearTimeout(this._appToastTimer);
+    clearTimeout(this._appToastLeaveTimer);
+    this._appToastTimer = setTimeout(() => {
+      if (!toast) return;
+      toast.classList.add('is-leaving');
+      this._appToastLeaveTimer = setTimeout(() => {
+        if (toast && toast.parentNode) toast.remove();
+      }, 220);
+    }, duration);
+  },
+
+  consumeFlashToast() {
+    let raw;
+    try {
+      raw = sessionStorage.getItem('himaweb-flash');
+      if (raw) sessionStorage.removeItem('himaweb-flash');
+    } catch (_) {
+      return;
+    }
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw);
+      const msg = (data && data.message) || '';
+      if (!msg) return;
+      this.showAppToast(msg, {
+        variant: (data && data.type) || 'info',
+      });
+    } catch (_) {}
   },
 
   reloadEnvelopeList({ fresh = false } = {}) {
@@ -3253,10 +3787,60 @@ window.HimaWeb = {
       });
   },
 
+  reconnectAccount(account) {
+    const acc = (account || '').trim();
+    if (!acc) return Promise.resolve();
+    const body = new URLSearchParams();
+    body.set('account', acc);
+    return fetch('/api/mail/account/reconnect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && data.ok) {
+          this.reloadSidebar && this.reloadSidebar();
+          this.pollUnread && this.pollUnread();
+          // Relancer la liste courante si elle concerne ce compte / fusion.
+          const list = document.getElementById('envelope-list');
+          if (list && window.htmx) {
+            const ac =
+              (document.getElementById('current-account') &&
+                document.getElementById('current-account').value) ||
+              '';
+            const mb =
+              (document.getElementById('current-mailbox') &&
+                document.getElementById('current-mailbox').value) ||
+              'Inbox';
+            if (!ac || ac === acc) {
+              let url =
+                '/partials/envelopes?mailbox=' +
+                encodeURIComponent(mb) +
+                '&fresh=1';
+              if (ac) url += '&account=' + encodeURIComponent(ac);
+              window.htmx.ajax('GET', url, {
+                target: '#envelope-list',
+                swap: 'innerHTML',
+              });
+            }
+          }
+        }
+      })
+      .catch((e) => console.warn(e));
+  },
+
   bindFolderClicks() {
     if (this._folderClicksBound) return;
     this._folderClicksBound = true;
     document.addEventListener('click', (ev) => {
+      const disco = ev.target.closest('.folder-disco-btn');
+      if (disco) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.reconnectAccount(disco.dataset.account || '');
+        return;
+      }
       const el = ev.target.closest('.folder-link[data-label], .folder-link-text[data-label]');
       if (!el || el.classList.contains('folder-acct-label')) return;
       const label = el.getAttribute('data-label');
@@ -3503,6 +4087,18 @@ window.HimaWeb = {
       }
       this._lastUnreadByFolder = nextMap;
       this._lastUnreadTotal = total;
+      const disco = Array.isArray(data.disconnected) ? data.disconnected.slice().sort() : [];
+      const prevDisco = this._lastDisconnected || [];
+      const discoChanged =
+        disco.length !== prevDisco.length ||
+        disco.some((a, i) => a !== prevDisco[i]);
+      if (discoChanged) {
+        this._lastDisconnected = disco;
+        // Afficher / retirer l'icône unplug sans attendre un clic.
+        if (prevDisco.length || disco.length) {
+          this.reloadSidebar && this.reloadSidebar();
+        }
+      }
     } catch (_) {}
   },
 
@@ -4513,17 +5109,23 @@ window.HimaWeb = {
         ev.preventDefault();
         const sel = document.getElementById('account-select');
         const opt = sel && [...sel.options].find((o) => o.value === account);
-        const paused = opt && opt.dataset.paused === '1';
+        const paused =
+          (acctHdr.dataset.paused === '1') || (opt && opt.dataset.paused === '1');
+        const disconnected =
+          (acctHdr.dataset.disconnected === '1') ||
+          (opt && opt.dataset.disconnected === '1');
         const payload = JSON.stringify({ account });
-        show(
-          ev.clientX,
-          ev.clientY,
-          `<button type="button" data-ctx-action="account-pause" data-ctx-payload='${payload}'><i data-lucide="${
-            paused ? 'play' : 'pause'
-          }"></i> ${
-            paused ? this.t('mail.resume_account') : this.t('mail.pause_account')
-          }</button>`
-        );
+        let html = `<button type="button" data-ctx-action="account-pause" data-ctx-payload='${payload}'><i data-lucide="${
+          paused ? 'play' : 'pause'
+        }"></i> ${
+          paused ? this.t('mail.resume_account') : this.t('mail.pause_account')
+        }</button>`;
+        if (disconnected) {
+          html += `<button type="button" data-ctx-action="account-reconnect" data-ctx-payload='${payload}'><i data-lucide="unplug"></i> ${this.t(
+            'mail.reconnect_account'
+          )}</button>`;
+        }
+        show(ev.clientX, ev.clientY, html);
         return;
       }
       const folderEl = ev.target.closest(
@@ -4851,6 +5453,10 @@ window.HimaWeb = {
         .catch((e) => console.warn(e));
       return;
     }
+    if (action === 'account-reconnect') {
+      this.reconnectAccount(p.account || acc);
+      return;
+    }
     if (action === 'contact-mail') {
       this.openCompose('/compose?to=' + encodeURIComponent(p.email || ''));
       return;
@@ -5069,6 +5675,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'form.settings-autosave[hx-post="/settings/ui"], form.settings-autosave[action*="/settings/ui"]'
     );
     if (uiForm) window.HimaWeb.applyUiFromForm(uiForm);
+    window.HimaWeb.consumeFlashToast();
   });
   window.HimaWeb.maybeCheckUpdatesOnce();
   try {

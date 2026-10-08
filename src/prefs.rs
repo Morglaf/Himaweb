@@ -52,6 +52,9 @@ pub struct Prefs {
     /// Comptes mis en pause (pas de poll unread / Mirador pour eux)
     #[serde(default)]
     pub paused_accounts: Vec<String>,
+    /// Comptes auto-déconnectés après timeout / panne IMAP (skip réseau, UI recliquable)
+    #[serde(default)]
+    pub disconnected_accounts: Vec<String>,
     /// Dossier cible backup contenu PIM (Neverest / pimdir)
     #[serde(default)]
     pub backup_data_dir: String,
@@ -333,6 +336,7 @@ impl Default for Prefs {
             watch_excluded: vec![],
             badge_only_folders: vec![],
             paused_accounts: vec![],
+            disconnected_accounts: vec![],
             backup_data_dir: String::new(),
             backup_include_mail: true,
             backup_include_contacts: true,
@@ -473,6 +477,8 @@ impl Prefs {
         self.watch_excluded.dedup();
         self.paused_accounts.sort();
         self.paused_accounts.dedup();
+        self.disconnected_accounts.sort();
+        self.disconnected_accounts.dedup();
         self.badge_only_folders.sort();
         self.badge_only_folders.dedup();
         self.badge_only_folders
@@ -730,6 +736,15 @@ impl Prefs {
         !name.is_empty() && self.paused_accounts.iter().any(|a| a == name)
     }
 
+    pub fn is_account_disconnected(&self, name: &str) -> bool {
+        !name.is_empty() && self.disconnected_accounts.iter().any(|a| a == name)
+    }
+
+    /// Pause manuelle ou panne IMAP : ne plus appeler Himalaya pour ce compte.
+    pub fn skips_network(&self, name: &str) -> bool {
+        self.is_account_paused(name) || self.is_account_disconnected(name)
+    }
+
     pub fn toggle_account_paused(&mut self, name: &str) -> bool {
         if name.is_empty() {
             return false;
@@ -740,6 +755,31 @@ impl Prefs {
         } else {
             self.paused_accounts.push(name.to_string());
             true
+        }
+    }
+
+    /// Marque un compte comme déconnecté (timeout / serveur mort). Idempotent.
+    pub fn mark_account_disconnected(&mut self, name: &str) -> bool {
+        if name.is_empty() || Prefs::is_ntfy_key(name) {
+            return false;
+        }
+        if self.is_account_disconnected(name) {
+            return false;
+        }
+        self.disconnected_accounts.push(name.to_string());
+        true
+    }
+
+    /// Relance manuelle : enlève le flag déconnecté (la pause manuelle reste).
+    pub fn clear_account_disconnected(&mut self, name: &str) -> bool {
+        if name.is_empty() {
+            return false;
+        }
+        if let Some(i) = self.disconnected_accounts.iter().position(|a| a == name) {
+            self.disconnected_accounts.remove(i);
+            true
+        } else {
+            false
         }
     }
 

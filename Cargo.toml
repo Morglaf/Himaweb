@@ -42,6 +42,8 @@ zip = { version = "2", features = ["deflate"] }
 tcard = { version = "0.2.0", default-features = false }
 vcard-rs = { version = "0.4", default-features = false }
 tcal = { version = "0.2.0", default-features = false }
+# Expansion d’affichage des RRULE (grille calendrier) — l’écriture ICS reste tcal.
+rrule = "0.14"
 
 [profile.release]
 lto = true

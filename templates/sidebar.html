@@ -8,8 +8,9 @@
         <select id="account-select" name="account" class="account-select" onchange="this.form.submit()">
           {% for a in accounts %}
           <option value="{{ a.name }}" {% if a.selected %}selected{% endif %}
-                  data-paused="{% if a.paused %}1{% else %}0{% endif %}">
-            {% if a.paused %}⏸ {% endif %}{{ a.label }}{% if a.is_default %} · {{ default_label }}{% endif %}
+                  data-paused="{% if a.paused %}1{% else %}0{% endif %}"
+                  data-disconnected="{% if a.disconnected %}1{% else %}0{% endif %}">
+            {% if a.disconnected %}⚠ {% else if a.paused %}⏸ {% endif %}{{ a.label }}{% if a.is_default %} · {{ default_label }}{% endif %}
           </option>
           {% else %}
           <option value="">{{ no_account_label }}</option>
@@ -109,8 +110,18 @@
         {% endif %}
         {% if m.is_account_header %}
         <span class="folder-link-text folder-acct-label" data-label="{{ m.label }}" title="{{ m.account }}"
-              data-account="{{ m.account }}" data-account-header="1" data-paused="{% if m.paused %}1{% else %}0{% endif %}">
-          {% if m.paused %}<i data-lucide="pause" class="folder-pause-ico" title="En pause"></i>{% endif %}
+              data-account="{{ m.account }}" data-account-header="1"
+              data-paused="{% if m.paused %}1{% else %}0{% endif %}"
+              data-disconnected="{% if m.disconnected %}1{% else %}0{% endif %}">
+          {% if m.disconnected %}
+          <button type="button" class="folder-disco-btn"
+                  data-account="{{ m.account }}"
+                  data-i18n-title="mail.reconnect_account"
+                  title="Compte déconnecté — cliquer pour réessayer">
+            <i data-lucide="unplug" class="folder-disco-ico"></i>
+          </button>
+          {% endif %}
+          {% if m.paused %}<i data-lucide="pause" class="folder-pause-ico" title="En pause" data-i18n-title="mail.pause_account"></i>{% endif %}
           <span class="folder-label">{{ m.label }}</span>
         </span>
         {% else %}

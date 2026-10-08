@@ -169,6 +169,149 @@ pub fn write_calendula_config(toml: &str, overwrite: bool) -> Result<PathBuf, St
     Ok(path)
 }
 
+/// URL Google CalDAV (apidata / calendar/dav) — Basic Auth y est refusé (401 GData).
+pub fn is_google_calendar_url(url: &str) -> bool {
+    let u = url.to_ascii_lowercase();
+    u.contains("googleusercontent.com")
+        || u.contains("googleapis.com")
+        || u.contains("google.com/calendar")
+        || u.contains("www.google.com/calendar")
+}
+
+/// Jeton OAuth Google collé par erreur (souvent `1//…` depuis Thunderbird).
+pub fn looks_like_google_oauth_token(secret: &str) -> bool {
+    let s = secret.trim();
+    s.starts_with("1//") || s.starts_with("ya29.")
+}
+
+/// Extrait l’id calendrier Google depuis une URL CalDAV v2.
+pub fn google_calendar_id_from_url(url: &str) -> Option<String> {
+    // …/caldav/v2/<id>/events[/]
+    let lower = url;
+    let marker = "/caldav/v2/";
+    let idx = lower.to_ascii_lowercase().find(marker)?;
+    let rest = &url[idx + marker.len()..];
+    let id = rest
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_end_matches('/');
+    if id.is_empty() {
+        return None;
+    }
+    Some(
+        percent_decode_simple(id)
+            .trim()
+            .to_string(),
+    )
+}
+
+fn percent_decode_simple(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let h = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(hex) = h {
+                if let Ok(v) = u8::from_str_radix(hex, 16) {
+                    out.push(v);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Compte Google Calendar : CalDAV + bearer Ortie (pas Basic, pas gcal API).
+///
+/// Le client OAuth Thunderbird n’a souvent **pas** l’API Calendar JSON activée
+/// → `gcal` renvoie 403. CalDAV `apidata.googleusercontent.com` + scope
+/// `auth/calendar` fonctionne avec le même jeton Ortie.
+///
+/// - `calendar_email` : id agenda (`lea@gmail.com` ou `…@group.calendar.google.com`)
+/// - `oauth_email` : compte Google qui s’authentifie (peut différer si agenda partagé)
+pub fn upsert_gcal_account(
+    name: &str,
+    calendar_email: &str,
+    oauth_email: &str,
+    make_default: bool,
+) -> Result<(PathBuf, String), String> {
+    let name = sanitize(name);
+    let calendar_email = calendar_email
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches("/events")
+        .trim()
+        .to_string();
+    let oauth_email = if oauth_email.trim().is_empty() {
+        calendar_email.as_str()
+    } else {
+        oauth_email.trim()
+    };
+    if calendar_email.is_empty() {
+        return Err("Adresse / id calendrier Google manquant.".into());
+    }
+
+    let ortie_msg = crate::accounts_config::ensure_ortie_calendar_accounts(&[(
+        name.clone(),
+        oauth_email.to_string(),
+    )])?;
+
+    let path = prefs::calendula_config_path();
+    let mut body = if path.exists() {
+        std::fs::read_to_string(&path).unwrap_or_default()
+    } else {
+        String::from("# Calendula config — HimaWeb\n\n")
+    };
+
+    if make_default {
+        let re = Regex::new(r"(?m)^default\s*=\s*true\s*\n?").unwrap();
+        body = re.replace_all(&body, "").into_owned();
+    }
+
+    // `%40` pour @ — Google CalDAV est pointilleux sur l’encodage du home.
+    let home = format!(
+        "https://apidata.googleusercontent.com/caldav/v2/{}",
+        calendar_email.replace('@', "%40")
+    );
+    let section = format!(
+        "[accounts.{name}]\n{default}# Google CalDAV + OAuth Ortie (pas Basic / pas gcal API)\ncaldav.home = \"{home}\"\ncaldav.auth.bearer.token.command = [\"ortie\", \"token\", \"show\", \"-a\", \"{name}\"]\ncalendar.default = \"events\"\n\n",
+        default = if make_default {
+            "default = true\n"
+        } else {
+            ""
+        },
+        home = toml_esc(&home),
+    );
+    let header = format!("[accounts.{name}]");
+    if let Some(start) = body.find(&header) {
+        let rest = &body[start + header.len()..];
+        let end = rest
+            .find("\n[accounts.")
+            .map(|i| start + header.len() + i)
+            .unwrap_or(body.len());
+        body.replace_range(start..end, &section);
+    } else {
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str(&section);
+    }
+    let path = write_calendula_config(&body, true)?;
+    Ok((
+        path,
+        format!(
+            "{ortie_msg} Compte Google « {name} » (CalDAV + Ortie) prêt pour « {calendar_email} ». OAuth Ortie avec le compte « {name} » (connexion : {oauth_email})."
+        ),
+    ))
+}
+
 pub fn upsert_caldav_account(
     name: &str,
     server: &str,
@@ -268,6 +411,10 @@ pub struct CalendulaAccountEdit {
     pub username: String,
     pub is_default: bool,
     pub has_password: bool,
+    /// Backend gcal (OAuth Ortie) déjà en place
+    pub is_google: bool,
+    /// URL / secret ressemble à Google CalDAV Basic — proposer la bascule
+    pub suggest_google: bool,
     /// Inclus dans le backup / export (renseigné par settings)
     pub backup_selected: bool,
 }
@@ -326,20 +473,51 @@ pub fn list_calendula_accounts() -> Result<Vec<CalendulaAccountEdit>, String> {
     let mut out = Vec::new();
     for (name, item) in accounts.iter() {
         let Some(t) = item.as_table() else { continue };
+        let has_gcal_block = t.get("gcal").and_then(|i| i.as_table()).is_some();
+        let has_bearer = t
+            .get("caldav")
+            .and_then(|i| i.as_table())
+            .and_then(|c| c.get("auth"))
+            .and_then(|i| i.as_table())
+            .and_then(|a| a.get("bearer"))
+            .is_some();
         let server = get_nested_str(t, &["caldav", "server"])
             .or_else(|| get_nested_str(t, &["caldav", "home"]))
+            .or_else(|| {
+                get_nested_str(t, &["calendar", "default"]).map(|s| format!("gcal:{s}"))
+            })
             .unwrap_or_default();
-        let username =
-            get_nested_str(t, &["caldav", "auth", "basic", "username"]).unwrap_or_default();
-        let has_password = get_nested_str(t, &["caldav", "auth", "basic", "password", "raw"])
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
+        let is_google = has_gcal_block
+            || has_bearer
+            || is_google_calendar_url(&server);
+        let username = if is_google {
+            get_nested_str(t, &["calendar", "default"])
+                .filter(|s| s != "events")
+                .or_else(|| {
+                    // Extraire l’e-mail depuis …/caldav/v2/<email>
+                    google_calendar_id_from_url(&server)
+                })
+                .unwrap_or_default()
+        } else {
+            get_nested_str(t, &["caldav", "auth", "basic", "username"]).unwrap_or_default()
+        };
+        let password_raw = get_nested_str(t, &["caldav", "auth", "basic", "password", "raw"])
+            .unwrap_or_default();
+        let has_password = if is_google {
+            true
+        } else {
+            !password_raw.is_empty()
+        };
+        let suggest_google = !is_google
+            && (is_google_calendar_url(&server) || looks_like_google_oauth_token(&password_raw));
         out.push(CalendulaAccountEdit {
             name: name.to_string(),
             server,
             username,
             is_default: t.get("default").and_then(|i| i.as_bool()).unwrap_or(false),
             has_password,
+            is_google,
+            suggest_google,
             backup_selected: true,
         });
     }

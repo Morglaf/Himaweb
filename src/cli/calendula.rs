@@ -28,6 +28,9 @@ pub struct CalendarEvent {
     pub location: String,
     #[serde(default)]
     pub rrule: String,
+    /// Projection UI (tcal) — remplie après list / enrich, non sérialisée CalDAV.
+    #[serde(skip)]
+    pub recurrence: crate::cli::tcal::RecurrenceUi,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,12 +80,21 @@ impl CalendulaClient {
     }
 
     pub async fn list_calendars(&self) -> CliResult<Vec<CalendarInfo>> {
+        let (cals, _warnings) = self.list_calendars_with_warnings().await?;
+        Ok(cals)
+    }
+
+    /// Liste les agendas et remonte les erreurs par compte (ex. 401 Léa) au lieu de les avaler.
+    pub async fn list_calendars_with_warnings(
+        &self,
+    ) -> CliResult<(Vec<CalendarInfo>, Vec<String>)> {
         let accounts = self.list_accounts().await.unwrap_or_default();
         if accounts.is_empty() {
-            return self.list_calendars_for(None).await;
+            let cals = self.list_calendars_for(None).await?;
+            return Ok((cals, Vec::new()));
         }
         let mut out = Vec::new();
-        let mut last_err = None;
+        let mut warnings = Vec::new();
         for acc in &accounts {
             match self.list_calendars_for(Some(&acc.name)).await {
                 Ok(list) => {
@@ -100,31 +112,53 @@ impl CalendulaClient {
                         out.push(c);
                     }
                 }
-                Err(e) => last_err = Some(e),
+                Err(e) => {
+                    let mut msg = e.to_string();
+                    let low = msg.to_ascii_lowercase();
+                    if low.contains("gdata")
+                        || low.contains("loginrequired")
+                        || (low.contains("401")
+                            && (low.contains("google") || low.contains("googleusercontent")))
+                    {
+                        msg.push_str(&format!(
+                            " — Google refuse CalDAV Basic Auth. Activez « Calendrier Google » pour « {} » (CalDAV + Ortie), puis OAuth Ortie — pas de jeton 1//… en mot de passe.",
+                            acc.name
+                        ));
+                    } else if low.contains("calendar api has not been used")
+                        || low.contains("calendar-json.googleapis.com")
+                    {
+                        msg.push_str(&format!(
+                            " — l’API Calendar JSON n’est pas dispo pour ce client OAuth. Reconfigurez « {} » en Calendrier Google (CalDAV + Ortie), pas gcal.",
+                            acc.name
+                        ));
+                    }
+                    warnings.push(format!("{}: {msg}", acc.name));
+                }
             }
         }
-        if out.is_empty() {
-            if let Some(e) = last_err {
-                return Err(e);
-            }
+        if out.is_empty() && !warnings.is_empty() {
+            return Err(super::runner::CliError::Message(warnings.join(" · ")));
         }
-        Ok(out)
+        Ok((out, warnings))
     }
 
     async fn list_calendars_for(&self, account: Option<&str>) -> CliResult<Vec<CalendarInfo>> {
-        let attempts: &[&[&str]] = &[
-            &["calendar", "list"],
-            &["calendars", "list"],
-            &["caldav", "list"],
-        ];
+        // `calendar list` d’abord (caldav / gcal / …). Ne pas retomber sur
+        // `caldav list` : ça masque les vraies erreurs (ex. gcal 403) derrière
+        // « CalDAV configuration is missing ».
+        let attempts: &[&[&str]] = &[&["calendar", "list"], &["calendars", "list"]];
+        let mut last_err: Option<String> = None;
         for base in attempts {
             let args = with_account(account, base);
             let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            if let Ok(v) = self.runner.run_json(&self.bin, &args_ref).await {
-                return Ok(Self::parse_calendars(v, account.unwrap_or("")));
+            match self.runner.run_json(&self.bin, &args_ref).await {
+                Ok(v) => return Ok(Self::parse_calendars(v, account.unwrap_or(""))),
+                Err(e) => last_err = Some(e.to_string()),
             }
         }
-        Ok(vec![])
+        Err(super::runner::CliError::Message(
+            last_err.unwrap_or_else(|| "Aucun backend calendrier".into()),
+        ))
     }
 
     fn parse_calendars(v: Value, account: &str) -> Vec<CalendarInfo> {
@@ -251,6 +285,7 @@ impl CalendulaClient {
                     .and_then(|x| x.as_str())
                     .unwrap_or("")
                     .to_string();
+                let recurrence = crate::cli::tcal::project_rrule(&rrule);
                 let id = item
                     .get("id")
                     .map(|x| match x {
@@ -267,21 +302,32 @@ impl CalendulaClient {
                     description,
                     location,
                     rrule,
+                    recurrence,
                 }
             })
             .collect()
     }
 
-    /// Lit le iCal brut d’un événement et extrait description / location / rrule (via tcal).
+    /// Lit le iCal brut d’un événement et extrait les champs UI (via tcal).
     pub async fn enrich_event_from_ical(
         &self,
         calendar_ref: &str,
         event_id: &str,
-    ) -> CliResult<(String, String, String)> {
+    ) -> CliResult<crate::cli::tcal::EventFields> {
         let ical = self.read_event_ical(calendar_ref, event_id).await?;
         match crate::cli::tcal::parse_event_fields(&ical) {
-            Ok(f) => Ok((f.description, f.location, f.rrule)),
-            Err(_) => Ok(parse_ical_fields(&ical)),
+            Ok(f) => Ok(f),
+            Err(_) => {
+                let (description, location, rrule) = parse_ical_fields(&ical);
+                let mut f = crate::cli::tcal::EventFields {
+                    description,
+                    location,
+                    exdates: crate::cli::tcal::parse_exdates_from_ical(&ical),
+                    ..Default::default()
+                };
+                crate::cli::tcal::project_rrule(&rrule).apply_to(&mut f);
+                Ok(f)
+            }
         }
     }
 

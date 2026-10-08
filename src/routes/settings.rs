@@ -1531,9 +1531,15 @@ async fn import_calendar(
 #[derive(Deserialize)]
 pub struct CaldavForm {
     pub name: String,
+    #[serde(default)]
     pub server: String,
     pub username: String,
+    #[serde(default)]
     pub password: String,
+    /// Id agenda Google (e-mail) si `is_google` — sinon dérivé de l’URL / username
+    #[serde(default)]
+    pub calendar_id: String,
+    pub is_google: Option<String>,
     pub make_default: Option<String>,
 }
 
@@ -1543,7 +1549,53 @@ async fn add_caldav(
 ) -> impl IntoResponse {
     let make_default =
         form.make_default.as_deref() == Some("1") || form.make_default.as_deref() == Some("on");
+    let want_google = form.is_google.as_deref() == Some("1")
+        || form.is_google.as_deref() == Some("on")
+        || calendar_import::is_google_calendar_url(&form.server)
+        || calendar_import::looks_like_google_oauth_token(&form.password);
     let mut flash = Flash::empty();
+
+    if want_google {
+        let cal_id = {
+            let explicit = form.calendar_id.trim();
+            if !explicit.is_empty() {
+                explicit.to_string()
+            } else {
+                calendar_import::google_calendar_id_from_url(&form.server)
+                    .filter(|x| !x.is_empty())
+                    .or_else(|| {
+                        let u = form.username.trim();
+                        if u.contains('@') {
+                            Some(u.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| form.username.trim().to_string())
+            }
+        };
+        let oauth_email = form.username.trim();
+        match calendar_import::upsert_gcal_account(
+            &form.name,
+            &cal_id,
+            oauth_email,
+            make_default,
+        ) {
+            Ok((p, msg)) => {
+                flash.calendar_message = Some(format!(
+                    "Compte Google (CalDAV + Ortie). {msg} Config : {}.",
+                    p.display()
+                ));
+            }
+            Err(e) => {
+                flash.calendar_message = Some(format!(
+                    "Google Calendar : configuration CalDAV/Ortie échouée ({e}). Ne collez pas un jeton Thunderbird (1//…) : utilisez OAuth Ortie."
+                ));
+            }
+        }
+        return render_settings(state, flash).await;
+    }
+
     match calendar_import::upsert_caldav_account(
         &form.name,
         &form.server,

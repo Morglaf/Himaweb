@@ -32,6 +32,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/mail/folder/mark-read", post(folder_mark_read))
         .route("/api/mail/folder/watch", post(folder_toggle_watch))
         .route("/api/mail/account/pause", post(account_toggle_pause))
+        .route("/api/mail/account/reconnect", post(account_reconnect))
         .route("/api/mail/export/md", get(export_message_md))
         .route("/mailboxes", get(sidebar))
 }
@@ -67,6 +68,7 @@ pub struct AccountRow {
     pub is_default: bool,
     pub selected: bool,
     pub paused: bool,
+    pub disconnected: bool,
 }
 
 pub struct MailboxRow {
@@ -90,6 +92,8 @@ pub struct MailboxRow {
     pub is_account_header: bool,
     /// Compte en pause (en-tête de compte uniquement).
     pub paused: bool,
+    /// Auto-déconnecté après timeout IMAP (en-tête uniquement).
+    pub disconnected: bool,
 }
 
 pub(crate) fn mailbox_icon(name: &str) -> &'static str {
@@ -181,6 +185,7 @@ async fn sidebar(
                     is_default: a.is_default,
                     selected,
                     paused: prefs_snap.is_account_paused(&a.name),
+                    disconnected: prefs_snap.is_account_disconnected(&a.name),
                 }
             })
         })
@@ -195,9 +200,19 @@ async fn sidebar(
     if all_selected {
         // Un `list_mailboxes` par compte, tous en parallèle. L'ordre d'arrivée
         // des tâches est arbitraire : on reconstruit ensuite selon rail_order.
+        // Comptes en pause / déconnectés : pas d'appel IMAP (évite de bloquer les autres).
         let mut boxes_tasks = tokio::task::JoinSet::new();
+        let mut boxes_by_account: std::collections::HashMap<
+            String,
+            Vec<crate::cli::himalaya::Mailbox>,
+        > = std::collections::HashMap::new();
         if state.himalaya_available {
             for acc_name in rail.iter().filter(|a| !Prefs::is_ntfy_key(a)).cloned() {
+                if prefs_snap.skips_network(&acc_name) {
+                    boxes_by_account
+                        .insert(acc_name.clone(), stub_mailboxes_for_account(&prefs_snap, &acc_name));
+                    continue;
+                }
                 let st = Arc::clone(&state);
                 boxes_tasks.spawn(async move {
                     let _permit = st.cli_limit.acquire().await.ok();
@@ -207,8 +222,6 @@ async fn sidebar(
             }
         }
 
-        let mut boxes_by_account: std::collections::HashMap<String, Vec<_>> =
-            std::collections::HashMap::new();
         let mut any_ok = false;
         while let Some(joined) = boxes_tasks.join_next().await {
             let Ok((acc_name, res)) = joined else {
@@ -219,9 +232,20 @@ async fn sidebar(
                     any_ok = true;
                     boxes_by_account.insert(acc_name, list);
                 }
-                Err(_) => offline = true,
+                Err(e) => {
+                    offline = true;
+                    tracing::warn!("mailbox list échoué ({acc_name}): {e}");
+                    if crate::cli::runner::is_connectivity_error(&e) {
+                        mark_account_disconnected(&state, &acc_name).await;
+                    }
+                    boxes_by_account
+                        .insert(acc_name.clone(), stub_mailboxes_for_account(&prefs_snap, &acc_name));
+                }
             }
         }
+
+        // Relecture prefs : un compte a pu venir d'être marqué déconnecté.
+        let prefs_snap = state.prefs.lock().await.clone();
 
         // Un arbre par compte (+ ntfy) selon rail_order
         for acc_name in &rail {
@@ -233,12 +257,14 @@ async fn sidebar(
             }
             let color = prefs_snap.account_color(acc_name);
             let boxes = boxes_by_account.remove(acc_name).unwrap_or_default();
-            if boxes.is_empty() {
+            let account_paused = prefs_snap.is_account_paused(acc_name);
+            let account_disconnected = prefs_snap.is_account_disconnected(acc_name);
+            // Toujours garder l'en-tête si pause/déconnecté (même sans dossiers).
+            if boxes.is_empty() && !account_paused && !account_disconnected {
                 continue;
             }
 
             let header_id = format!("@acc@{acc_name}");
-            let account_paused = prefs_snap.is_account_paused(acc_name);
             rows.push(MailboxRow {
                 name: String::new(),
                 name_enc: String::new(),
@@ -250,7 +276,7 @@ async fn sidebar(
                 watched: false,
                 depth: 0,
                 pad: "0.75rem".into(),
-                has_children: true,
+                has_children: !boxes.is_empty(),
                 parent: String::new(),
                 tree_id: header_id.clone(),
                 account: acc_name.clone(),
@@ -259,6 +285,7 @@ async fn sidebar(
                 color: color.clone(),
                 is_account_header: true,
                 paused: account_paused,
+                disconnected: account_disconnected,
             });
 
             for m in boxes {
@@ -278,7 +305,7 @@ async fn sidebar(
                     && (current_account.is_empty() || current_account == *acc_name);
                 let unread = m.unread.unwrap_or(0);
                 let idx = rows.len();
-                if m.unread.is_none() && !account_paused {
+                if m.unread.is_none() && !prefs_snap.skips_network(acc_name) {
                     let watched = prefs_snap.is_watched(&key, &m.name);
                     if watched {
                         need_count.push((idx, m.name.clone(), Some(acc_name.clone())));
@@ -304,6 +331,7 @@ async fn sidebar(
                     color: color.clone(),
                     is_account_header: false,
                     paused: false,
+                    disconnected: false,
                 });
             }
         }
@@ -312,7 +340,17 @@ async fn sidebar(
         }
     } else {
         let archive_mode = crate::data_backup::is_archive_account(account_ref);
-        let (boxes, off) = if state.himalaya_available {
+        let skip_net = account_ref
+            .map(|a| prefs_snap.skips_network(a))
+            .unwrap_or(false);
+        let (boxes, off) = if skip_net && !archive_mode {
+            (
+                account_ref
+                    .map(|a| stub_mailboxes_for_account(&prefs_snap, a))
+                    .unwrap_or_default(),
+                true,
+            )
+        } else if state.himalaya_available {
             let _permit = state.cli_limit.acquire().await.ok();
             match state.himalaya.list_mailboxes(account_ref).await {
                 Ok(list) => {
@@ -325,8 +363,15 @@ async fn sidebar(
                 }
                 Err(e) => {
                     tracing::warn!("mailbox list online échoué: {e}");
+                    if let Some(a) = account_ref {
+                        if crate::cli::runner::is_connectivity_error(&e) {
+                            mark_account_disconnected(&state, a).await;
+                        }
+                    }
                     if archive_mode {
                         (vec![], true)
+                    } else if let Some(a) = account_ref {
+                        (stub_mailboxes_for_account(&prefs_snap, a), true)
                     } else {
                         let cache = state.cache.lock().await;
                         (cache.load_mailboxes().unwrap_or_default(), true)
@@ -374,7 +419,10 @@ async fn sidebar(
             let pad = format!("{:.2}rem", 0.75 + f32::from(depth) * 0.85);
             let unread = m.unread.unwrap_or(0);
             let idx = rows.len();
-            if m.unread.is_none() {
+            let skip_count = account_ref
+                .map(|a| prefs_snap.skips_network(a))
+                .unwrap_or(false);
+            if m.unread.is_none() && !skip_count {
                 if prefs_snap.is_watched(&key, &m.name) {
                     need_count.push((
                         idx,
@@ -407,6 +455,7 @@ async fn sidebar(
                 color: color.clone(),
                 is_account_header: false,
                 paused: false,
+                disconnected: false,
             });
         }
         // En mode compte unique : intercaler les ntfy selon rail_order (après les dossiers mail)
@@ -585,7 +634,48 @@ fn ntfy_sidebar_row(prefs: &Prefs, key: &str, current: &str) -> Option<MailboxRo
         color: prefs.account_color(key),
         is_account_header: false,
         paused: false,
+        disconnected: false,
     })
+}
+
+/// Dossiers de repli quand un compte est pause/déconnecté : dossiers surveillés + Inbox.
+fn stub_mailboxes_for_account(
+    prefs: &Prefs,
+    acc: &str,
+) -> Vec<crate::cli::himalaya::Mailbox> {
+    let prefix = format!("{acc}::");
+    let mut names: Vec<String> = prefs
+        .watched_folders
+        .iter()
+        .filter_map(|k| k.strip_prefix(&prefix).map(str::to_string))
+        .collect();
+    if !names
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case("Inbox") || n.eq_ignore_ascii_case("INBOX"))
+    {
+        names.insert(0, "Inbox".into());
+    }
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .map(|name| crate::cli::himalaya::Mailbox {
+            name,
+            desc: None,
+            unread: Some(0),
+        })
+        .collect()
+}
+
+async fn mark_account_disconnected(state: &AppState, account: &str) {
+    if account.is_empty() || Prefs::is_ntfy_key(account) {
+        return;
+    }
+    let mut prefs = state.prefs.lock().await;
+    if prefs.mark_account_disconnected(account) {
+        tracing::warn!("compte {account} auto-déconnecté (timeout / panne IMAP)");
+        let _ = prefs.save();
+    }
 }
 
 async fn ntfy_unread_count(prefs: &Prefs, mailbox_key: &str) -> u64 {
@@ -1365,7 +1455,13 @@ async fn fetch_envelopes_online(
     prefs_snap: &Prefs,
 ) -> (Vec<EnvelopeRow>, bool, Option<String>, bool) {
     let mut tasks = tokio::task::JoinSet::new();
+    let mut skipped: Vec<String> = Vec::new();
     for acc in targets.iter().cloned() {
+        let acc_name = acc.as_deref().unwrap_or("").to_string();
+        if !acc_name.is_empty() && prefs_snap.skips_network(&acc_name) {
+            skipped.push(acc_name);
+            continue;
+        }
         let st = Arc::clone(state);
         let mailbox = mailbox.to_string();
         let tokens = search_tokens.to_vec();
@@ -1389,7 +1485,7 @@ async fn fetch_envelopes_online(
         std::collections::HashMap::new();
     // BTreeMap : message d'erreur stable malgré l'ordre d'arrivée des tâches.
     let mut errs: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-    let mut offline_any = false;
+    let mut offline_any = !skipped.is_empty();
     let mut has_next = false;
 
     while let Some(joined) = tasks.join_next().await {
@@ -1411,7 +1507,37 @@ async fn fetch_envelopes_online(
             Err(e) => {
                 tracing::warn!("envelope list/search échoué ({acc_name}): {e}");
                 offline_any = true;
+                if crate::cli::runner::is_connectivity_error(&e) && !acc_name.is_empty() {
+                    mark_account_disconnected(state, &acc_name).await;
+                }
                 errs.insert(acc_name, e.to_string());
+            }
+        }
+    }
+
+    // Cache pour comptes skippés / en erreur (sans écraser un fetch live réussi).
+    if search_tokens.is_empty() {
+        let cache_targets: Vec<Option<String>> = targets
+            .iter()
+            .filter(|a| {
+                let name = a.as_deref().unwrap_or("");
+                !lists.contains_key(name)
+                    && (skipped.iter().any(|s| s == name) || errs.contains_key(name))
+            })
+            .cloned()
+            .collect();
+        if !cache_targets.is_empty() {
+            let cache = state.cache.lock().await;
+            for acc in &cache_targets {
+                let acc_name = acc.as_deref().unwrap_or("");
+                let list = cache.load_envelopes(acc_name, mailbox).unwrap_or_default();
+                if list.is_empty() {
+                    continue;
+                }
+                if list.len() as u32 >= page_size {
+                    has_next = true;
+                }
+                lists.insert(acc_name.to_string(), list);
             }
         }
     }
@@ -1432,21 +1558,7 @@ async fn fetch_envelopes_online(
     }
     sort_envelope_rows(&mut merged, sort);
 
-    // Repli hors-ligne : si tout a échoué, servir ce que le cache contient.
-    if merged.is_empty() && offline_any && search_tokens.is_empty() {
-        let (cached, _, has_next) =
-            load_envelopes_from_cache(state, targets, mailbox, prefs_snap, sort, page_size).await;
-        if !cached.is_empty() {
-            let error = Some(
-                errs.into_iter()
-                    .map(|(a, e)| if a.is_empty() { e } else { format!("{a}: {e}") })
-                    .collect::<Vec<_>>()
-                    .join(" · "),
-            );
-            return (cached, true, error, has_next);
-        }
-    }
-
+    // Erreurs de fetch live seulement (pause/déconnecté = icône rail, pas de bandeau).
     let error = if errs.is_empty() {
         None
     } else {
@@ -2932,10 +3044,15 @@ async fn folder_mark_read(
     {
         let prefs = state.prefs.lock().await;
         if let Some(a) = account.as_deref() {
-            if prefs.is_account_paused(a) {
+            if prefs.skips_network(a) {
+                let msg = if prefs.is_account_disconnected(a) {
+                    "compte déconnecté"
+                } else {
+                    "compte en pause"
+                };
                 return axum::Json(serde_json::json!({
                     "ok": false,
-                    "error": "compte en pause"
+                    "error": msg
                 }))
                 .into_response();
             }
@@ -2995,6 +3112,29 @@ async fn account_toggle_pause(
     };
     axum::Json(serde_json::json!({ "ok": true, "paused": paused, "account": account }))
         .into_response()
+}
+
+async fn account_reconnect(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<AccountPauseForm>,
+) -> impl IntoResponse {
+    let account = form.account.trim();
+    if account.is_empty() || Prefs::is_ntfy_key(account) {
+        return axum::Json(serde_json::json!({ "ok": false, "error": "compte invalide" }))
+            .into_response();
+    }
+    let cleared = {
+        let mut prefs = state.prefs.lock().await;
+        let c = prefs.clear_account_disconnected(account);
+        let _ = prefs.save();
+        c
+    };
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "reconnected": cleared,
+        "account": account
+    }))
+    .into_response()
 }
 
 async fn export_message_md(
@@ -3146,11 +3286,11 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     let accounts: Vec<Option<String>> = if prefs_snap.is_all_accounts() {
         ordered
             .into_iter()
-            .filter(|a| !prefs_snap.is_account_paused(a))
+            .filter(|a| !prefs_snap.skips_network(a))
             .map(Some)
             .collect()
     } else if let Some(a) = prefs_snap.selected_account() {
-        if prefs_snap.is_account_paused(a) {
+        if prefs_snap.skips_network(a) {
             vec![]
         } else {
             vec![Some(a.to_string())]
@@ -3175,8 +3315,20 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     // et il y en a un par dossier suivi de chaque compte.
     let mut count_tasks = tokio::task::JoinSet::new();
     while let Some(res) = boxes_tasks.join_next().await {
-        let Ok((acc, Ok(boxes))) = res else {
+        let Ok((acc, boxes_res)) = res else {
             continue;
+        };
+        let boxes = match boxes_res {
+            Ok(b) => b,
+            Err(e) => {
+                if let Some(a) = acc.as_deref() {
+                    tracing::warn!("unread mailbox list échoué ({a}): {e}");
+                    if crate::cli::runner::is_connectivity_error(&e) {
+                        mark_account_disconnected(&state, a).await;
+                    }
+                }
+                continue;
+            }
         };
         for m in boxes {
             let key = Prefs::folder_key(acc.as_deref(), &m.name);
@@ -3285,11 +3437,17 @@ async fn unread_counts(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         }
     }
 
+    let disconnected = {
+        let prefs = state.prefs.lock().await;
+        prefs.disconnected_accounts.clone()
+    };
+
     axum::Json(serde_json::json!({
         "notifications": notifications,
         "total": total,
         "folders": folders,
         "mirador": prefs_snap.mirador_enabled,
+        "disconnected": disconnected,
     }))
     .into_response()
 }
