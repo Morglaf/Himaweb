@@ -246,17 +246,14 @@
               <input type="hidden" name="name" value="{{ a.name }}" />
               <input type="hidden" name="icon" :value="icon" />
               <div class="icon-picker" :style="{ '--acct-color': color }">
-                <button type="button" class="icon-picker-trigger" @click="toggle()"
-                        :title="'Icône : ' + icon">
-                  <template x-for="ic in [icon]" :key="ic">
-                    <i :data-lucide="ic"></i>
-                  </template>
-                </button>
+                <button type="button" class="icon-picker-trigger" x-ref="trigger"
+                        @click="toggle()" :title="'Icône : ' + icon"
+                        :aria-label="'Icône : ' + icon"></button>
                 <div class="icon-picker-panel" x-show="open" x-cloak
                      @click.outside="open = false" @keydown.escape.window="open = false">
                   <input type="search" class="input w-full" data-i18n-placeholder="settings.search_icon" placeholder="Rechercher une icône Lucide…"
                          x-model="q" @input.debounce.80ms="filter()" />
-                  <div class="icon-picker-grid">
+                  <div class="icon-picker-grid" x-ref="grid">
                     <template x-for="name in shown" :key="name">
                       <button type="button" class="icon-picker-item"
                               :class="{ 'is-active': name === icon }"
@@ -819,17 +816,14 @@
               <input type="hidden" name="name" value="{{ a.name }}" />
               <input type="hidden" name="icon" :value="icon" />
               <div class="icon-picker" :style="{ '--acct-color': color }">
-                <button type="button" class="icon-picker-trigger" @click="toggle()"
-                        :title="'Icône : ' + icon">
-                  <template x-for="ic in [icon]" :key="ic">
-                    <i :data-lucide="ic"></i>
-                  </template>
-                </button>
+                <button type="button" class="icon-picker-trigger" x-ref="trigger"
+                        @click="toggle()" :title="'Icône : ' + icon"
+                        :aria-label="'Icône : ' + icon"></button>
                 <div class="icon-picker-panel" x-show="open" x-cloak
                      @click.outside="open = false" @keydown.escape.window="open = false">
                   <input type="search" class="input w-full" data-i18n-placeholder="settings.search_icon_short" placeholder="Rechercher une icône…"
                          x-model="q" @input.debounce.80ms="filter()" />
-                  <div class="icon-picker-grid">
+                  <div class="icon-picker-grid" x-ref="grid">
                     <template x-for="name in shown" :key="name">
                       <button type="button" class="icon-picker-item"
                               :class="{ 'is-active': name === icon }"

@@ -102,6 +102,18 @@ function hwRenderIcons(root) {
   return done;
 }
 
+/** Remplace le contenu d’un conteneur par une seule icône Lucide (aperçu fiable). */
+function hwPaintLucide(container, name) {
+  if (!container) return;
+  const n = String(name || '').trim() || 'circle-user';
+  container.replaceChildren();
+  const i = document.createElement('i');
+  i.setAttribute('data-lucide', n);
+  i.setAttribute('aria-hidden', 'true');
+  container.appendChild(i);
+  hwRenderIcons(container);
+}
+
 /**
  * Les appels `lucide.createIcons()` sont dispersés dans les templates et les
  * expressions Alpine. Plutôt que de les réécrire un par un, on redirige
@@ -2061,14 +2073,25 @@ function accountAppearance(opts) {
     shown: [],
     matchCount: 0,
     init() {
-      this.refreshIcons();
+      this.$nextTick(() => this.paintTrigger());
+    },
+    paintTrigger() {
+      hwPaintLucide(this.$refs.trigger, this.icon);
+    },
+    paintGrid() {
+      // Laisser Alpine monter les <i data-lucide> de la grille avant Lucide.
+      this.$nextTick(() => {
+        this.$nextTick(() => {
+          const grid = this.$refs.grid;
+          if (grid) hwRenderIcons(grid);
+        });
+      });
     },
     async toggle() {
       this.open = !this.open;
       if (this.open) {
         if (!this.all.length) await this.load();
         else this.filter();
-        this.refreshIcons();
       }
     },
     async load() {
@@ -2082,7 +2105,6 @@ function accountAppearance(opts) {
       let matched = q
         ? this.all.filter((n) => n.includes(q) || n.replace(/-/g, ' ').includes(q))
         : this.all.slice();
-      // Apparence agendas : remonter un preset utile en tête (sans limiter le total).
       if (!q && this.preset === 'calendar') {
         const pref = LUCIDE_CAL_PRESET.filter((n) => matched.includes(n));
         const rest = matched.filter((n) => !pref.includes(n));
@@ -2090,13 +2112,12 @@ function accountAppearance(opts) {
       }
       this.matchCount = matched.length;
       this.shown = matched.slice(0, 320);
-      this.refreshIcons();
+      this.paintGrid();
     },
     pick(name) {
       this.icon = name;
       this.open = false;
-      // x-for :key sur le trigger recrée un <i> ; createIcons le transforme ensuite.
-      this.refreshIcons();
+      this.$nextTick(() => this.paintTrigger());
     },
     statusLabel() {
       if (this.loading) return 'Chargement des icônes Lucide…';
@@ -2105,16 +2126,6 @@ function accountAppearance(opts) {
         return `${this.shown.length} / ${this.matchCount} — affinez la recherche`;
       }
       return `${this.matchCount} icône${this.matchCount > 1 ? 's' : ''}`;
-    },
-    refreshIcons() {
-      // Double nextTick : laisser Alpine remonter le <i :key="icon"> avant Lucide.
-      this.$nextTick(() => {
-        this.$nextTick(() => {
-          const root = this.$el;
-          if (!root || !window.lucide) return;
-          lucide.createIcons(root);
-        });
-      });
     },
   };
 }
