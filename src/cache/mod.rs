@@ -412,6 +412,7 @@ impl Cache {
                         attachments,
                         raw_preview: String::new(),
                         cid_map: vec![],
+                        calendar_texts: vec![],
                     })
                 },
             )

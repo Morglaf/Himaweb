@@ -99,6 +99,10 @@
         <a class="icon-btn no-print" title="Exporter Markdown" data-i18n-title="mail.export_md"
            href="/api/mail/export/md?mailbox={{ mailbox_enc }}&id={{ m.id }}{% if !account_enc.is_empty() %}&account={{ account_enc }}{% endif %}"
            download><i data-lucide="file-text"></i></a>
+        <button type="button" class="icon-btn no-print" title="Voir la source" data-i18n-title="mail.view_source"
+                data-mailbox="{{ mailbox }}" data-message-id="{{ m.id }}"
+                {% if !account.is_empty() %}data-account="{{ account }}"{% endif %}
+                onclick="HimaWeb.openRawSource(this)"><i data-lucide="code-2"></i></button>
         {% if !archive_readonly %}
         <form class="inline" hx-post="/partials/message/flag" hx-target="#message-pane" hx-swap="innerHTML"
               hx-disabled-elt="find button[type='submit']">
@@ -175,6 +179,36 @@
          hx-trigger="load"
          hx-swap="none"
          hidden></div>
+    {% endif %}
+
+    {% if !m.calendar_invites.is_empty() %}
+    <div class="msg-invites">
+      {% for inv in m.calendar_invites %}
+      <div class="msg-invite-card">
+        <i data-lucide="calendar-clock"></i>
+        <div class="msg-invite-meta">
+          <strong>{% if !inv.summary.is_empty() %}{{ inv.summary }}{% else %}<span data-i18n="mail.invite_title">Invitation calendrier</span>{% endif %}</strong>
+          {% if !inv.start.is_empty() || !inv.end.is_empty() %}
+          <span class="muted tiny">
+            <span data-i18n="mail.ics_when">Quand</span> :
+            {% if !inv.start.is_empty() && !inv.end.is_empty() %}{{ inv.start }} → {{ inv.end }}
+            {% else if !inv.start.is_empty() %}{{ inv.start }}
+            {% else %}{{ inv.end }}{% endif %}
+          </span>
+          {% endif %}
+          {% if !inv.location.is_empty() %}
+          <span class="muted tiny"><span data-i18n="mail.ics_location">Lieu</span> : {{ inv.location }}</span>
+          {% endif %}
+        </div>
+        <button type="button" class="btn sm att-ics" title="Ajouter au calendrier" data-i18n-title="mail.ics_add"
+                data-mailbox="{{ mailbox }}" data-message-id="{{ m.id }}" data-attachment-id="{{ inv.attachment_id }}"
+                {% if !account.is_empty() %}data-account="{{ account }}"{% endif %}
+                @click="HimaWeb.importIcsFromAttachment($el)"><i data-lucide="calendar-plus"></i>
+          <span data-i18n="mail.ics_add">Ajouter au calendrier</span>
+        </button>
+      </div>
+      {% endfor %}
+    </div>
     {% endif %}
 
     <div class="msg-body" :class="bodyToneClass" x-ref="body">

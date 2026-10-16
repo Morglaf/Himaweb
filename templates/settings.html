@@ -415,7 +415,7 @@
               <h3 class="settings-subhead" data-i18n="settings.folders_title">Dossiers — épingler / masquer / surveiller</h3>
               <p class="muted tiny mb-2" data-i18n="settings.folders_hint">
                 Épinglés en tête · non-système dans « Plus » · Masquer retire des menus.
-                Surveiller active le compteur. Total = badge global. Notif = pop-up (décoché = reste dans le total sans notification).
+                Surveiller = badge sur le dossier. Badge global = compte dans l’onglet Mail. Pop-up = notification navigateur / NTFY.
               </p>
               <form method="post" action="/settings/folders" class="settings-autosave folder-pref-form"
                     hx-post="/settings/folders" hx-trigger="change" hx-swap="none"
@@ -432,16 +432,16 @@
                     <span data-i18n="settings.hide">Masquer</span>
                     <input class="toggle" type="checkbox" name="hidden" value="{{ f.key }}" {% if f.hidden %}checked{% endif %} />
                   </label>
-                  <label class="toggle-mini" title="Surveiller (badge sur le dossier)">
+                  <label class="toggle-mini" data-i18n-title="settings.watch_title" title="Afficher le compteur de non-lus sur ce dossier">
                     <span data-i18n="settings.watch">Surveiller</span>
                     <input class="toggle" type="checkbox" name="watched" value="{{ f.key }}" {% if f.watched %}checked{% endif %} />
                   </label>
-                  <label class="toggle-mini" title="Inclure dans le badge non-lus de la barre du haut">
-                    <span data-i18n="settings.total">Total</span>
+                  <label class="toggle-mini" data-i18n-title="settings.total_title" title="Inclure dans le badge non-lus de l’onglet Mail">
+                    <span data-i18n="settings.total">Badge global</span>
                     <input class="toggle" type="checkbox" name="count_total" value="{{ f.key }}" {% if f.count_in_total %}checked{% endif %} />
                   </label>
-                  <label class="toggle-mini" title="Notifications navigateur / NTFY (reste dans le total si décoché)">
-                    <span data-i18n="settings.notify_folder">Notif</span>
+                  <label class="toggle-mini" data-i18n-title="settings.notify_folder_title" title="Notification navigateur / NTFY (reste dans le badge si décoché)">
+                    <span data-i18n="settings.notify_folder">Pop-up</span>
                     <input class="toggle" type="checkbox" name="notify" value="{{ f.key }}" {% if f.notifies %}checked{% endif %} />
                   </label>
                 </div>
@@ -480,16 +480,16 @@
                   <span data-i18n="settings.hide">Masquer</span>
                   <input class="toggle" type="checkbox" name="hidden" value="{{ f.key }}" {% if f.hidden %}checked{% endif %} />
                 </label>
-                <label class="toggle-mini" title="Surveiller (badge sur le dossier)">
+                <label class="toggle-mini" data-i18n-title="settings.watch_title" title="Afficher le compteur de non-lus sur ce dossier">
                   <span data-i18n="settings.watch">Surveiller</span>
                   <input class="toggle" type="checkbox" name="watched" value="{{ f.key }}" {% if f.watched %}checked{% endif %} />
                 </label>
-                <label class="toggle-mini" title="Inclure dans le badge non-lus de la barre du haut">
-                  <span data-i18n="settings.total">Total</span>
+                <label class="toggle-mini" data-i18n-title="settings.total_title" title="Inclure dans le badge non-lus de l’onglet Mail">
+                  <span data-i18n="settings.total">Badge global</span>
                   <input class="toggle" type="checkbox" name="count_total" value="{{ f.key }}" {% if f.count_in_total %}checked{% endif %} />
                 </label>
-                <label class="toggle-mini" title="Notifications navigateur / NTFY (reste dans le total si décoché)">
-                  <span data-i18n="settings.notify_folder">Notif</span>
+                <label class="toggle-mini" data-i18n-title="settings.notify_folder_title" title="Notification navigateur / NTFY (reste dans le badge si décoché)">
+                  <span data-i18n="settings.notify_folder">Pop-up</span>
                   <input class="toggle" type="checkbox" name="notify" value="{{ f.key }}" {% if f.notifies %}checked{% endif %} />
                 </label>
               </div>

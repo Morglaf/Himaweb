@@ -34,6 +34,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/mail/account/pause", post(account_toggle_pause))
         .route("/api/mail/account/reconnect", post(account_reconnect))
         .route("/api/mail/export/md", get(export_message_md))
+        .route("/api/mail/raw", get(export_message_raw))
         .route("/mailboxes", get(sidebar))
 }
 
@@ -1635,10 +1636,19 @@ pub struct ThreadPart {
     pub body: String,
     pub attachments: Vec<AttRow>,
     pub accessory_attachments: Vec<AttRow>,
+    pub calendar_invites: Vec<CalendarInvite>,
     pub remote_resources: Vec<RemoteRes>,
     pub has_remote_content: bool,
     pub attachments_lazy: bool,
     pub is_focus: bool,
+}
+
+pub struct CalendarInvite {
+    pub attachment_id: String,
+    pub summary: String,
+    pub start: String,
+    pub end: String,
+    pub location: String,
 }
 
 pub struct RemoteRes {
@@ -1763,13 +1773,152 @@ fn is_calendar_attachment(filename: &str, mime: &str) -> bool {
     filename.trim().to_ascii_lowercase().ends_with(".ics")
 }
 
+fn calendar_invite_from_ical(
+    attachment_id: &str,
+    ical: &str,
+    fallback_summary: &str,
+) -> CalendarInvite {
+    let fields = crate::routes::calendar::ics_preview_fields(ical.as_bytes());
+    let summary = fields
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let start = fields
+        .get("start")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let end = fields
+        .get("end")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let location = fields
+        .get("location")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    CalendarInvite {
+        attachment_id: attachment_id.to_string(),
+        summary: if summary.is_empty() {
+            fallback_summary.to_string()
+        } else {
+            summary
+        },
+        start,
+        end,
+        location,
+    }
+}
+
+fn calendar_invites_from_msg(msg: &crate::cli::himalaya::MessageView) -> Vec<CalendarInvite> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (id, ical) in &msg.calendar_texts {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        out.push(calendar_invite_from_ical(id, ical, &msg.subject));
+    }
+    // PJ calendrier sans corps inline : carte minimale (enrichie ensuite si focus).
+    for a in &msg.attachments {
+        if !is_calendar_attachment(&a.filename, &a.mime) {
+            continue;
+        }
+        if seen.contains(&a.id) {
+            continue;
+        }
+        seen.insert(a.id.clone());
+        out.push(CalendarInvite {
+            attachment_id: a.id.clone(),
+            summary: msg.subject.clone(),
+            start: String::new(),
+            end: String::new(),
+            location: String::new(),
+        });
+    }
+    out
+}
+
+/// Télécharge l’ICS (Himalaya) quand le corps inline n’a pas donné de dates (Teams).
+async fn enrich_calendar_invites(
+    state: &AppState,
+    mailbox: &str,
+    message_id: &str,
+    account: Option<&str>,
+    invites: &mut [CalendarInvite],
+) {
+    for inv in invites.iter_mut() {
+        if !inv.start.trim().is_empty() {
+            continue;
+        }
+        let tmp = match tempfile::tempdir() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let bytes = match state
+            .himalaya
+            .download_attachment(
+                mailbox,
+                message_id,
+                &inv.attachment_id,
+                tmp.path().to_str().unwrap_or("."),
+                account,
+            )
+            .await
+        {
+            Ok(b) if !b.is_empty() => b,
+            _ => {
+                // Repli : re-lire le message pour calendar_texts
+                match state
+                    .himalaya
+                    .read_message(mailbox, message_id, account)
+                    .await
+                {
+                    Ok(msg) => {
+                        if let Some((_, ical)) = msg
+                            .calendar_texts
+                            .iter()
+                            .find(|(id, _)| id == &inv.attachment_id)
+                            .or_else(|| msg.calendar_texts.first())
+                        {
+                            ical.as_bytes().to_vec()
+                        } else {
+                            continue;
+                        }
+                    }
+                    Err(_) => continue,
+                }
+            }
+        };
+        let filled = calendar_invite_from_ical(
+            &inv.attachment_id,
+            &String::from_utf8_lossy(&bytes),
+            &inv.summary,
+        );
+        if !filled.start.trim().is_empty() || !filled.summary.trim().is_empty() {
+            if !filled.summary.trim().is_empty() {
+                inv.summary = filled.summary;
+            }
+            inv.start = filled.start;
+            inv.end = filled.end;
+            if !filled.location.trim().is_empty() {
+                inv.location = filled.location;
+            }
+        }
+    }
+}
+
 fn att_rows_from_meta(list: Vec<crate::cli::himalaya::AttachmentMeta>) -> (Vec<AttRow>, Vec<AttRow>) {
     let mut real = Vec::new();
     let mut accessory = Vec::new();
     for a in list {
-        let is_acc = is_accessory_attachment(&a.filename, &a.mime, a.size);
+        let is_calendar = is_calendar_attachment(&a.filename, &a.mime);
+        // Jamais classer un calendrier en accessoire (invites Teams / METHOD:REQUEST).
+        let is_acc = !is_calendar && is_accessory_attachment(&a.filename, &a.mime, a.size);
         let previewable = !is_acc && is_previewable_attachment(&a.filename, &a.mime);
-        let is_calendar = !is_acc && is_calendar_attachment(&a.filename, &a.mime);
         let row = AttRow {
             id: a.id,
             filename: a.filename,
@@ -2078,6 +2227,20 @@ async fn message(
             ("<p class=\"muted\">(corps vide)</p>".into(), false, vec![])
         };
 
+        let mut calendar_invites = calendar_invites_from_msg(&msg);
+        if tid == focus_id && state.himalaya_available && !offline_any {
+            let needs_dates = calendar_invites.iter().any(|i| i.start.trim().is_empty());
+            if needs_dates {
+                enrich_calendar_invites(
+                    &state,
+                    &name,
+                    &tid,
+                    account.as_deref(),
+                    &mut calendar_invites,
+                )
+                .await;
+            }
+        }
         let (attachments, accessory_attachments) = att_rows_from_meta(msg.attachments);
         let attachments_lazy = state.himalaya_available && !offline_any && tid == focus_id;
 
@@ -2112,6 +2275,7 @@ async fn message(
             body,
             attachments,
             accessory_attachments,
+            calendar_invites,
             remote_resources,
             has_remote_content,
             attachments_lazy,
@@ -3259,6 +3423,47 @@ async fn export_message_md(
         md,
     )
         .into_response()
+}
+
+async fn export_message_raw(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<MessageQuery>,
+) -> impl IntoResponse {
+    let mailbox = if q.mailbox.trim().is_empty() {
+        "Inbox"
+    } else {
+        q.mailbox.trim()
+    };
+    let id = q.id.trim();
+    if id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "id manquant").into_response();
+    }
+    if !state.himalaya_available {
+        return (StatusCode::SERVICE_UNAVAILABLE, "Himalaya absent").into_response();
+    }
+    let account = q
+        .account
+        .filter(|s| !s.is_empty())
+        .or(state.account().await);
+    let _permit = state.cli_limit.acquire().await.ok();
+    match state
+        .himalaya
+        .export_message_raw(mailbox, id, account.as_deref())
+        .await
+    {
+        Ok(bytes) => {
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            (
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8".to_string(),
+                )],
+                text,
+            )
+                .into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("raw: {e}")).into_response(),
+    }
 }
 
 fn html_to_approx_text(html: &str) -> String {

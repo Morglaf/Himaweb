@@ -98,7 +98,7 @@ jobs:
 
       - name: Upload Unix asset
         if: runner.os != 'Windows'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: ${{ env.ASSET }}
           generate_release_notes: true
@@ -106,7 +106,7 @@ jobs:
 
       - name: Upload Windows assets
         if: runner.os == 'Windows'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             ${{ env.ASSET_TGZ }}

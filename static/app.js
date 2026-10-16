@@ -2919,6 +2919,9 @@ window.HimaWeb = {
     const title = document.getElementById('att-preview-title');
     const dl = document.getElementById('att-preview-download');
     if (!modal || !body || !title || !dl || !previewUrl) return;
+    if (modal.parentElement !== document.body) {
+      document.body.appendChild(modal);
+    }
     title.textContent = filename;
     dl.href = downloadUrl;
     dl.setAttribute('download', filename);
@@ -2952,6 +2955,77 @@ window.HimaWeb = {
     const body = document.getElementById('att-preview-body');
     if (body) body.innerHTML = '';
     if (modal) modal.hidden = true;
+  },
+
+  async openRawSource(el) {
+    if (!el) return;
+    const mailbox = el.getAttribute('data-mailbox') || '';
+    const id = el.getAttribute('data-message-id') || '';
+    const account = el.getAttribute('data-account') || '';
+    if (!mailbox || !id) return;
+    const params = new URLSearchParams({ mailbox, id });
+    if (account) params.set('account', account);
+    let text = '';
+    try {
+      const res = await fetch('/api/mail/raw?' + params.toString());
+      text = await res.text();
+      if (!res.ok) {
+        await this.alertDialog(text || 'Erreur', this.t('mail.view_source') || 'Voir la source');
+        return;
+      }
+    } catch (_) {
+      await this.alertDialog(
+        'Échec du chargement',
+        this.t('mail.view_source') || 'Voir la source'
+      );
+      return;
+    }
+    let backdrop = document.getElementById('himaweb-raw-source');
+    if (backdrop) backdrop.remove();
+    backdrop = document.createElement('div');
+    backdrop.id = 'himaweb-raw-source';
+    backdrop.className = 'att-preview-backdrop';
+    const esc = (s) =>
+      String(s || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    backdrop.innerHTML = `
+      <div class="att-preview-dialog" role="dialog" aria-modal="true">
+        <header class="att-preview-bar">
+          <span class="att-preview-title">${esc(this.t('mail.view_source') || 'Voir la source')}</span>
+          <div class="att-preview-actions">
+            <button type="button" class="icon-btn" data-raw="copy" title="${esc(this.t('mail.copy_source') || 'Copier')}">
+              <i data-lucide="copy"></i>
+            </button>
+            <button type="button" class="icon-btn" data-raw="close" title="${esc(this.t('common.close') || 'Fermer')}">
+              <i data-lucide="x"></i>
+            </button>
+          </div>
+        </header>
+        <pre class="msg-source-pre" tabindex="0"></pre>
+      </div>`;
+    const pre = backdrop.querySelector('.msg-source-pre');
+    if (pre) pre.textContent = text;
+    const close = () => {
+      document.removeEventListener('keydown', onKey);
+      backdrop.remove();
+    };
+    const onKey = (ev) => {
+      if (ev.key === 'Escape') close();
+    };
+    backdrop.addEventListener('click', (ev) => {
+      if (ev.target === backdrop) close();
+    });
+    backdrop.querySelector('[data-raw="close"]').onclick = close;
+    backdrop.querySelector('[data-raw="copy"]').onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (_) {}
+    };
+    document.body.appendChild(backdrop);
+    document.addEventListener('keydown', onKey);
+    if (window.lucide) lucide.createIcons();
   },
 
 
@@ -3733,14 +3807,18 @@ window.HimaWeb = {
       );
       return;
     }
-    let calendar = calendars[0].id;
-    if (calendars.length > 1) {
-      const picked = await this.pickCalendar(calendars);
-      if (!picked) return;
-      calendar = picked;
+    const preview = await this.fetchIcsPreview(source);
+    if (preview && preview.error) {
+      await this.alertDialog(
+        preview.error || this.t('mail.ics_import_fail') || 'Import ICS échoué',
+        this.t('mail.ics_add') || 'Ajouter au calendrier'
+      );
+      return;
     }
+    const picked = await this.pickCalendar(calendars, preview || {});
+    if (!picked) return;
     const body = new URLSearchParams();
-    body.set('calendar', calendar);
+    body.set('calendar', picked);
     Object.keys(source).forEach((k) => {
       if (source[k]) body.set(k, source[k]);
     });
@@ -3768,6 +3846,59 @@ window.HimaWeb = {
     }
   },
 
+  async fetchIcsPreview(source) {
+    const body = new URLSearchParams();
+    body.set('calendar', '_');
+    Object.keys(source || {}).forEach((k) => {
+      if (source[k]) body.set(k, source[k]);
+    });
+    try {
+      const res = await fetch('/calendar/preview-ics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) return { error: data.error || 'preview failed' };
+      return data;
+    } catch (_) {
+      return {};
+    }
+  },
+
+  formatIcsPreviewHtml(preview) {
+    const esc = (s) =>
+      String(s || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    const summary = (preview && preview.summary) || '';
+    const start = (preview && preview.start) || '';
+    const end = (preview && preview.end) || '';
+    const location = (preview && preview.location) || '';
+    if (!summary && !start && !end && !location) return '';
+    let when = '';
+    if (start && end) when = `${esc(start)} → ${esc(end)}`;
+    else if (start) when = esc(start);
+    const rows = [];
+    if (summary) {
+      rows.push(
+        `<div class="ics-preview-summary"><strong>${esc(summary)}</strong></div>`
+      );
+    }
+    if (when) {
+      rows.push(
+        `<div class="ics-preview-when muted tiny">${esc(this.t('mail.ics_when') || 'Quand')} : ${when}</div>`
+      );
+    }
+    if (location) {
+      rows.push(
+        `<div class="ics-preview-loc muted tiny">${esc(this.t('mail.ics_location') || 'Lieu')} : ${esc(location)}</div>`
+      );
+    }
+    return `<div class="ics-preview-card">${rows.join('')}</div>`;
+  },
+
   async fetchCalendarOptions() {
     try {
       const res = await fetch('/calendar/calendars.json');
@@ -3779,7 +3910,7 @@ window.HimaWeb = {
     }
   },
 
-  pickCalendar(calendars) {
+  pickCalendar(calendars, preview) {
     return new Promise((resolve) => {
       let backdrop = document.getElementById('himaweb-ics-pick');
       if (backdrop) backdrop.remove();
@@ -3794,19 +3925,30 @@ window.HimaWeb = {
             }</option>`
         )
         .join('');
+      const previewHtml = this.formatIcsPreviewHtml(preview || {});
+      const calBlock =
+        calendars.length > 1
+          ? `<p class="confirm-message muted">${this.t('mail.ics_pick_calendar') || 'Choisir un calendrier'}</p>
+          <select class="select w-full" id="ics-cal-select">${opts}</select>`
+          : `<input type="hidden" id="ics-cal-select" value="${String(calendars[0].id).replace(/"/g, '&quot;')}" />
+          <p class="confirm-message muted">${(calendars[0].name || calendars[0].id).replace(/</g, '&lt;')}</p>`;
       backdrop.innerHTML = `
         <div class="modal-panel confirm-panel" role="dialog" aria-modal="true">
           <h2 class="font-display text-xl">${this.t('mail.ics_add') || 'Ajouter au calendrier'}</h2>
-          <p class="confirm-message muted">${this.t('mail.ics_pick_calendar') || 'Choisir un calendrier'}</p>
-          <select class="select w-full" id="ics-cal-select">${opts}</select>
+          ${previewHtml}
+          ${calBlock}
           <div class="btn-row confirm-actions">
             <button type="button" class="btn ghost" data-ics="no">${this.t('common.cancel') || 'Annuler'}</button>
             <button type="button" class="btn" data-ics="yes">${this.t('mail.ics_add') || 'Ajouter'}</button>
           </div>
         </div>`;
       const finish = (val) => {
+        document.removeEventListener('keydown', onKey);
         backdrop.remove();
         resolve(val);
+      };
+      const onKey = (ev) => {
+        if (ev.key === 'Escape') finish(null);
       };
       backdrop.addEventListener('click', (ev) => {
         if (ev.target === backdrop) finish(null);
@@ -3817,12 +3959,6 @@ window.HimaWeb = {
         finish(sel ? sel.value : null);
       };
       document.body.appendChild(backdrop);
-      const onKey = (ev) => {
-        if (ev.key === 'Escape') {
-          document.removeEventListener('keydown', onKey);
-          finish(null);
-        }
-      };
       document.addEventListener('keydown', onKey);
     });
   },
@@ -4464,7 +4600,9 @@ window.HimaWeb = {
           this.reloadSidebar && this.reloadSidebar();
         }
       }
-    } catch (_) {}
+    } catch (_) {
+      // Échec réseau / API : laisser le prochain tick retenter sans bloquer le timer.
+    }
   },
 
   /** True si le dossier affiché a reçu de nouveaux non-lus (Inbox fusionnée incluse). */
@@ -4537,11 +4675,22 @@ window.HimaWeb = {
         ? link.closest('.folder-item') || link
         : null;
       if (!host) return;
+      // Réparer la structure si œil/badge sont hors .folder-trailing
+      let trailing = host.querySelector(':scope > .folder-trailing');
+      if (!trailing) {
+        trailing = document.createElement('span');
+        trailing.className = 'folder-trailing';
+        const eye =
+          host.querySelector(':scope > .folder-watch-ico') ||
+          host.querySelector(':scope > svg.folder-watch-ico');
+        if (eye) trailing.appendChild(eye);
+        host.appendChild(trailing);
+      }
       const span = document.createElement('span');
       span.className = 'unread';
       span.setAttribute('data-unread-for', key);
       span.textContent = String(n);
-      host.appendChild(span);
+      trailing.appendChild(span);
     });
   },
 
@@ -4595,9 +4744,11 @@ window.HimaWeb = {
   },
 
   startUnreadPolling() {
+    if (this._unreadPollingStarted) return;
+    this._unreadPollingStarted = true;
     const tick = () => {
       const hidden = document.hidden;
-      const delay = hidden ? 60000 : 20000;
+      const delay = hidden ? 60000 : 10000;
       this.pollUnread().finally(() => {
         clearTimeout(this._pollTimer);
         this._pollTimer = setTimeout(tick, delay);
@@ -5907,6 +6058,10 @@ document.addEventListener('htmx:afterSwap', (ev) => {
     window.HimaWeb.bindFolderClicks();
     window.HimaWeb.bindFolderTree(true);
     window.HimaWeb.applyRailCompactFromStorage();
+    if (window.HimaWeb.pollUnread) window.HimaWeb.pollUnread();
+  }
+  if (t && t.id === 'envelope-list' && window.HimaWeb.pollUnread) {
+    window.HimaWeb.pollUnread();
   }
   // Fallback si les <script> du fragment ne s'exécutent pas
   if (t && t.id === 'message-pane' && window.HimaWeb) {

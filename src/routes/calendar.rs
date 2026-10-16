@@ -24,6 +24,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/calendar/calendars.json", get(calendars_json))
         .route("/calendar/event.json", get(event_json))
         .route("/calendar/import-ics", post(import_ics))
+        .route("/calendar/preview-ics", post(preview_ics))
 }
 
 #[derive(Deserialize)]
@@ -1819,7 +1820,7 @@ async fn load_ics_bytes(state: &AppState, form: &ImportIcsForm) -> Result<Vec<u8
             _ => attachment_id.to_string(),
         }
     };
-    state
+    match state
         .himalaya
         .download_attachment(
             mailbox,
@@ -1829,7 +1830,28 @@ async fn load_ics_bytes(state: &AppState, form: &ImportIcsForm) -> Result<Vec<u8
             account.as_deref(),
         )
         .await
-        .map_err(|e| e.to_string())
+    {
+        Ok(bytes) if !bytes.is_empty() => Ok(bytes),
+        Ok(_) | Err(_) => {
+            // Parts inline (ex. Teams text/calendar) : corps déjà dans `message read`.
+            let msg = state
+                .himalaya
+                .read_message(mailbox, message_id, account.as_deref())
+                .await
+                .map_err(|e| e.to_string())?;
+            if let Some((_, ical)) = msg
+                .calendar_texts
+                .iter()
+                .find(|(id, _)| id == &resolved_id || id == attachment_id)
+            {
+                return Ok(ical.as_bytes().to_vec());
+            }
+            if let Some((_, ical)) = msg.calendar_texts.first() {
+                return Ok(ical.as_bytes().to_vec());
+            }
+            Err("Impossible de lire la pièce jointe calendrier".into())
+        }
+    }
 }
 
 async fn fetch_ics_url(raw: &str) -> Result<Vec<u8>, String> {
@@ -1869,24 +1891,140 @@ async fn fetch_ics_url(raw: &str) -> Result<Vec<u8>, String> {
 
 /// Indice UI via tcal (pas un second moteur iCal).
 fn ics_summary_hint(ical: &[u8]) -> Option<String> {
+    ics_preview_fields(ical)
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Champs d’aperçu (summary / start / end / location) via tcal + repli lignes ICS.
+pub(crate) fn ics_preview_fields(ical: &[u8]) -> serde_json::Value {
     let text = String::from_utf8_lossy(ical);
-    match crate::cli::tcal::parse_event_fields(&text) {
-        Ok(f) if !f.summary.trim().is_empty() => Some(f.summary),
-        _ => {
-            for line in text.lines() {
-                let upper = line.to_ascii_uppercase();
-                if upper.starts_with("SUMMARY") {
-                    if let Some((_, v)) = line.split_once(':') {
-                        let s = v.trim();
-                        if !s.is_empty() {
-                            return Some(s.to_string());
-                        }
-                    }
-                }
+    let mut summary = String::new();
+    let mut start = String::new();
+    let mut end = String::new();
+    let mut location = String::new();
+
+    if let Ok(f) = crate::cli::tcal::parse_event_fields(&text) {
+        summary = f.summary;
+        start = f.start;
+        end = f.end;
+        location = f.location;
+    }
+
+    // Teams / Outlook : tcal peut rater TZID / formes Microsoft → lignes DTSTART/DTEND.
+    let fb = ics_line_fallback(&text);
+    if summary.trim().is_empty() {
+        summary = fb.0;
+    }
+    if start.trim().is_empty() {
+        start = fb.1;
+    }
+    if end.trim().is_empty() {
+        end = fb.2;
+    }
+    if location.trim().is_empty() {
+        location = fb.3;
+    }
+
+    json!({
+        "summary": summary,
+        "start": start,
+        "end": end,
+        "location": location,
+    })
+}
+
+/// Repli léger (orchestration) : SUMMARY / DTSTART / DTEND / LOCATION sans second moteur.
+fn ics_line_fallback(text: &str) -> (String, String, String, String) {
+    let mut summary = String::new();
+    let mut start = String::new();
+    let mut end = String::new();
+    let mut location = String::new();
+    // Déplier les lignes ICS continuées (espace/tab en tête).
+    let mut unfolded = String::with_capacity(text.len());
+    for line in text.lines() {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            unfolded.push_str(line.trim_start());
+        } else {
+            if !unfolded.is_empty() {
+                unfolded.push('\n');
             }
-            None
+            unfolded.push_str(line.trim_end_matches('\r'));
         }
     }
+    for line in unfolded.lines() {
+        let (name, value) = match line.split_once(':') {
+            Some(p) => p,
+            None => continue,
+        };
+        let prop = name
+            .split(';')
+            .next()
+            .unwrap_or(name)
+            .trim()
+            .to_ascii_uppercase();
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match prop.as_str() {
+            "SUMMARY" if summary.is_empty() => summary = ics_unescape(value),
+            "DTSTART" if start.is_empty() => start = ics_dt_to_ui(value),
+            "DTEND" if end.is_empty() => end = ics_dt_to_ui(value),
+            "LOCATION" if location.is_empty() => location = ics_unescape(value),
+            _ => {}
+        }
+    }
+    (summary, start, end, location)
+}
+
+fn ics_unescape(raw: &str) -> String {
+    raw.replace("\\n", "\n")
+        .replace("\\,", ",")
+        .replace("\\;", ";")
+        .replace("\\\\", "\\")
+}
+
+/// `20260416T150000Z` / `20260416T150000` / `20260416` → UI `YYYY-MM-DD HH:MM` ou date seule.
+fn ics_dt_to_ui(raw: &str) -> String {
+    let s = raw.trim();
+    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.len() >= 8 {
+        let y = &digits[0..4];
+        let mo = &digits[4..6];
+        let d = &digits[6..8];
+        if digits.len() >= 12 {
+            let h = &digits[8..10];
+            let mi = &digits[10..12];
+            return format!("{y}-{mo}-{d} {h}:{mi}");
+        }
+        return format!("{y}-{mo}-{d}");
+    }
+    // Déjà friendly ?
+    if s.contains('-') {
+        return s.replace('T', " ").trim_end_matches('Z').to_string();
+    }
+    s.to_string()
+}
+
+async fn preview_ics(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<ImportIcsForm>,
+) -> impl IntoResponse {
+    let ical_bytes = match load_ics_bytes(&state, &form).await {
+        Ok(b) => b,
+        Err(e) => return Json(json!({ "error": e })).into_response(),
+    };
+    if ical_bytes.is_empty() {
+        return Json(json!({ "error": "Fichier ICS vide" })).into_response();
+    }
+    let mut fields = ics_preview_fields(&ical_bytes);
+    if let Some(obj) = fields.as_object_mut() {
+        obj.insert("ok".into(), json!(true));
+    }
+    Json(fields).into_response()
 }
 
 #[derive(Deserialize)]

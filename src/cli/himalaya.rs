@@ -56,6 +56,9 @@ pub struct MessageView {
     /// content-id (sans <>) → id MIME 1-based pour `attachment download`
     #[serde(default)]
     pub cid_map: Vec<(String, String)>,
+    /// Corps iCal des parts `text/calendar` (id MIME 1-based → texte), pour preview UI.
+    #[serde(default)]
+    pub calendar_texts: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -560,7 +563,7 @@ impl HimalayaClient {
             }
         }
 
-        let attachments = obj
+        let mut attachments: Vec<AttachmentMeta> = obj
             .get("attachments")
             .and_then(|a| a.as_array())
             .map(|arr| {
@@ -571,40 +574,59 @@ impl HimalayaClient {
                         if let Some(idx) = att.as_u64() {
                             // Indices JSON parts sont 0-based ; Himalaya download attend un id 1-based.
                             let part_id = idx + 1;
-                            let filename = parts
-                                .and_then(|p| p.get(idx as usize))
+                            let part = parts.and_then(|p| p.get(idx as usize));
+                            let filename = part
                                 .map(|p| part_filename(p))
                                 .unwrap_or_else(|| format!("attachment-{part_id}"));
+                            let mime = part
+                                .map(|p| part_mime(p))
+                                .filter(|m| !m.is_empty())
+                                .unwrap_or_else(|| "application/octet-stream".into());
                             AttachmentMeta {
                                 id: part_id.to_string(),
                                 filename,
-                                mime: "application/octet-stream".into(),
+                                mime,
                                 size: 0,
                             }
                         } else {
                             // Objet : `id` est déjà l'id MIME 1-based ; sinon repli 1-based.
+                            let mut mime = att
+                                .get("mime")
+                                .or_else(|| att.get("type"))
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("application/octet-stream")
+                                .to_string();
+                            let id = att
+                                .get("id")
+                                .or_else(|| att.get("index"))
+                                .map(|x| match x {
+                                    Value::String(s) => s.clone(),
+                                    Value::Number(n) => n.to_string(),
+                                    _ => (i + 1).to_string(),
+                                })
+                                .unwrap_or_else(|| (i + 1).to_string());
+                            // Si mime générique, tenter la part correspondante (id 1-based).
+                            if mime == "application/octet-stream" {
+                                if let (Some(parts), Ok(n)) = (parts, id.parse::<usize>()) {
+                                    if n > 0 {
+                                        if let Some(p) = parts.get(n - 1) {
+                                            let pm = part_mime(p);
+                                            if !pm.is_empty() {
+                                                mime = pm;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             AttachmentMeta {
-                                id: att
-                                    .get("id")
-                                    .or_else(|| att.get("index"))
-                                    .map(|x| match x {
-                                        Value::String(s) => s.clone(),
-                                        Value::Number(n) => n.to_string(),
-                                        _ => (i + 1).to_string(),
-                                    })
-                                    .unwrap_or_else(|| (i + 1).to_string()),
+                                id,
                                 filename: att
                                     .get("filename")
                                     .or_else(|| att.get("name"))
                                     .and_then(|x| x.as_str())
                                     .unwrap_or("attachment")
                                     .to_string(),
-                                mime: att
-                                    .get("mime")
-                                    .or_else(|| att.get("type"))
-                                    .and_then(|x| x.as_str())
-                                    .unwrap_or("application/octet-stream")
-                                    .to_string(),
+                                mime,
                                 size: att.get("size").and_then(|x| x.as_u64()).unwrap_or(0),
                             }
                         }
@@ -612,6 +634,25 @@ impl HimalayaClient {
                     .collect()
             })
             .unwrap_or_default();
+
+        let (calendar_atts, calendar_texts) = parts
+            .map(|p| collect_calendar_parts(p.as_slice()))
+            .unwrap_or_default();
+        for ca in calendar_atts {
+            if !attachments.iter().any(|a| a.id == ca.id) {
+                attachments.push(ca);
+            } else if let Some(existing) = attachments.iter_mut().find(|a| a.id == ca.id) {
+                if existing.mime == "application/octet-stream"
+                    || !existing.mime.to_ascii_lowercase().contains("calendar")
+                {
+                    existing.mime = ca.mime;
+                }
+                if existing.filename == "attachment" || existing.filename.starts_with("attachment-")
+                {
+                    existing.filename = ca.filename;
+                }
+            }
+        }
 
         let cid_map = parts
             .map(|p| collect_cid_map(p))
@@ -637,6 +678,7 @@ impl HimalayaClient {
             attachments,
             raw_preview,
             cid_map,
+            calendar_texts,
         }
     }
 
@@ -1929,7 +1971,9 @@ fn part_filename(part: &Value) -> String {
             {
                 // best effort
             }
-            if name.eq_ignore_ascii_case("content_type") {
+            if name.eq_ignore_ascii_case("content_type")
+                || name.eq_ignore_ascii_case("content-type")
+            {
                 if let Some(attrs) = h
                     .pointer("/value/ContentType/attributes")
                     .and_then(|a| a.as_array())
@@ -1945,7 +1989,140 @@ fn part_filename(part: &Value) -> String {
             }
         }
     }
+    let mime = part_mime(part);
+    if mime.to_ascii_lowercase().starts_with("text/calendar") {
+        return "invite.ics".into();
+    }
     "attachment".into()
+}
+
+fn part_mime(part: &Value) -> String {
+    if let Some(s) = part
+        .get("mime")
+        .or_else(|| part.get("type"))
+        .or_else(|| part.get("content_type"))
+        .and_then(|x| x.as_str())
+    {
+        let t = s.trim();
+        if !t.is_empty() {
+            return t.to_string();
+        }
+    }
+    if let Some(headers) = part.get("headers").and_then(|h| h.as_array()) {
+        for h in headers {
+            let name = h.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            if !(name.eq_ignore_ascii_case("content_type")
+                || name.eq_ignore_ascii_case("content-type"))
+            {
+                continue;
+            }
+            let value = h.get("value");
+            if let Some(s) = value.and_then(|v| v.as_str()) {
+                let t = s.split(';').next().unwrap_or(s).trim();
+                if !t.is_empty() {
+                    return t.to_string();
+                }
+            }
+            if let Some(ct) = value.and_then(|v| v.get("ContentType").or_else(|| v.get("content_type")))
+            {
+                let typ = ct
+                    .get("type")
+                    .or_else(|| ct.get("Type"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                let sub = ct
+                    .get("subtype")
+                    .or_else(|| ct.get("Subtype"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                if !typ.is_empty() && !sub.is_empty() {
+                    return format!("{typ}/{sub}");
+                }
+                if !typ.is_empty() {
+                    return typ.to_string();
+                }
+            }
+            // Forme aplatie { type, subtype }
+            if let Some(ct) = value {
+                let typ = ct.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                let sub = ct.get("subtype").and_then(|x| x.as_str()).unwrap_or("");
+                if !typ.is_empty() && !sub.is_empty() {
+                    return format!("{typ}/{sub}");
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+fn part_calendar_text(part: &Value) -> Option<String> {
+    let body = part.get("body")?;
+    for key in ["Text", "text", "Calendar", "calendar", "Raw", "raw"] {
+        if let Some(s) = body.get(key).and_then(|x| x.as_str()) {
+            let t = s.trim();
+            if t.to_ascii_uppercase().contains("BEGIN:VCALENDAR")
+                || t.to_ascii_uppercase().contains("BEGIN:VEVENT")
+            {
+                return Some(s.to_string());
+            }
+        }
+    }
+    if let Some(s) = body.as_str() {
+        let t = s.trim();
+        if t.to_ascii_uppercase().contains("BEGIN:VCALENDAR") {
+            return Some(s.to_string());
+        }
+    }
+    None
+}
+
+fn part_looks_calendar(part: &Value) -> bool {
+    let mime = part_mime(part).to_ascii_lowercase();
+    if mime.starts_with("text/calendar")
+        || mime.contains("application/ics")
+        || mime == "application/calendar"
+    {
+        return true;
+    }
+    let name = part_filename(part).to_ascii_lowercase();
+    if name.ends_with(".ics") {
+        return true;
+    }
+    part_calendar_text(part).is_some()
+}
+
+/// Parts calendrier (souvent inline Teams / METHOD:REQUEST) + corps iCal si présent.
+fn collect_calendar_parts(parts: &[Value]) -> (Vec<AttachmentMeta>, Vec<(String, String)>) {
+    let mut atts = Vec::new();
+    let mut texts = Vec::new();
+    for (i, part) in parts.iter().enumerate() {
+        if !part_looks_calendar(part) {
+            continue;
+        }
+        let id = (i + 1).to_string();
+        let mut filename = part_filename(part);
+        if filename == "attachment" {
+            filename = "invite.ics".into();
+        }
+        let mime = {
+            let m = part_mime(part);
+            if m.is_empty() {
+                "text/calendar".into()
+            } else {
+                m
+            }
+        };
+        if let Some(ical) = part_calendar_text(part) {
+            texts.push((id.clone(), ical));
+        }
+        atts.push(AttachmentMeta {
+            id,
+            filename,
+            mime,
+            size: 0,
+        });
+    }
+    (atts, texts)
 }
 
 fn normalize_cid(raw: &str) -> String {

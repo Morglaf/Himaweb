@@ -85,8 +85,10 @@
        data-watched="{% if m.watched %}1{% else %}0{% endif %}">
       <i data-lucide="pin"></i>
       <span class="folder-label" title="{{ m.name }}">{% if all_selected && !m.account.is_empty() %}{{ m.account_label }} · {% endif %}{{ m.label }}</span>
-      {% if m.watched %}<i data-lucide="eye" class="folder-watch-ico" title="Surveillé"></i>{% endif %}
-      {% if m.unread > 0 %}<span class="unread" data-unread-for="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}">{{ m.unread }}</span>{% endif %}
+      <span class="folder-trailing">
+        {% if m.watched %}<i data-lucide="eye" class="folder-watch-ico" title="Surveillé"></i>{% endif %}
+        {% if m.unread > 0 %}<span class="unread" data-unread-for="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}">{{ m.unread }}</span>{% endif %}
+      </span>
     </a>
     {% endfor %}
     {% endif %}
@@ -142,8 +144,12 @@
           <span class="folder-label" title="{{ m.name }}">{{ m.label }}</span>
         </a>
         {% endif %}
-        {% if m.watched && !m.is_account_header %}<i data-lucide="eye" class="folder-watch-ico" title="Surveillé"></i>{% endif %}
-        {% if m.unread > 0 %}<span class="unread" data-unread-for="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}">{{ m.unread }}</span>{% endif %}
+        {% if !m.is_account_header %}
+        <span class="folder-trailing">
+          {% if m.watched %}<i data-lucide="eye" class="folder-watch-ico" title="Surveillé"></i>{% endif %}
+          {% if m.unread > 0 %}<span class="unread" data-unread-for="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}">{{ m.unread }}</span>{% endif %}
+        </span>
+        {% endif %}
       </div>
     </div>
     {% else %}
