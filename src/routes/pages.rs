@@ -48,12 +48,18 @@ async fn health() -> impl IntoResponse {
 #[template(path = "side_widget.html")]
 struct SideWidgetTemplate {
     events: Vec<SideEventRow>,
+    /// Chips filtre RDV : un par compte (id = nom de compte)
     calendars: Vec<SideCalOpt>,
+    /// Select création d’événement : ids complets `compte::agenda` (comme la page calendrier)
+    event_calendars: Vec<SideCalOpt>,
     /// Tous les agendas (y compris masqués) — création de tâches
     task_calendars: Vec<SideCalOpt>,
     todos: Vec<crate::routes::calendar::TodoRow>,
     default_date: String,
+    /// Défaut formulaire tâche (`compte::agenda`)
     default_calendar: String,
+    /// Défaut modal événement (`compte::agenda`)
+    default_event_calendar: String,
     ai_enabled: bool,
     home_address_js: String,
     maps_provider: String,
@@ -239,10 +245,24 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 color: c.color,
             })
             .collect();
+    // Même liste que la page calendrier (agendas visibles, id complet).
+    let event_calendars: Vec<SideCalOpt> = all_cal_rows
+        .iter()
+        .filter(|c| !c.hidden)
+        .map(|c| SideCalOpt {
+            id: c.id.clone(),
+            account: c.account.clone(),
+            name: c.name.clone(),
+            color: c.color.clone(),
+        })
+        .collect();
     let default_date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let default_calendar = task_calendars
         .first()
-        .or_else(|| calendars.first())
+        .map(|c| c.id.clone())
+        .unwrap_or_default();
+    let default_event_calendar = event_calendars
+        .first()
         .map(|c| c.id.clone())
         .unwrap_or_default();
     let plugin_panels: Vec<SidePluginPanel> = crate::plugins::sidebar_panels()
@@ -267,10 +287,12 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match (SideWidgetTemplate {
         events,
         calendars,
+        event_calendars,
         task_calendars,
         todos,
         default_date,
         default_calendar,
+        default_event_calendar,
         ai_enabled: prefs.ai_enabled,
         home_address_js: serde_json::to_string(&prefs.home_address)
             .unwrap_or_else(|_| "\"\"".into()),

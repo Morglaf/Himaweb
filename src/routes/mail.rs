@@ -2078,9 +2078,14 @@ async fn message(
 
     // Cache d'abord : un prefetch au survol (ou une ouverture précédente)
     // évite d'attendre Himalaya au clic. Un rafraîchissement part en fond.
+    // Exception : ancien cache sans cid_map alors que le HTML référence cid:
+    // (images inline) — on ignore pour forcer un re-parse Himalaya.
     let cached = {
         let cache = state.cache.lock().await;
-        cache.load_message(&name, &focus_id).ok().flatten()
+        cache.load_message(&name, &focus_id).ok().flatten().filter(|m| {
+            let needs_cid = m.body_html.to_ascii_lowercase().contains("cid:");
+            !(needs_cid && m.cid_map.is_empty())
+        })
     };
 
     let mut loaded: Vec<(String, Option<crate::cli::himalaya::MessageView>, bool, Option<String>)> =

@@ -2,7 +2,7 @@
   stay: true,
   ai: {{ ai_enabled }},
   defaultDate: '{{ default_date }}',
-  defaultCalendar: '{{ default_calendar }}',
+  defaultCalendar: '{{ default_event_calendar }}',
   homeAddress: {{ home_address_js }},
   mapsProvider: '{{ maps_provider }}'
 })">
@@ -64,7 +64,7 @@
       {% endfor %}
     </ul>
     {% endif %}
-    <button type="button" class="btn secondary sm side-cta" @click="openCreate()" {% if calendars.is_empty() %}disabled{% endif %}
+    <button type="button" class="btn secondary sm side-cta" @click="openCreate()" {% if event_calendars.is_empty() %}disabled{% endif %}
             data-i18n="side.create_event">Créer un RDV</button>
   </section>
   {% endif %}
@@ -311,7 +311,7 @@
         <div class="compose-inline-row">
           <span class="label">Calendrier</span>
           <select name="calendar" class="select grow" x-model="calendar" required>
-            {% for c in calendars %}
+            {% for c in event_calendars %}
             <option value="{{ c.id }}">{{ c.name }}</option>
             {% endfor %}
           </select>

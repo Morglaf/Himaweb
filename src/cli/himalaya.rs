@@ -540,25 +540,21 @@ impl HimalayaClient {
             .unwrap_or("")
             .to_string();
 
+        // CIDs synthétiques pour les InlineBinary sans Content-ID (Apple Mail
+        // multipart/mixed : image « au milieu » du HTML).
+        let mut inline_cids: Vec<(String, String)> = Vec::new();
+
         if let Some(parts) = parts {
             if body_text.is_empty() {
-                if let Some(idx) = obj
-                    .get("text_body")
-                    .and_then(|a| a.as_array())
-                    .and_then(|a| a.first())
-                    .and_then(|x| x.as_u64())
-                {
-                    body_text = part_body_text(parts, idx as usize);
+                if let Some(indices) = obj.get("text_body").and_then(|a| a.as_array()) {
+                    body_text = assemble_text_body(parts, indices);
                 }
             }
             if body_html.is_empty() {
-                if let Some(idx) = obj
-                    .get("html_body")
-                    .and_then(|a| a.as_array())
-                    .and_then(|a| a.first())
-                    .and_then(|x| x.as_u64())
-                {
-                    body_html = part_body_html(parts, idx as usize);
+                if let Some(indices) = obj.get("html_body").and_then(|a| a.as_array()) {
+                    let (html, cids) = assemble_html_body(parts, indices);
+                    body_html = html;
+                    inline_cids = cids;
                 }
             }
         }
@@ -582,11 +578,12 @@ impl HimalayaClient {
                                 .map(|p| part_mime(p))
                                 .filter(|m| !m.is_empty())
                                 .unwrap_or_else(|| "application/octet-stream".into());
+                            let size = part.map(part_size).unwrap_or(0);
                             AttachmentMeta {
                                 id: part_id.to_string(),
                                 filename,
                                 mime,
-                                size: 0,
+                                size,
                             }
                         } else {
                             // Objet : `id` est déjà l'id MIME 1-based ; sinon repli 1-based.
@@ -605,14 +602,32 @@ impl HimalayaClient {
                                     _ => (i + 1).to_string(),
                                 })
                                 .unwrap_or_else(|| (i + 1).to_string());
-                            // Si mime générique, tenter la part correspondante (id 1-based).
-                            if mime == "application/octet-stream" {
-                                if let (Some(parts), Ok(n)) = (parts, id.parse::<usize>()) {
-                                    if n > 0 {
-                                        if let Some(p) = parts.get(n - 1) {
+                            let mut size = att.get("size").and_then(|x| x.as_u64()).unwrap_or(0);
+                            let mut filename = att
+                                .get("filename")
+                                .or_else(|| att.get("name"))
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("attachment")
+                                .to_string();
+                            // Enrichir depuis la part MIME (id 1-based).
+                            if let (Some(parts), Ok(n)) = (parts, id.parse::<usize>()) {
+                                if n > 0 {
+                                    if let Some(p) = parts.get(n - 1) {
+                                        if mime == "application/octet-stream" {
                                             let pm = part_mime(p);
                                             if !pm.is_empty() {
                                                 mime = pm;
+                                            }
+                                        }
+                                        if size == 0 {
+                                            size = part_size(p);
+                                        }
+                                        if filename == "attachment"
+                                            || filename.starts_with("attachment-")
+                                        {
+                                            let fnm = part_filename(p);
+                                            if fnm != "attachment" {
+                                                filename = fnm;
                                             }
                                         }
                                     }
@@ -620,14 +635,9 @@ impl HimalayaClient {
                             }
                             AttachmentMeta {
                                 id,
-                                filename: att
-                                    .get("filename")
-                                    .or_else(|| att.get("name"))
-                                    .and_then(|x| x.as_str())
-                                    .unwrap_or("attachment")
-                                    .to_string(),
+                                filename,
                                 mime,
-                                size: att.get("size").and_then(|x| x.as_u64()).unwrap_or(0),
+                                size,
                             }
                         }
                     })
@@ -654,9 +664,14 @@ impl HimalayaClient {
             }
         }
 
-        let cid_map = parts
+        let mut cid_map = parts
             .map(|p| collect_cid_map(p))
             .unwrap_or_default();
+        for (cid, id) in inline_cids {
+            if !cid_map.iter().any(|(c, _)| c == &cid) {
+                cid_map.push((cid, id));
+            }
+        }
 
         let raw_preview = if body_html.is_empty() && body_text.is_empty() {
             "(corps vide ou non textuel)".into()
@@ -994,6 +1009,7 @@ impl HimalayaClient {
     }
 
     /// Liste les PJ avec les IDs MIME 1-based attendus par `attachment download`.
+    /// Inclut les parts `Content-Disposition: inline` (images cid / Apple Mail).
     pub async fn list_attachments(
         &self,
         mailbox: &str,
@@ -1002,7 +1018,14 @@ impl HimalayaClient {
     ) -> CliResult<Vec<AttachmentMeta>> {
         let args = Self::with_account(
             account,
-            &["attachment", "list", "--mailbox", mailbox, message_id],
+            &[
+                "attachment",
+                "list",
+                "--inline",
+                "--mailbox",
+                mailbox,
+                message_id,
+            ],
         );
         let v = self.json(&args).await?;
         Ok(Self::parse_attachment_list(v))
@@ -1946,8 +1969,7 @@ fn part_body_text(parts: &[Value], idx: usize) -> String {
     parts
         .get(idx)
         .and_then(|p| p.get("body"))
-        .and_then(|b| b.get("Text").or_else(|| b.get("text")))
-        .and_then(|t| t.as_str())
+        .and_then(body_text_str)
         .unwrap_or("")
         .to_string()
 }
@@ -1956,37 +1978,160 @@ fn part_body_html(parts: &[Value], idx: usize) -> String {
     parts
         .get(idx)
         .and_then(|p| p.get("body"))
-        .and_then(|b| b.get("Html").or_else(|| b.get("html")))
-        .and_then(|t| t.as_str())
+        .and_then(body_html_str)
         .unwrap_or("")
         .to_string()
 }
 
-fn part_filename(part: &Value) -> String {
-    if let Some(headers) = part.get("headers").and_then(|h| h.as_array()) {
-        for h in headers {
-            let name = h.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            if name.eq_ignore_ascii_case("content_disposition")
-                || name.eq_ignore_ascii_case("content-disposition")
-            {
-                // best effort
+fn body_text_str(body: &Value) -> Option<&str> {
+    body.get("Text")
+        .or_else(|| body.get("text"))
+        .and_then(|t| t.as_str())
+}
+
+fn body_html_str(body: &Value) -> Option<&str> {
+    body.get("Html")
+        .or_else(|| body.get("html"))
+        .and_then(|t| t.as_str())
+}
+
+/// Himalaya peut lister plusieurs indices dans `html_body` : fragments HTML
+/// entrelacés d’images `InlineBinary` sans Content-ID (Apple Mail).
+fn assemble_html_body(parts: &[Value], indices: &[Value]) -> (String, Vec<(String, String)>) {
+    let mut chunks: Vec<String> = Vec::new();
+    let mut synthetic_cids: Vec<(String, String)> = Vec::new();
+
+    for idx_v in indices {
+        let Some(idx) = idx_v.as_u64().map(|n| n as usize) else {
+            continue;
+        };
+        let Some(part) = parts.get(idx) else {
+            continue;
+        };
+        let body = part.get("body");
+
+        if let Some(html) = body.and_then(body_html_str) {
+            chunks.push(html_body_inner(html));
+            continue;
+        }
+        if let Some(text) = body.and_then(body_text_str) {
+            let t = text.trim();
+            if !t.is_empty() {
+                chunks.push(format!(
+                    "<pre class=\"msg-plain\">{}</pre>",
+                    html_escape_minimal(t)
+                ));
             }
-            if name.eq_ignore_ascii_case("content_type")
-                || name.eq_ignore_ascii_case("content-type")
-            {
-                if let Some(attrs) = h
-                    .pointer("/value/ContentType/attributes")
-                    .and_then(|a| a.as_array())
-                {
-                    for attr in attrs {
-                        if attr.get("name").and_then(|n| n.as_str()) == Some("name") {
-                            if let Some(v) = attr.get("value").and_then(|v| v.as_str()) {
-                                return v.to_string();
-                            }
-                        }
+            continue;
+        }
+        // Image inline sans cid : injecter un cid synthétique mappé sur l’id 1-based.
+        let mime = part_mime(part).to_ascii_lowercase();
+        if mime.starts_with("image/")
+            && body.is_some_and(|b| {
+                b.get("InlineBinary").is_some()
+                    || b.get("inline_binary").is_some()
+                    || b.get("Binary").is_some()
+                    || b.get("binary").is_some()
+            })
+        {
+            let id = (idx + 1).to_string();
+            let cid = format!("hima-inline-{id}");
+            synthetic_cids.push((cid.clone(), id));
+            let alt = html_escape_minimal(&part_filename(part));
+            chunks.push(format!(r#"<img src="cid:{cid}" alt="{alt}">"#));
+        }
+    }
+
+    if chunks.is_empty() {
+        return (String::new(), synthetic_cids);
+    }
+    if chunks.len() == 1 && synthetic_cids.is_empty() {
+        // Une seule part HTML : conserver le document tel quel.
+        let idx = indices
+            .first()
+            .and_then(|x| x.as_u64())
+            .map(|n| n as usize)
+            .unwrap_or(0);
+        return (part_body_html(parts, idx), synthetic_cids);
+    }
+    (format!("<div class=\"msg-mime-parts\">{}</div>", chunks.join("\n")), synthetic_cids)
+}
+
+fn assemble_text_body(parts: &[Value], indices: &[Value]) -> String {
+    let mut out = String::new();
+    for idx_v in indices {
+        let Some(idx) = idx_v.as_u64().map(|n| n as usize) else {
+            continue;
+        };
+        let t = part_body_text(parts, idx);
+        if t.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(&t);
+    }
+    out
+}
+
+/// Contenu utile d’un fragment HTML (souvent un document complet par part Apple Mail).
+fn html_body_inner(html: &str) -> String {
+    static BODY_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = BODY_RE.get_or_init(|| {
+        regex::Regex::new(r"(?is)<body[^>]*>(.*?)</body>").expect("body re")
+    });
+    if let Some(caps) = re.captures(html) {
+        return caps[1].to_string();
+    }
+    html.to_string()
+}
+
+fn html_escape_minimal(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn content_type_attr<'a>(headers: &'a [Value], header_names: &[&str], attr_names: &[&str]) -> Option<&'a str> {
+    for h in headers {
+        let name = h.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        if !header_names.iter().any(|n| name.eq_ignore_ascii_case(n)) {
+            continue;
+        }
+        let attrs = h
+            .pointer("/value/ContentType/attributes")
+            .and_then(|a| a.as_array())?;
+        for attr in attrs {
+            let an = attr.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            if attr_names.iter().any(|n| an.eq_ignore_ascii_case(n)) {
+                if let Some(v) = attr.get("value").and_then(|v| v.as_str()) {
+                    if !v.is_empty() {
+                        return Some(v);
                     }
                 }
             }
+        }
+    }
+    None
+}
+
+fn part_filename(part: &Value) -> String {
+    if let Some(headers) = part.get("headers").and_then(|h| h.as_array()) {
+        if let Some(v) = content_type_attr(
+            headers,
+            &["content_disposition", "content-disposition"],
+            &["filename", "filename*"],
+        ) {
+            return decode_mime_filename(v);
+        }
+        if let Some(v) = content_type_attr(
+            headers,
+            &["content_type", "content-type"],
+            &["name", "name*"],
+        ) {
+            return decode_mime_filename(v);
         }
     }
     let mime = part_mime(part);
@@ -1994,6 +2139,49 @@ fn part_filename(part: &Value) -> String {
         return "invite.ics".into();
     }
     "attachment".into()
+}
+
+fn decode_mime_filename(raw: &str) -> String {
+    let t = raw.trim();
+    // RFC 2231 : utf-8''percent-encoded
+    if let Some(rest) = t
+        .strip_prefix("utf-8''")
+        .or_else(|| t.strip_prefix("UTF-8''"))
+    {
+        return urlencoding::decode(rest)
+            .map(|s| s.into_owned())
+            .unwrap_or_else(|_| rest.to_string());
+    }
+    // Encoded-word =?utf-8?Q?...?=
+    if t.contains("=?") {
+        return display_subject(t);
+    }
+    t.to_string()
+}
+
+fn part_size(part: &Value) -> u64 {
+    let Some(body) = part.get("body") else {
+        return 0;
+    };
+    for key in [
+        "InlineBinary",
+        "inline_binary",
+        "Binary",
+        "binary",
+        "Raw",
+        "raw",
+    ] {
+        if let Some(arr) = body.get(key).and_then(|v| v.as_array()) {
+            return arr.len() as u64;
+        }
+        if let Some(s) = body.get(key).and_then(|v| v.as_str()) {
+            return s.len() as u64;
+        }
+    }
+    if let Some(s) = body_html_str(body).or_else(|| body_text_str(body)) {
+        return s.len() as u64;
+    }
+    0
 }
 
 fn part_mime(part: &Value) -> String {
@@ -2025,16 +2213,23 @@ fn part_mime(part: &Value) -> String {
             }
             if let Some(ct) = value.and_then(|v| v.get("ContentType").or_else(|| v.get("content_type")))
             {
+                // Himalaya v2 : c_type / c_subtype ; formes plus anciennes : type / subtype.
                 let typ = ct
-                    .get("type")
+                    .get("c_type")
+                    .or_else(|| ct.get("type"))
                     .or_else(|| ct.get("Type"))
                     .and_then(|x| x.as_str())
                     .unwrap_or("");
                 let sub = ct
-                    .get("subtype")
+                    .get("c_subtype")
+                    .or_else(|| ct.get("subtype"))
                     .or_else(|| ct.get("Subtype"))
                     .and_then(|x| x.as_str())
                     .unwrap_or("");
+                // content_disposition utilise aussi ContentType avec c_type=inline — ignorer.
+                if typ.eq_ignore_ascii_case("inline") || typ.eq_ignore_ascii_case("attachment") {
+                    continue;
+                }
                 if !typ.is_empty() && !sub.is_empty() {
                     return format!("{typ}/{sub}");
                 }
@@ -2044,8 +2239,19 @@ fn part_mime(part: &Value) -> String {
             }
             // Forme aplatie { type, subtype }
             if let Some(ct) = value {
-                let typ = ct.get("type").and_then(|x| x.as_str()).unwrap_or("");
-                let sub = ct.get("subtype").and_then(|x| x.as_str()).unwrap_or("");
+                let typ = ct
+                    .get("c_type")
+                    .or_else(|| ct.get("type"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                let sub = ct
+                    .get("c_subtype")
+                    .or_else(|| ct.get("subtype"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                if typ.eq_ignore_ascii_case("inline") || typ.eq_ignore_ascii_case("attachment") {
+                    continue;
+                }
                 if !typ.is_empty() && !sub.is_empty() {
                     return format!("{typ}/{sub}");
                 }
@@ -2329,5 +2535,137 @@ fn extract_addr(item: &Value, key: &str) -> String {
             }
         }
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn part_html(html: &str) -> Value {
+        json!({
+            "headers": [{"name": "content_type", "value": {"ContentType": {"c_type": "text", "c_subtype": "html", "attributes": []}}}],
+            "body": {"Html": html}
+        })
+    }
+
+    fn part_inline_png(filename: &str, nbytes: usize) -> Value {
+        let bytes: Vec<u8> = vec![0u8; nbytes];
+        json!({
+            "headers": [
+                {"name": "content_disposition", "value": {"ContentType": {"c_type": "inline", "c_subtype": null, "attributes": [{"name": "filename", "value": filename}]}}},
+                {"name": "content_type", "value": {"ContentType": {"c_type": "image", "c_subtype": "png", "attributes": [{"name": "name", "value": filename}]}}}
+            ],
+            "body": {"InlineBinary": bytes}
+        })
+    }
+
+    fn part_pdf(filename: &str, nbytes: usize) -> Value {
+        let bytes: Vec<u8> = vec![0u8; nbytes];
+        json!({
+            "headers": [
+                {"name": "content_disposition", "value": {"ContentType": {"c_type": "inline", "c_subtype": null, "attributes": [{"name": "filename", "value": filename}]}}},
+                {"name": "content_type", "value": {"ContentType": {"c_type": "application", "c_subtype": "pdf", "attributes": [{"name": "name", "value": filename}]}}}
+            ],
+            "body": {"Binary": bytes}
+        })
+    }
+
+    fn part_image_with_cid(filename: &str, cid: &str, nbytes: usize) -> Value {
+        let bytes: Vec<u8> = vec![0u8; nbytes];
+        json!({
+            "headers": [
+                {"name": "content_type", "value": {"ContentType": {"c_type": "image", "c_subtype": "png", "attributes": [{"name": "name", "value": filename}]}}},
+                {"name": "content_disposition", "value": {"ContentType": {"c_type": "inline", "c_subtype": null, "attributes": [{"name": "filename", "value": filename}]}}},
+                {"name": "content_id", "value": {"Text": cid}}
+            ],
+            "body": {"Binary": bytes}
+        })
+    }
+
+    #[test]
+    fn apple_mail_mixed_assembles_html_and_inline_images() {
+        // Structure type mailbrut : html_body = [html, img, html, pdf_not_here, html, img, html]
+        let parts = vec![
+            json!({"headers": [], "body": {"Multipart": []}}),
+            json!({"headers": [], "body": {"Multipart": []}}),
+            json!({"headers": [], "body": {"Text": "plain"}}),
+            json!({"headers": [], "body": {"Multipart": []}}),
+            part_html("<html><body><p>Avant</p></body></html>"),
+            part_inline_png("EURETES.png", 5000),
+            part_html("<html><body><p>Apres</p></body></html>"),
+            part_pdf("programme.pdf", 12_000),
+            part_html("<html><body><p>Suite</p></body></html>"),
+            part_inline_png("sig.png", 3000),
+            part_html("<html><body><p>Sign</p></body></html>"),
+        ];
+        let v = json!({
+            "html_body": [4, 5, 6, 8, 9, 10],
+            "text_body": [2],
+            "attachments": [5, 7, 9],
+            "parts": parts
+        });
+        let msg = HimalayaClient::parse_message("1", v);
+        assert!(msg.body_html.contains("Avant"), "html={}", msg.body_html);
+        assert!(msg.body_html.contains("Apres"), "html={}", msg.body_html);
+        assert!(
+            msg.body_html.contains("cid:hima-inline-6"),
+            "missing synthetic cid, html={}",
+            msg.body_html
+        );
+        assert!(
+            msg.cid_map.iter().any(|(c, id)| c == "hima-inline-6" && id == "6"),
+            "cid_map={:?}",
+            msg.cid_map
+        );
+        assert_eq!(msg.attachments.len(), 3);
+        let pdf = msg.attachments.iter().find(|a| a.id == "8").expect("pdf id 8");
+        assert_eq!(pdf.mime, "application/pdf");
+        assert_eq!(pdf.filename, "programme.pdf");
+        assert_eq!(pdf.size, 12_000);
+        let img = msg.attachments.iter().find(|a| a.id == "6").expect("img");
+        assert_eq!(img.mime, "image/png");
+        assert_eq!(img.size, 5000);
+    }
+
+    #[test]
+    fn related_cid_image_mapped() {
+        let parts = vec![
+            json!({"headers": [], "body": {"Multipart": []}}),
+            json!({"headers": [], "body": {"Multipart": []}}),
+            json!({"headers": [], "body": {"Text": "hi"}}),
+            part_html(
+                r#"<html><body><p>Hello</p><img src="cid:part1.abc@gmail.com"></body></html>"#,
+            ),
+            part_image_with_cid("visual.png", "part1.abc@gmail.com", 100_000),
+        ];
+        let v = json!({
+            "html_body": [3],
+            "text_body": [2],
+            "attachments": [4],
+            "parts": parts
+        });
+        let msg = HimalayaClient::parse_message("2", v);
+        assert!(msg.body_html.contains("cid:part1.abc@gmail.com") || msg.body_html.contains("Hello"));
+        assert!(
+            msg.cid_map
+                .iter()
+                .any(|(c, id)| c == "part1.abc@gmail.com" && id == "5"),
+            "cid_map={:?}",
+            msg.cid_map
+        );
+        assert_eq!(msg.attachments[0].id, "5");
+        assert_eq!(msg.attachments[0].mime, "image/png");
+        assert_eq!(msg.attachments[0].size, 100_000);
+        assert_eq!(msg.attachments[0].filename, "visual.png");
+    }
+
+    #[test]
+    fn part_mime_reads_c_type() {
+        let p = part_inline_png("x.png", 10);
+        assert_eq!(part_mime(&p), "image/png");
+        assert_eq!(part_filename(&p), "x.png");
+        assert_eq!(part_size(&p), 10);
     }
 }

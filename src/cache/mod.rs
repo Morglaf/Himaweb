@@ -71,6 +71,23 @@ impl Cache {
         self.migrate_mailboxes()?;
         self.migrate_cal_events()?;
         self.migrate_contacts_photos()?;
+        self.migrate_messages_cid()?;
+        Ok(())
+    }
+
+    /// Persiste `cid_map` (images inline MIME) pour que le cache ne perde pas les cid:.
+    fn migrate_messages_cid(&self) -> Result<(), CacheError> {
+        let cols: Vec<String> = {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(messages)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            rows.filter_map(Result::ok).collect()
+        };
+        if !cols.iter().any(|c| c == "cid_map_json") {
+            self.conn.execute(
+                "ALTER TABLE messages ADD COLUMN cid_map_json TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -358,14 +375,16 @@ impl Cache {
         let flags = msg.flags.join(",");
         let attachments =
             serde_json::to_string(&msg.attachments).unwrap_or_else(|_| "[]".into());
+        let cid_map = serde_json::to_string(&msg.cid_map).unwrap_or_else(|_| "[]".into());
         self.conn.execute(
-            "INSERT INTO messages(mailbox, id, subject, sender, recipients, cc, date, flags, body_html, body_text, attachments_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO messages(mailbox, id, subject, sender, recipients, cc, date, flags, body_html, body_text, attachments_json, cid_map_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(mailbox, id) DO UPDATE SET
                subject=excluded.subject, sender=excluded.sender, recipients=excluded.recipients,
                cc=excluded.cc, date=excluded.date, flags=excluded.flags,
                body_html=excluded.body_html, body_text=excluded.body_text,
-               attachments_json=excluded.attachments_json",
+               attachments_json=excluded.attachments_json,
+               cid_map_json=excluded.cid_map_json",
             params![
                 mailbox,
                 msg.id,
@@ -377,7 +396,8 @@ impl Cache {
                 flags,
                 msg.body_html,
                 msg.body_text,
-                attachments
+                attachments,
+                cid_map
             ],
         )?;
         Ok(())
@@ -387,13 +407,15 @@ impl Cache {
         let row = self
             .conn
             .query_row(
-                "SELECT subject, sender, recipients, cc, date, flags, body_html, body_text, attachments_json
+                "SELECT subject, sender, recipients, cc, date, flags, body_html, body_text, attachments_json, cid_map_json
                  FROM messages WHERE mailbox = ?1 AND id = ?2",
                 params![mailbox, id],
                 |r| {
                     let flags: String = r.get(5)?;
                     let attachments_json: String = r.get(8)?;
                     let attachments = serde_json::from_str(&attachments_json).unwrap_or_default();
+                    let cid_map_json: String = r.get(9).unwrap_or_else(|_| "[]".into());
+                    let cid_map = serde_json::from_str(&cid_map_json).unwrap_or_default();
                     Ok(MessageView {
                         id: id.to_string(),
                         subject: r.get(0)?,
@@ -411,7 +433,7 @@ impl Cache {
                         body_text: r.get(7)?,
                         attachments,
                         raw_preview: String::new(),
-                        cid_map: vec![],
+                        cid_map,
                         calendar_texts: vec![],
                     })
                 },

@@ -1314,7 +1314,10 @@ a.legend-item:hover {
 .msg-body {
   line-height: 1.55;
   overflow-wrap: anywhere;
-  max-width: 52rem;
+  word-break: break-word;
+  min-width: 0;
+  max-width: min(52rem, 100%);
+  overflow-x: hidden;
   padding: 0.75rem 0.85rem;
   border-radius: var(--radius);
   transition: background 0.15s ease, color 0.15s ease;
@@ -1330,10 +1333,23 @@ a.legend-item:hover {
 }
 .msg-body.tone-dark a { color: #8ab4f8; }
 .msg-body img { max-width: 100%; height: auto; }
+.msg-body pre,
+.msg-body blockquote {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.msg-body pre {
+  white-space: pre-wrap;
+}
 .msg-plain {
   white-space: pre-wrap;
   font-family: var(--font);
   margin: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
 }
 
 .att-preview-btn {
