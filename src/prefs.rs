@@ -109,6 +109,12 @@ pub struct Prefs {
     /// Regrouper les mails par conversation (sujet / In-Reply-To)
     #[serde(default = "default_true")]
     pub conversations: bool,
+    /// Ordre dans une conversation : `newest` (récent en haut) ou `oldest`
+    #[serde(default = "default_thread_order")]
+    pub thread_order: String,
+    /// Replier les messages non focus dans une conversation
+    #[serde(default = "default_true")]
+    pub thread_collapse: bool,
     /// Panneau latéral agenda / contacts (droite mail)
     #[serde(default)]
     pub side_widget: bool,
@@ -265,6 +271,10 @@ fn default_locale() -> String {
     "fr".into()
 }
 
+fn default_thread_order() -> String {
+    "newest".into()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -365,6 +375,8 @@ impl Default for Prefs {
             account_icons: Default::default(),
             merged_inbox: true,
             conversations: true,
+            thread_order: default_thread_order(),
+            thread_collapse: true,
             side_widget: false,
             side_widget_events: default_side_events(),
             side_show_calendar: true,

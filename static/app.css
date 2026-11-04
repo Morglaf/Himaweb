@@ -1227,6 +1227,27 @@ a.legend-item:hover {
   background: color-mix(in srgb, var(--accent-soft) 28%, transparent);
 }
 .message-view.thread-item.is-unread .msg-from { font-weight: 700; }
+.message-view.thread-item.is-collapsed {
+  padding-top: 0.55rem;
+  padding-bottom: 0.55rem;
+  cursor: pointer;
+}
+.message-view.thread-item.is-collapsed .msg-meta-row {
+  margin-bottom: 0;
+  align-items: center;
+}
+.message-view.thread-item .msg-from {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+}
+.thread-fold-btn {
+  flex-shrink: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: 0;
+}
 .thread-item-subject {
   font-size: 0.92rem;
   font-weight: 600;

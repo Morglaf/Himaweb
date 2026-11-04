@@ -52,6 +52,8 @@ struct ComposeTemplate {
     pub source_account: String,
     pub in_reply_to: String,
     pub references: String,
+    /// Édition d’un brouillon existant (remplacer à la sauvegarde)
+    pub edit_draft: bool,
 }
 
 pub struct AccountOpt {
@@ -89,6 +91,7 @@ async fn compose_get(
         Some("reply") => ComposeKind::Reply,
         Some("reply-all") => ComposeKind::ReplyAll,
         Some("forward") => ComposeKind::Forward,
+        Some("edit") => ComposeKind::Edit,
         _ => ComposeKind::New,
     };
 
@@ -117,7 +120,68 @@ async fn compose_get(
         draft.subject = subject;
     }
 
-    if !matches!(kind, ComposeKind::New) {
+    if matches!(kind, ComposeKind::Edit) {
+        if let Some(id) = q.id.as_deref() {
+            let account_ref = if preferred.is_empty() {
+                None
+            } else {
+                Some(preferred.as_str())
+            };
+            let _permit = state.cli_limit.acquire().await.ok();
+            match state
+                .himalaya
+                .export_message_raw(&mailbox, id, account_ref)
+                .await
+            {
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    draft = crate::cli::himalaya::ComposeDraft::from_mime(&text);
+                    if let Ok(msg) = state
+                        .himalaya
+                        .read_message(&mailbox, id, account_ref)
+                        .await
+                    {
+                        if draft.to.is_empty() {
+                            draft.to = crate::cli::himalaya::normalize_addr_header(&msg.to);
+                        }
+                        if draft.cc.is_empty() {
+                            draft.cc = crate::cli::himalaya::normalize_addr_header(&msg.cc);
+                        }
+                        if draft.subject.is_empty() {
+                            draft.subject =
+                                crate::cli::himalaya::decode_rfc2047(&msg.subject);
+                        }
+                        if !msg.body_html.trim().is_empty() {
+                            draft.body_html = msg.body_html;
+                        }
+                        if draft.body.trim().is_empty() && !msg.body_text.trim().is_empty() {
+                            draft.body =
+                                crate::cli::himalaya::decode_quoted_printable(&msg.body_text);
+                        }
+                    }
+                }
+                Err(e) => {
+                    if let Ok(msg) = state
+                        .himalaya
+                        .read_message(&mailbox, id, account_ref)
+                        .await
+                    {
+                        draft.to = crate::cli::himalaya::normalize_addr_header(&msg.to);
+                        draft.cc = crate::cli::himalaya::normalize_addr_header(&msg.cc);
+                        draft.subject = crate::cli::himalaya::decode_rfc2047(&msg.subject);
+                        draft.body_html = msg.body_html;
+                        draft.body = if msg.body_text.is_empty() {
+                            String::new()
+                        } else {
+                            crate::cli::himalaya::decode_quoted_printable(&msg.body_text)
+                        };
+                    } else {
+                        error = Some(e.to_string());
+                    }
+                }
+            }
+        }
+    } else if !matches!(kind, ComposeKind::New) {
         if let Some(id) = q.id.as_deref() {
             let account_ref = if preferred.is_empty() {
                 None
@@ -191,11 +255,26 @@ async fn compose_get(
         }
     }
 
+    // Himalaya remplace souvent les champs vides par le littéral « Empty ».
+    if placeholder_empty(&draft.to) {
+        draft.to.clear();
+    }
+    if placeholder_empty(&draft.cc) {
+        draft.cc.clear();
+    }
+    if placeholder_empty(&draft.bcc) {
+        draft.bcc.clear();
+    }
+    if placeholder_empty(&draft.subject) {
+        draft.subject.clear();
+    }
+
     let title = match kind {
         ComposeKind::New => "Nouveau message",
         ComposeKind::Reply => "Répondre",
         ComposeKind::ReplyAll => "Répondre à tous",
         ComposeKind::Forward => "Transférer",
+        ComposeKind::Edit => "Brouillon",
     };
 
     let accounts = load_account_opts(&state, &preferred).await;
@@ -211,20 +290,28 @@ async fn compose_get(
     };
 
     let is_reply = matches!(kind, ComposeKind::Reply | ComposeKind::ReplyAll);
-    let source_mailbox = if is_reply {
+    let is_edit = matches!(kind, ComposeKind::Edit);
+    let source_mailbox = if is_reply || is_edit {
         mailbox.clone()
     } else {
         String::new()
     };
-    let source_id = if is_reply {
+    let source_id = if is_reply || is_edit {
         q.id.clone().unwrap_or_default()
     } else {
         String::new()
     };
-    let source_account = if is_reply {
+    let source_account = if is_reply || is_edit {
         selected_account.clone()
     } else {
         String::new()
+    };
+    let boot_kind = if is_reply {
+        "reply"
+    } else if is_edit {
+        "edit"
+    } else {
+        "compose"
     };
     let compose_boot = serde_json::json!({
         "cardamum": state.cardamum_available,
@@ -232,12 +319,14 @@ async fn compose_get(
         "toolbarMode": prefs_snap.compose_toolbar_mode,
         "widthNormal": prefs_snap.compose_width_normal,
         "widthDocked": prefs_snap.compose_width_docked,
-        "kind": if is_reply { "reply" } else { "compose" },
+        "kind": boot_kind,
+        "editDraft": is_edit,
         "title": title,
         "to": draft.to,
         "cc": draft.cc,
         "bcc": draft.bcc,
         "subject": draft.subject,
+        "bodyHtml": draft.body_html,
         "account": selected_account,
         "sourceMailbox": source_mailbox,
         "sourceId": source_id,
@@ -265,6 +354,7 @@ async fn compose_get(
         source_account,
         in_reply_to: draft.in_reply_to,
         references: draft.references,
+        edit_draft: is_edit,
     };
 
     let content = match inner.render() {
@@ -379,6 +469,8 @@ struct ParsedCompose {
     source_account: Option<String>,
     in_reply_to: Option<String>,
     references: Option<String>,
+    /// Remplacer le brouillon source après save/send
+    edit_draft: bool,
 }
 
 fn form_wants_html(form: &ParsedCompose) -> bool {
@@ -474,6 +566,10 @@ async fn parse_compose_multipart(mut multipart: Multipart) -> Result<ParsedCompo
                 if !s.is_empty() {
                     out.references = Some(s);
                 }
+            }
+            "edit_draft" => {
+                let s = String::from_utf8_lossy(&data).trim().to_ascii_lowercase();
+                out.edit_draft = s == "1" || s == "true" || s == "yes";
             }
             _ => {}
         }
@@ -657,8 +753,12 @@ async fn finish_send(state: Arc<AppState>, form: ParsedCompose) -> axum::respons
 
     match send_result {
         Ok(()) => {
-            drop(_permit); // libérer avant un 2e acquire dans mark_source_answered
-            mark_source_answered(&state, &form, account.as_deref()).await;
+            drop(_permit); // libérer avant un 2e acquire
+            if form.edit_draft {
+                delete_edited_draft(&state, &form, account.as_deref()).await;
+            } else {
+                mark_source_answered(&state, &form, account.as_deref()).await;
+            }
             Redirect::to("/").into_response()
         }
         Err(e) => compose_fail(format!("Envoi échoué : {e}")),
@@ -785,19 +885,37 @@ async fn compose_draft(
     finish_draft(state, form).await
 }
 
+fn placeholder_empty(s: &str) -> bool {
+    let t = s.trim();
+    t.is_empty() || t.eq_ignore_ascii_case("empty") || t.eq_ignore_ascii_case("(empty)")
+}
+
 async fn finish_draft(state: Arc<AppState>, form: ParsedCompose) -> axum::response::Response {
-    let to = match crate::cli::himalaya::smtp_address_list(&form.to) {
-        Ok(t) => t,
-        Err(e) => return compose_fail(format!("Destinataire : {e}")),
+    let to_empty = placeholder_empty(&form.to);
+    let to = if to_empty {
+        String::new()
+    } else {
+        match crate::cli::himalaya::smtp_address_list(&form.to) {
+            Ok(t) => t,
+            Err(e) => return compose_fail(format!("Destinataire : {e}")),
+        }
     };
-    let cc = match form.cc.as_deref().filter(|s| !s.trim().is_empty()) {
+    let cc = match form
+        .cc
+        .as_deref()
+        .filter(|s| !placeholder_empty(s))
+    {
         Some(raw) => match crate::cli::himalaya::smtp_address_list(raw) {
             Ok(c) => Some(c),
             Err(e) => return compose_fail(format!("Cc : {e}")),
         },
         None => None,
     };
-    let bcc = match form.bcc.as_deref().filter(|s| !s.trim().is_empty()) {
+    let bcc = match form
+        .bcc
+        .as_deref()
+        .filter(|s| !placeholder_empty(s))
+    {
         Some(raw) => match crate::cli::himalaya::smtp_address_list(raw) {
             Ok(c) => Some(c),
             Err(e) => return compose_fail(format!("Cci : {e}")),
@@ -829,9 +947,21 @@ async fn finish_draft(state: Arc<AppState>, form: ParsedCompose) -> axum::respon
         .as_deref()
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
+    let has_thread_hdrs = form
+        .in_reply_to
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+        || form
+            .references
+            .as_deref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
 
     let _permit = state.cli_limit.acquire().await.ok();
-    let saved = if as_html || has_files || has_reply_to {
+    // To vide : Himalaya `compose --to` refuse — forcer EML brut.
+    let use_raw = to_empty || as_html || has_files || has_reply_to || has_thread_hdrs;
+    let saved = if use_raw {
         let eml = build_eml(
             &form,
             from.as_deref().unwrap_or(""),
@@ -882,8 +1012,47 @@ async fn finish_draft(state: Arc<AppState>, form: ParsedCompose) -> axum::respon
     };
 
     match saved {
-        Ok(()) => Redirect::to("/").into_response(),
+        Ok(()) => {
+            drop(_permit);
+            if form.edit_draft {
+                delete_edited_draft(&state, &form, account.as_deref()).await;
+            }
+            Redirect::to("/").into_response()
+        }
         Err(e) => compose_fail(format!("Brouillon échoué : {e}")),
+    }
+}
+
+async fn delete_edited_draft(
+    state: &AppState,
+    form: &ParsedCompose,
+    fallback_account: Option<&str>,
+) {
+    let Some(mb) = form
+        .source_mailbox
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return;
+    };
+    let Some(id) = form
+        .source_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return;
+    };
+    let account = form
+        .source_account
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != ACCOUNT_ALL)
+        .or(fallback_account);
+    let _permit = state.cli_limit.acquire().await.ok();
+    if let Err(e) = state.himalaya.delete_message(mb, id, account).await {
+        tracing::warn!("suppression ancien brouillon {mb}/{id}: {e}");
     }
 }
 
@@ -940,7 +1109,13 @@ fn build_eml(
     if !from.trim().is_empty() {
         headers.push_str(&format!("From: {}\r\n", from.trim()));
     }
-    headers.push_str(&format!("To: {to}\r\n"));
+    // Himalaya / IMAP affichent souvent « Empty » pour un To manquant — éviter To: vide.
+    let to_hdr = to.trim();
+    if to_hdr.is_empty() || to_hdr.eq_ignore_ascii_case("empty") {
+        headers.push_str("To: undisclosed-recipients:;\r\n");
+    } else {
+        headers.push_str(&format!("To: {to_hdr}\r\n"));
+    }
     if let Some(cc) = cc.filter(|s| !s.is_empty()) {
         headers.push_str(&format!("Cc: {cc}\r\n"));
     }

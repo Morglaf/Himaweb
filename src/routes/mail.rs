@@ -128,6 +128,31 @@ pub(crate) fn mailbox_label(name: &str) -> String {
     }
 }
 
+/// Dossier brouillons du compte (alias réglages) ou nom contenant « draft ».
+pub(crate) fn is_drafts_mailbox(mailbox: &str, account: Option<&str>) -> bool {
+    let mb = mailbox.trim();
+    if mb.is_empty() {
+        return false;
+    }
+    if let Ok(list) = crate::accounts_config::list_editable_accounts() {
+        if let Some(acc) = account.map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(a) = list.iter().find(|a| a.name == acc) {
+                if !a.drafts_alias.trim().is_empty()
+                    && mb.eq_ignore_ascii_case(a.drafts_alias.trim())
+                {
+                    return true;
+                }
+            }
+        }
+        if list.iter().any(|a| {
+            !a.drafts_alias.trim().is_empty() && mb.eq_ignore_ascii_case(a.drafts_alias.trim())
+        }) {
+            return true;
+        }
+    }
+    mb.to_ascii_lowercase().contains("draft")
+}
+
 fn folder_rank(name: &str) -> u8 {
     let n = name.to_ascii_lowercase();
     if n == "inbox" {
@@ -749,6 +774,8 @@ struct EnvelopesTemplate {
     pub next_auto_pages: u32,
     pub auto_load: bool,
     pub archive_readonly: bool,
+    /// Dossier brouillons : clic → compose édition
+    pub is_drafts_mailbox: bool,
 }
 
 #[derive(Clone)]
@@ -1392,6 +1419,11 @@ async fn envelopes(
             .or(account.as_deref())
             .or(prefs_snap.selected_account()),
     );
+    let drafts_acc = filter_account
+        .as_deref()
+        .or(account.as_deref())
+        .or(prefs_snap.selected_account());
+    let is_drafts_mailbox = is_drafts_mailbox(&name, drafts_acc);
     render(EnvelopesTemplate {
         mailbox_enc,
         mailbox: name,
@@ -1407,6 +1439,7 @@ async fn envelopes(
         next_auto_pages: auto_pages.saturating_add(1),
         auto_load: auto_pages < AUTO_PAGES_MAX,
         archive_readonly,
+        is_drafts_mailbox,
     })
 }
 
@@ -1620,6 +1653,8 @@ struct MessageTemplate {
     pub thread_count: u32,
     pub thread: Vec<ThreadPart>,
     pub archive_readonly: bool,
+    /// Replier les messages non focus
+    pub thread_collapse: bool,
 }
 
 pub struct ThreadPart {
@@ -2146,13 +2181,55 @@ async fn message(
     loaded.push((focus_id.clone(), msg, offline, first_err.clone()));
 
     if prefs_snap.conversations && thread_ids.len() > 1 {
-        let cache = state.cache.lock().await;
-        for tid in &thread_ids {
-            if tid == &focus_id {
+        let mut missing: Vec<String> = Vec::new();
+        {
+            let cache = state.cache.lock().await;
+            for tid in &thread_ids {
+                if tid == &focus_id {
+                    continue;
+                }
+                match cache.load_message(&name, tid) {
+                    Ok(Some(msg)) => {
+                        loaded.push((tid.clone(), Some(msg), false, None));
+                    }
+                    _ => missing.push(tid.clone()),
+                }
+            }
+        }
+        for tid in missing {
+            if !state.himalaya_available {
+                loaded.push((
+                    tid,
+                    None,
+                    true,
+                    Some("hors ligne — message non en cache".into()),
+                ));
+                offline_any = true;
                 continue;
             }
-            if let Ok(Some(msg)) = cache.load_message(&name, tid) {
-                loaded.push((tid.clone(), Some(msg), true, None));
+            let _permit = state.cli_limit.acquire().await.ok();
+            match state
+                .himalaya
+                .read_message(&name, &tid, account_ref)
+                .await
+            {
+                Ok(msg) => {
+                    {
+                        let cache = state.cache.lock().await;
+                        let _ = cache.save_message(&name, &msg);
+                    }
+                    loaded.push((tid, Some(msg), false, None));
+                }
+                Err(e) => {
+                    let cached = {
+                        let cache = state.cache.lock().await;
+                        cache.load_message(&name, &tid).ok().flatten()
+                    };
+                    if cached.is_none() {
+                        offline_any = true;
+                    }
+                    loaded.push((tid, cached, true, Some(e.to_string())));
+                }
             }
         }
     }
@@ -2180,8 +2257,31 @@ async fn message(
     let mut thread_parts: Vec<ThreadPart> = Vec::new();
     let mut thread_subject = String::new();
 
-    for (tid, msg_opt, _off, _err) in loaded {
+    for (tid, msg_opt, _off, err) in loaded {
         let Some(msg) = msg_opt else {
+            let detail = err.unwrap_or_else(|| "introuvable".into());
+            thread_parts.push(ThreadPart {
+                is_focus: tid == focus_id,
+                id: tid,
+                subject: String::new(),
+                from_initial: "?".into(),
+                avatar_url: String::new(),
+                from: String::new(),
+                from_email: String::new(),
+                to: String::new(),
+                cc: String::new(),
+                date: String::new(),
+                unread: false,
+                body: format!(
+                    r#"<p class="muted">Message indisponible ({detail})</p>"#
+                ),
+                attachments: vec![],
+                accessory_attachments: vec![],
+                calendar_invites: vec![],
+                remote_resources: vec![],
+                has_remote_content: false,
+                attachments_lazy: false,
+            });
             continue;
         };
         let was_unread = !msg.flags.iter().any(|f| {
@@ -2340,6 +2440,10 @@ async fn message(
 
     let thread_count = thread_count_hint.max(thread_parts.len() as u32);
     let archive_readonly = crate::data_backup::is_archive_account(account.as_deref());
+    // Par défaut : plus récent en haut (Gmail-like)
+    if prefs_snap.thread_order != "oldest" {
+        thread_parts.reverse();
+    }
     render(MessageTemplate {
         mailbox_enc: urlencoding::encode(&name).into_owned(),
         mailbox: name,
@@ -2354,6 +2458,7 @@ async fn message(
         account_enc: urlencoding::encode(account.as_deref().unwrap_or("")).into_owned(),
         account: account.unwrap_or_default(),
         archive_readonly,
+        thread_collapse: prefs_snap.thread_collapse && thread_count > 1,
     })
 }
 
@@ -3850,6 +3955,7 @@ async fn ntfy_envelopes(
             next_auto_pages: auto_pages.saturating_add(1),
             auto_load: false,
             archive_readonly: false,
+            is_drafts_mailbox: false,
         });
     }
 
@@ -3964,6 +4070,7 @@ async fn ntfy_envelopes(
         next_auto_pages: auto_pages.saturating_add(1),
         auto_load: auto_pages < AUTO_PAGES_MAX,
         archive_readonly: false,
+        is_drafts_mailbox: false,
     })
 }
 

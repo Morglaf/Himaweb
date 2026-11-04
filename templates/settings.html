@@ -142,6 +142,17 @@
             <span data-i18n="settings.conversations">Afficher les mails en conversations (groupés)</span>
             <input class="toggle" type="checkbox" name="conversations" value="1" {% if conversations %}checked{% endif %} />
           </label>
+          <label class="field">
+            <span class="label" data-i18n="settings.thread_order">Ordre dans une conversation</span>
+            <select class="select w-full" name="thread_order">
+              <option value="newest" {% if thread_order != "oldest" %}selected{% endif %} data-i18n="settings.thread_newest">Plus récent en haut</option>
+              <option value="oldest" {% if thread_order == "oldest" %}selected{% endif %} data-i18n="settings.thread_oldest">Plus ancien en haut</option>
+            </select>
+          </label>
+          <label class="toggle-row">
+            <span data-i18n="settings.thread_collapse">Replier les réponses (déplier au clic)</span>
+            <input class="toggle" type="checkbox" name="thread_collapse" value="1" {% if thread_collapse %}checked{% endif %} />
+          </label>
           <label class="toggle-row">
             <span data-i18n="settings.side_widget">Panneau latéral</span>
             <input class="toggle" type="checkbox" name="side_widget" value="1" {% if side_widget %}checked{% endif %} />

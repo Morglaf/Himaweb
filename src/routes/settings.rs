@@ -121,6 +121,8 @@ struct SettingsTemplate {
     pub confirm_delete: bool,
     pub merged_inbox: bool,
     pub conversations: bool,
+    pub thread_order: String,
+    pub thread_collapse: bool,
     pub side_widget: bool,
     pub side_widget_events: u16,
     pub side_show_calendar: bool,
@@ -691,6 +693,8 @@ async fn render_settings(state: Arc<AppState>, flash: Flash) -> axum::response::
         confirm_delete: prefs_snap.confirm_delete,
         merged_inbox: prefs_snap.merged_inbox,
         conversations: prefs_snap.conversations,
+        thread_order: prefs_snap.thread_order.clone(),
+        thread_collapse: prefs_snap.thread_collapse,
         side_widget: prefs_snap.side_widget,
         side_widget_events: prefs_snap.side_widget_events.clamp(1, 12),
         side_show_calendar: prefs_snap.side_show_calendar,
@@ -1304,6 +1308,8 @@ pub struct NotifyForm {
     pub notifications: Option<String>,
     pub merged_inbox: Option<String>,
     pub conversations: Option<String>,
+    pub thread_order: Option<String>,
+    pub thread_collapse: Option<String>,
     pub side_widget: Option<String>,
     pub side_widget_events: Option<u16>,
     pub side_show_calendar: Option<String>,
@@ -1324,6 +1330,11 @@ async fn save_notify(
         prefs.notifications = on(&form.notifications);
         prefs.merged_inbox = on(&form.merged_inbox);
         prefs.conversations = on(&form.conversations);
+        prefs.thread_order = match form.thread_order.as_deref().map(str::trim) {
+            Some("oldest") => "oldest".into(),
+            _ => "newest".into(),
+        };
+        prefs.thread_collapse = on(&form.thread_collapse);
         prefs.side_widget = on(&form.side_widget);
         prefs.side_show_calendar = on(&form.side_show_calendar);
         prefs.side_show_tasks = on(&form.side_show_tasks);

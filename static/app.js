@@ -588,6 +588,7 @@ function composeForm() {
     draftBusy: false,
     sendBusy: false,
     sendDone: false,
+    editDraft: false,
     attachNames: [],
     attachFiles: [],
     windowMode: 'normal',
@@ -672,6 +673,7 @@ function composeForm() {
           this.cardamum = !!opts.cardamum;
           this.ai = !!opts.ai;
           this.kind = opts.kind || 'compose';
+          this.editDraft = !!opts.editDraft || this.kind === 'edit';
           this.baseTitle =
             opts.title ||
             (window.HimaWeb && window.HimaWeb.t('mail.new_message')) ||
@@ -682,27 +684,42 @@ function composeForm() {
               : 'icon-text';
           if (opts.widthNormal != null) this.widthNormal = Number(opts.widthNormal) || 52;
           if (opts.widthDocked != null) this.widthDocked = Number(opts.widthDocked) || 36;
-          this.to = opts.to || '';
-          this.cc = opts.cc || '';
-          this.bcc = opts.bcc || '';
+          const scrub = (s) => {
+            const t = (s || '').trim();
+            if (!t || /^empty$/i.test(t) || /^\(empty\)$/i.test(t)) return '';
+            return s || '';
+          };
+          this.to = scrub(opts.to);
+          this.cc = scrub(opts.cc);
+          this.bcc = scrub(opts.bcc);
           this.replyTo = opts.replyTo || '';
-          this.subject = opts.subject || '';
+          this.subject = scrub(opts.subject);
           this.accounts = opts.accounts || [];
           this.account = opts.account || (this.accounts[0] && this.accounts[0].name) || '';
           this.showCc = !!this.cc;
           this.showBcc = !!this.bcc;
           this.showReplyTo = !!this.replyTo;
+          if (opts.bodyHtml) this.bodyHtml = opts.bodyHtml;
         }
       } catch (_) {}
       const seed = document.getElementById('compose-body-seed');
       const full = seed ? seed.value || '' : '';
-      const { draftBody, previous } = this.splitTextDraftAndPrevious(full);
-      this.body = draftBody;
-      this.previousQuote = previous;
-      this.quoteExpanded = false;
+      if (this.editDraft || this.kind === 'edit') {
+        this.body = full;
+        this.previousQuote = '';
+        this.quoteExpanded = false;
+        if ((this.bodyHtml || '').trim()) this.bodyMode = 'html';
+      } else {
+        const { draftBody, previous } = this.splitTextDraftAndPrevious(full);
+        this.body = draftBody;
+        this.previousQuote = previous;
+        this.quoteExpanded = false;
+      }
       // Compte avec signature HTML : forcer le mode HTML (sinon aperçu texte illisible).
       if (this.hasHtmlSignature) this.bodyMode = 'html';
-      if (this.bodyMode === 'html') this.syncHtmlFromPlain();
+      if (this.bodyMode === 'html') {
+        if (!(this.bodyHtml || '').trim()) this.syncHtmlFromPlain();
+      }
       this.$nextTick(() => {
         if (window.lucide) lucide.createIcons();
         if (this.bodyMode === 'html') this.initQuill();
@@ -1009,27 +1026,172 @@ function composeForm() {
         wrap.innerHTML = '<div id="compose-quill" class="compose-quill"></div>';
       }
     },
-    async onSubmit(ev) {
-      ev.preventDefault();
-      const submitter = ev.submitter;
-      const isDraft = !!(submitter && submitter.name === 'save_draft');
-      if (this._composeSubmitting || this.sendDone || (!isDraft && this.sendBusy)) return;
-      if (isDraft && this.draftBusy) return;
-      this.draftBusy = isDraft;
-      this.sendBusy = !isDraft;
+    hasDraftContent() {
+      const text = (this.body || '').trim();
+      const html = (this.bodyHtml || '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/gi, ' ')
+        .trim();
+      return !!(
+        (this.to || '').trim() ||
+        (this.cc || '').trim() ||
+        (this.bcc || '').trim() ||
+        (this.subject || '').trim() ||
+        text ||
+        html ||
+        (this.attachFiles && this.attachFiles.length) ||
+        this.editDraft
+      );
+    },
+    buildComposeFormData() {
+      const root = this.$el || document.getElementById('compose-layer');
+      const form =
+        (root && root.querySelector && root.querySelector('form.compose-form')) ||
+        document.querySelector('#compose-layer form.compose-form');
+      if (!form) return null;
+      const fd = new FormData(form);
+      fd.delete('attachments');
+      for (const f of this.attachFiles || []) {
+        fd.append('attachments', f, f.name);
+      }
+      fd.set('account', this.account || '');
+      fd.set('html', this.bodyMode === 'html' ? '1' : '0');
+      fd.set('body_html', this.bodyHtml || '');
+      fd.set('body', this.body || '');
+      fd.set('to', this.to || '');
+      fd.set('cc', this.cc || '');
+      fd.set('bcc', this.bcc || '');
+      fd.set('reply_to', this.replyTo || '');
+      fd.set('subject', this.subject || '');
+      if (this.editDraft) fd.set('edit_draft', '1');
+      return fd;
+    },
+    syncComposeBodies() {
+      if (this.bodyMode === 'html' && this.quill) {
+        this.bodyHtml = this.quill.root.innerHTML || '';
+        this.body = this.quill.getText().replace(/\n$/, '');
+      }
+      this.assembleBodyForSend();
+    },
+    closeComposeUi(opts = {}) {
+      const { toast, refresh } = opts;
+      const closed =
+        window.HimaWeb && HimaWeb.closeComposeOverlay
+          ? HimaWeb.closeComposeOverlay()
+          : false;
+      if (closed) {
+        if (toast && window.HimaWeb.showAppToast) {
+          HimaWeb.showAppToast(toast, { variant: 'success' });
+        }
+        if (refresh && window.HimaWeb.scheduleMailRefresh) {
+          HimaWeb.scheduleMailRefresh({
+            envelopes: true,
+            sidebar: true,
+            unread: true,
+          });
+        }
+        return true;
+      }
+      if (toast) {
+        try {
+          sessionStorage.setItem(
+            'himaweb-flash',
+            JSON.stringify({ type: 'success', message: toast }),
+          );
+        } catch (_) {}
+      }
+      if (window.history.length > 1) window.history.back();
+      else window.location.href = '/';
+      return false;
+    },
+    async saveDraft({ close = true, silent = false } = {}) {
+      if (this._composeSubmitting || this.sendDone || this.draftBusy) return false;
+      this.syncComposeBodies();
+      const fd = this.buildComposeFormData();
+      if (!fd) return false;
+      this.draftBusy = true;
       this._composeSubmitting = true;
       this.$nextTick(() => {
         if (window.lucide) lucide.createIcons();
       });
       let keepLocked = false;
       try {
-        if (this.bodyMode === 'html' && this.quill) {
-          this.bodyHtml = this.quill.root.innerHTML || '';
-          this.body = this.quill.getText().replace(/\n$/, '');
+        const res = await fetch('/compose/draft', {
+          method: 'POST',
+          body: fd,
+          redirect: 'manual',
+          headers: { Accept: 'application/json' },
+        });
+        if (
+          res.type === 'opaqueredirect' ||
+          (res.status >= 300 && res.status < 400)
+        ) {
+          keepLocked = true;
+          this.sendDone = true;
+          const msg =
+            (window.HimaWeb && HimaWeb.t && HimaWeb.t('compose.draft_saved')) ||
+            'Brouillon enregistré';
+          if (close) {
+            const closed = this.closeComposeUi({
+              toast: silent ? null : msg,
+              refresh: true,
+            });
+            if (!closed) {
+              window.location.href = res.headers.get('Location') || '/';
+            }
+          } else if (!silent && window.HimaWeb && HimaWeb.showAppToast) {
+            HimaWeb.showAppToast(msg, { variant: 'success' });
+          }
+          return true;
         }
-        this.assembleBodyForSend();
+        let msg =
+          (window.HimaWeb && HimaWeb.t && HimaWeb.t('common.error')) || 'Erreur';
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        if (ct.includes('application/json')) {
+          const data = await res.json().catch(() => ({}));
+          if (data && data.error) msg = data.error;
+        } else {
+          const text = await res.text();
+          const m = text.match(/class="error"[^>]*>([^<]+)/i);
+          if (m) msg = m[1].trim();
+          else if (text.trim()) msg = text.trim().slice(0, 400);
+        }
+        if (window.HimaWeb && HimaWeb.alertDialog) {
+          await HimaWeb.alertDialog(msg);
+        }
+        return false;
+      } catch (e) {
+        const msg = (e && e.message) || String(e);
+        if (window.HimaWeb && HimaWeb.alertDialog) {
+          await HimaWeb.alertDialog(msg);
+        }
+        return false;
+      } finally {
+        if (!keepLocked) {
+          this._composeSubmitting = false;
+          this.draftBusy = false;
+        }
+      }
+    },
+    async onSubmit(ev) {
+      ev.preventDefault();
+      const submitter = ev.submitter;
+      const isDraft = !!(submitter && submitter.name === 'save_draft');
+      if (isDraft) {
+        await this.saveDraft({ close: true, silent: false });
+        return;
+      }
+      if (this._composeSubmitting || this.sendDone || this.sendBusy) return;
+      this.sendBusy = true;
+      this._composeSubmitting = true;
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+      });
+      let keepLocked = false;
+      try {
+        this.syncComposeBodies();
 
-        if (!isDraft && !(this.to || '').trim()) {
+        if (!(this.to || '').trim()) {
           await (window.HimaWeb && HimaWeb.alertDialog
             ? HimaWeb.alertDialog(
                 (window.HimaWeb.t && HimaWeb.t('compose.need_to')) ||
@@ -1040,22 +1202,8 @@ function composeForm() {
         }
 
         const form = ev.target;
-        const fd = new FormData(form);
-        // PJ : append explicite depuis attachFiles (évite champ file vide/corrompu avec fetch)
-        fd.delete('attachments');
-        for (const f of this.attachFiles) {
-          fd.append('attachments', f, f.name);
-        }
-        // Forcer les champs Alpine (parfois absents du FormData natif)
-        fd.set('account', this.account || '');
-        fd.set('html', this.bodyMode === 'html' ? '1' : '0');
-        fd.set('body_html', this.bodyHtml || '');
-        fd.set('body', this.body || '');
-        fd.set('to', this.to || '');
-        fd.set('cc', this.cc || '');
-        fd.set('bcc', this.bcc || '');
-        fd.set('reply_to', this.replyTo || '');
-        fd.set('subject', this.subject || '');
+        const fd = this.buildComposeFormData();
+        if (!fd) return;
 
         const action =
           (submitter && submitter.getAttribute('formaction')) ||
@@ -1081,37 +1229,13 @@ function composeForm() {
             if (window.lucide) lucide.createIcons();
           });
 
-          if (!isDraft) {
-            const msg =
-              (window.HimaWeb && HimaWeb.t && HimaWeb.t('compose.sent_ok')) ||
-              'Message bien envoyé';
-            const closed =
-              window.HimaWeb && HimaWeb.closeComposeOverlay
-                ? HimaWeb.closeComposeOverlay()
-                : false;
-            if (closed) {
-              if (window.HimaWeb.showAppToast) {
-                HimaWeb.showAppToast(msg, { variant: 'success' });
-              }
-              if (window.HimaWeb.scheduleMailRefresh) {
-                HimaWeb.scheduleMailRefresh({
-                  envelopes: true,
-                  sidebar: true,
-                  unread: true,
-                });
-              }
-              return;
-            }
-            try {
-              sessionStorage.setItem(
-                'himaweb-flash',
-                JSON.stringify({ type: 'success', message: msg }),
-              );
-            } catch (_) {}
-          } else if (window.HimaWeb && HimaWeb.closeComposeOverlay) {
-            HimaWeb.closeComposeOverlay();
+          const msg =
+            (window.HimaWeb && HimaWeb.t && HimaWeb.t('compose.sent_ok')) ||
+            'Message bien envoyé';
+          const closed = this.closeComposeUi({ toast: msg, refresh: true });
+          if (!closed) {
+            window.location.href = loc;
           }
-          window.location.href = loc;
           return;
         }
 
@@ -1138,7 +1262,6 @@ function composeForm() {
       } finally {
         if (!keepLocked) {
           this._composeSubmitting = false;
-          this.draftBusy = false;
           this.sendBusy = false;
         }
       }
@@ -1192,10 +1315,22 @@ function composeForm() {
       if (this.windowMode === 'normal') this.goBack();
       else this.setWindow('normal');
     },
-    goBack() {
-      if (window.HimaWeb && window.HimaWeb.closeComposeOverlay()) return;
-      if (window.history.length > 1) window.history.back();
-      else window.location.href = '/';
+    discardCompose() {
+      if (this._composeSubmitting || this.sendDone || this.draftBusy || this.sendBusy) {
+        return;
+      }
+      // Annuler = fermer sans enregistrer (évite doublons / erreur To vide)
+      this.closeComposeUi();
+    },
+    async goBack() {
+      if (this._composeSubmitting || this.sendDone || this.draftBusy || this.sendBusy) {
+        return;
+      }
+      if (this.hasDraftContent()) {
+        await this.saveDraft({ close: true, silent: false });
+        return;
+      }
+      this.closeComposeUi();
     },
     async suggest(field) {
       const q = (this[field] || '').trim();
@@ -2201,6 +2336,28 @@ function messageView(opts) {
     hasRemote: !!(opts && opts.hasRemote),
     hasAccessory: !!(opts && opts.hasAccessory),
     hasAttachments,
+    collapsed: !!(opts && opts.collapse),
+    toggleCollapse(ev) {
+      if (!ev) {
+        this.collapsed = !this.collapsed;
+        return;
+      }
+      const t = ev.target;
+      if (
+        t.closest &&
+        (t.closest('a') ||
+          t.closest('button') ||
+          t.closest('form') ||
+          t.closest('select') ||
+          t.closest('input'))
+      ) {
+        return;
+      }
+      this.collapsed = !this.collapsed;
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
+      });
+    },
     bodyTone: initialTone,
     get bodyToneClass() {
       if (this.bodyTone === 'light') return 'tone-light';
@@ -5209,7 +5366,13 @@ window.HimaWeb = {
       paintSelection(list);
       el.focus({ preventScroll: false });
       el.scrollIntoView({ block: 'nearest' });
-      if (open && window.htmx) {
+      if (!open) return;
+      const composeEdit = el.getAttribute('data-compose-edit');
+      if (composeEdit) {
+        this.openCompose(composeEdit);
+        return;
+      }
+      if (window.htmx && el.hasAttribute('hx-get')) {
         window.htmx.trigger(el, 'click');
       }
     };
@@ -5385,6 +5548,7 @@ window.HimaWeb = {
       (ev) => {
         const env = ev.target.closest('.envelope');
         if (!env) return;
+        if (ev.target.closest('[data-env-quick]')) return;
         if (ev.shiftKey) {
           ev.preventDefault();
           ev.stopPropagation();
@@ -5402,6 +5566,13 @@ window.HimaWeb = {
         this._mailSelected = new Set([envKey(env)]);
         this._mailAnchor = list.indexOf(env);
         paintSelection(list);
+        const composeEdit = env.getAttribute('data-compose-edit');
+        if (composeEdit) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          this.openCompose(composeEdit);
+          return;
+        }
         // Retour immédiat : l'ouverture d'un message passe par un appel CLI.
         if (env.hasAttribute('hx-get')) {
           this.markEnvelopeOpening(env);
@@ -5521,7 +5692,15 @@ window.HimaWeb = {
           .map((s) => s.trim())
           .filter(Boolean);
         const messageId = env.dataset.messageId || '';
-        const payload = JSON.stringify({ id, account, mailbox, threadIds, messageId });
+        const composeEdit = env.getAttribute('data-compose-edit') || '';
+        const payload = JSON.stringify({
+          id,
+          account,
+          mailbox,
+          threadIds,
+          messageId,
+          composeEdit,
+        });
         const delLabel =
           threadIds.length > 1
             ? `${this.t('mail.delete_thread')} (${threadIds.length})`
@@ -5738,12 +5917,22 @@ window.HimaWeb = {
     const acc = p.account || '';
     const id = p.id || '';
     if (action === 'open') {
+      if (p.composeEdit) {
+        this.openCompose(p.composeEdit);
+        return;
+      }
       let url =
         '/partials/message?mailbox=' +
         encodeURIComponent(mb) +
         '&id=' +
         encodeURIComponent(id);
       if (acc) url += '&account=' + encodeURIComponent(acc);
+      const threadRaw = Array.isArray(p.threadIds)
+        ? p.threadIds.filter(Boolean).join(',')
+        : p.threadIds || '';
+      if (threadRaw && String(threadRaw).includes(',')) {
+        url += '&thread=' + encodeURIComponent(String(threadRaw));
+      }
       if (window.htmx) window.htmx.ajax('GET', url, { target: '#message-pane', swap: 'innerHTML' });
       return;
     }

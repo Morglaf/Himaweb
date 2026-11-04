@@ -1317,7 +1317,7 @@ impl HimalayaClient {
         self_email: Option<&str>,
     ) -> CliResult<ComposeDraft> {
         let id = id.unwrap_or("");
-        if matches!(kind, ComposeKind::New) {
+        if matches!(kind, ComposeKind::New | ComposeKind::Edit) {
             return Ok(ComposeDraft::default());
         }
 
@@ -1348,7 +1348,7 @@ impl HimalayaClient {
             ComposeKind::Forward => {
                 Self::with_account(account, &["message", "forward", "--mailbox", mailbox, id])
             }
-            ComposeKind::New => unreachable!(),
+            ComposeKind::New | ComposeKind::Edit => unreachable!(),
         };
         if let Some(ref t) = to_owned {
             args.push("--to");
@@ -1379,6 +1379,8 @@ pub enum ComposeKind {
     Reply,
     ReplyAll,
     Forward,
+    /// Reprendre un brouillon existant
+    Edit,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1388,13 +1390,15 @@ pub struct ComposeDraft {
     pub bcc: String,
     pub subject: String,
     pub body: String,
+    /// Corps HTML si le brouillon en contenait un
+    pub body_html: String,
     /// En-têtes de fil (réponse Himalaya)
     pub in_reply_to: String,
     pub references: String,
 }
 
 impl ComposeDraft {
-    fn from_mime(raw: &str) -> Self {
+    pub fn from_mime(raw: &str) -> Self {
         let mut draft = ComposeDraft::default();
         let mut headers: Vec<(String, String)> = Vec::new();
         let mut lines = raw.lines().peekable();
