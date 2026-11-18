@@ -25,6 +25,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/calendar/event.json", get(event_json))
         .route("/calendar/import-ics", post(import_ics))
         .route("/calendar/preview-ics", post(preview_ics))
+        .route("/calendar/mail-link", post(mail_link_upsert).delete(mail_link_delete))
+        .route("/calendar/mail-link.json", get(mail_link_json))
+        .route("/calendar/upcoming.json", get(upcoming_json))
 }
 
 #[derive(Deserialize)]
@@ -690,6 +693,9 @@ async fn fetch_and_cache_month(
     let Some(client) = &state.calendula else {
         return Err("Calendula indisponible.".into());
     };
+    // Token capturé au départ : si une mutation bump le mois pendant le fetch,
+    // on n’écrit plus le cache (évite de réinjecter un événement déjà supprimé).
+    let gen_token = state.cal_month_token(year, month).await;
     let from = format!("{year:04}-{month:02}-01");
     let to = format!("{year:04}-{month:02}-{:02}", days_in_month(year, month));
     let pool = if background {
@@ -862,9 +868,15 @@ async fn fetch_and_cache_month(
                         )
                     })
                     .collect();
-                {
+                let still_current = state.cal_month_token(year, month).await == gen_token;
+                if still_current {
                     let cache = state.cache.lock().await;
                     let _ = cache.replace_calendar_events_in_month(&c.id, year, month, &rows);
+                } else {
+                    tracing::debug!(
+                        "calendar cache write skipped (stale fetch) {year}-{month:02} cal={}",
+                        c.id
+                    );
                 }
                 all_events.extend(enriched.into_iter().map(|e| {
                     with_ev_json(to_event_row(
@@ -899,7 +911,7 @@ async fn fetch_and_cache_month(
             errs.push(hint);
         }
     }
-    {
+    if state.cal_month_token(year, month).await == gen_token {
         let cache = state.cache.lock().await;
         let _ = cache.mark_month_synced(year, month);
     }
@@ -939,6 +951,30 @@ pub async fn refresh_calendar_month(
     )
     .await?;
     Ok(cals.len().saturating_add(events.len()))
+}
+
+/// Purge locale + bump génération mois (invalide les warm concurrents), puis refresh.
+async fn after_calendar_mutation(
+    state: &AppState,
+    calendar_id: &str,
+    event_id: &str,
+    year: Option<i32>,
+    month: Option<u32>,
+    remove_event: bool,
+) {
+    if remove_event {
+        let cache = state.cache.lock().await;
+        let _ = cache.remove_calendar_event(calendar_id, event_id);
+        let _ = cache.remove_event_mail_link(calendar_id, event_id);
+    }
+    if let (Some(y), Some(m)) = (year, month) {
+        let _ = state.bump_cal_month(y, m).await;
+        let _ = refresh_calendar_month(state, y, m, false, true).await;
+    } else {
+        let now = Local::now().date_naive();
+        let _ = state.bump_cal_month(now.year(), now.month()).await;
+        let _ = refresh_calendar_month(state, now.year(), now.month(), false, true).await;
+    }
 }
 
 fn to_event_row(
@@ -1020,6 +1056,60 @@ fn with_ev_json(mut e: EventRow) -> EventRow {
     })
     .to_string();
     e
+}
+
+/// JSON `data-ev` minimal pour le widget latéral (même contrat que openEditJson).
+pub(crate) fn upcoming_event_ev_json(
+    id: &str,
+    calendar_id: &str,
+    summary: &str,
+    start_raw: &str,
+    end_raw: &str,
+    location: &str,
+    description: &str,
+    color: &str,
+) -> String {
+    let date_iso = iso_date(start_raw);
+    let end_iso = {
+        let e = iso_date(end_raw);
+        if e.is_empty() {
+            date_iso.clone()
+        } else {
+            e
+        }
+    };
+    let start_time = iso_time(start_raw);
+    let end_time = {
+        let t = iso_time(end_raw);
+        if t.is_empty() {
+            if start_time.is_empty() {
+                "11:00".into()
+            } else {
+                start_time.clone()
+            }
+        } else {
+            t
+        }
+    };
+    let start_time = if start_time.is_empty() {
+        "10:00".into()
+    } else {
+        start_time
+    };
+    serde_json::json!({
+        "id": id,
+        "calendar": calendar_id,
+        "summary": summary,
+        "date": date_iso,
+        "endDate": end_iso,
+        "startTime": start_time,
+        "endTime": end_time,
+        "description": description,
+        "location": location,
+        "rrule": "none",
+        "color": color,
+    })
+    .to_string()
 }
 
 fn row_recurrence(e: &EventRow) -> crate::cli::tcal::RecurrenceUi {
@@ -1689,6 +1779,22 @@ async fn event_json(
     } else {
         fields.end.clone()
     };
+    let mail_link = {
+        let cache = state.cache.lock().await;
+        cache
+            .load_event_mail_link(cal, id)
+            .ok()
+            .flatten()
+            .map(|(account, mailbox, mail_id, message_id, subject)| {
+                json!({
+                    "account": account,
+                    "mailbox": mailbox,
+                    "mailId": mail_id,
+                    "messageId": message_id,
+                    "subject": subject,
+                })
+            })
+    };
     Json(json!({
         "summary": fields.summary,
         "date": iso_date(&start),
@@ -1703,8 +1809,209 @@ async fn event_json(
         "rruleCount": fields.rrule_count,
         "rruleUntil": fields.rrule_until,
         "rruleByday": fields.rrule_byday.join(","),
+        "mailLink": mail_link,
     }))
     .into_response()
+}
+
+/// Payload X-HIMAWEB-MAIL : account|mailbox|mail_id|message_id
+pub(crate) fn encode_x_himaweb_mail(
+    account: &str,
+    mailbox: &str,
+    mail_id: &str,
+    message_id: &str,
+) -> String {
+    [
+        account.replace('|', "%7C"),
+        mailbox.replace('|', "%7C"),
+        mail_id.replace('|', "%7C"),
+        message_id.replace('|', "%7C"),
+    ]
+    .join("|")
+}
+
+pub(crate) fn inject_x_himaweb_mail(ical: &str, payload: &str) -> String {
+    let line = format!("X-HIMAWEB-MAIL:{payload}\r\n");
+    if let Some(pos) = ical.to_ascii_uppercase().find("END:VEVENT") {
+        let mut out = String::with_capacity(ical.len() + line.len());
+        out.push_str(&ical[..pos]);
+        out.push_str(&line);
+        out.push_str(&ical[pos..]);
+        out
+    } else {
+        format!("{ical}{line}")
+    }
+}
+
+async fn persist_mail_link(
+    state: &AppState,
+    calendar_id: &str,
+    event_id: &str,
+    account: &str,
+    mailbox: &str,
+    mail_id: &str,
+    message_id: &str,
+    subject: &str,
+) {
+    if calendar_id.is_empty() || event_id.is_empty() || mailbox.is_empty() || mail_id.is_empty() {
+        return;
+    }
+    let cache = state.cache.lock().await;
+    let _ = cache.upsert_event_mail_link(
+        calendar_id,
+        event_id,
+        account,
+        mailbox,
+        mail_id,
+        message_id,
+        subject,
+    );
+}
+
+#[derive(Deserialize)]
+pub struct MailLinkBody {
+    pub calendar_id: String,
+    pub event_id: String,
+    pub account: Option<String>,
+    pub mailbox: String,
+    pub mail_id: String,
+    pub message_id: Option<String>,
+    pub subject: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct MailLinkDeleteBody {
+    pub calendar_id: String,
+    pub event_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct MailLinkQuery {
+    pub calendar: Option<String>,
+    pub event: Option<String>,
+    pub account: Option<String>,
+    pub mailbox: Option<String>,
+    pub mail_id: Option<String>,
+}
+
+async fn mail_link_upsert(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<MailLinkBody>,
+) -> impl IntoResponse {
+    let cal = body.calendar_id.trim();
+    let eid = body.event_id.trim();
+    let mb = body.mailbox.trim();
+    let mid = body.mail_id.trim();
+    if cal.is_empty() || eid.is_empty() || mb.is_empty() || mid.is_empty() {
+        return Json(json!({ "ok": false, "error": "Paramètres incomplets" })).into_response();
+    }
+    let account = body.account.as_deref().unwrap_or("").trim();
+    let message_id = body.message_id.as_deref().unwrap_or("").trim();
+    let subject = body.subject.as_deref().unwrap_or("").trim();
+    persist_mail_link(
+        &state, cal, eid, account, mb, mid, message_id, subject,
+    )
+    .await;
+    // Best-effort : injecter la propriété ICS si CalDAV accessible.
+    if let Some(client) = &state.calendula {
+        let _permit = state.cli_limit.acquire().await.ok();
+        if let Ok(ical) = client.read_event_ical(cal, eid).await {
+            let payload = encode_x_himaweb_mail(account, mb, mid, message_id);
+            let next = inject_x_himaweb_mail(&ical, &payload);
+            let _ = client.update_event(cal, eid, next.as_bytes(), None).await;
+        }
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+async fn mail_link_delete(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<MailLinkDeleteBody>,
+) -> impl IntoResponse {
+    let cal = body.calendar_id.trim();
+    let eid = body.event_id.trim();
+    if cal.is_empty() || eid.is_empty() {
+        return Json(json!({ "ok": false, "error": "Paramètres incomplets" })).into_response();
+    }
+    {
+        let cache = state.cache.lock().await;
+        let _ = cache.remove_event_mail_link(cal, eid);
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+async fn mail_link_json(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<MailLinkQuery>,
+) -> impl IntoResponse {
+    let cache = state.cache.lock().await;
+    if let (Some(cal), Some(ev)) = (q.calendar.as_deref(), q.event.as_deref()) {
+        let cal = cal.trim();
+        let ev = ev.trim();
+        if let Ok(Some((account, mailbox, mail_id, message_id, subject))) =
+            cache.load_event_mail_link(cal, ev)
+        {
+            return Json(json!({
+                "ok": true,
+                "link": {
+                    "account": account,
+                    "mailbox": mailbox,
+                    "mailId": mail_id,
+                    "messageId": message_id,
+                    "subject": subject,
+                    "calendarId": cal,
+                    "eventId": ev,
+                }
+            }))
+            .into_response();
+        }
+        return Json(json!({ "ok": true, "link": null })).into_response();
+    }
+    if let (Some(mailbox), Some(mail_id)) = (q.mailbox.as_deref(), q.mail_id.as_deref()) {
+        let account = q.account.as_deref().unwrap_or("").trim();
+        let links = cache
+            .load_mail_event_links(account, mailbox.trim(), mail_id.trim())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(calendar_id, event_id, subject)| {
+                json!({
+                    "calendarId": calendar_id,
+                    "eventId": event_id,
+                    "subject": subject,
+                })
+            })
+            .collect::<Vec<_>>();
+        return Json(json!({ "ok": true, "links": links })).into_response();
+    }
+    Json(json!({ "ok": false, "error": "Précisez calendar+event ou mailbox+mail_id" })).into_response()
+}
+
+async fn upcoming_json(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let prefs = state.prefs.lock().await.clone();
+    let cache = state.cache.lock().await;
+    let events: Vec<_> = cache
+        .load_upcoming_events(40)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, _, _, _, cal, _, _)| !prefs.is_calendar_hidden(cal))
+        .take(25)
+        .map(|(id, summary, start, end, cal, location, description)| {
+            let color = prefs.calendar_color(&cal);
+            let when = format_event_when(&start);
+            let ev = upcoming_event_ev_json(
+                &id, &cal, &summary, &start, &end, &location, &description, &color,
+            );
+            json!({
+                "id": id,
+                "calendarId": cal,
+                "summary": summary,
+                "when": when,
+                "location": location,
+                "ev": serde_json::from_str::<serde_json::Value>(&ev).unwrap_or(json!({})),
+            })
+        })
+        .collect();
+    Json(json!({ "ok": true, "events": events }))
 }
 
 async fn import_ics(
@@ -2051,6 +2358,12 @@ pub struct CreateEventForm {
     pub filter: Option<String>,
     /// Si `1` : rester sur la page courante (panneau mail) au lieu d’aller au calendrier
     pub stay: Option<String>,
+    /// Lien optionnel vers un mail (création depuis message / IA).
+    pub link_mail_account: Option<String>,
+    pub link_mail_mailbox: Option<String>,
+    pub link_mail_id: Option<String>,
+    pub link_mail_message_id: Option<String>,
+    pub link_mail_subject: Option<String>,
 }
 
 async fn create_event(
@@ -2099,7 +2412,7 @@ async fn create_event(
         rrule_byday,
         exdates: vec![],
     };
-    let ical = match crate::cli::tcal::build_event(&fields) {
+    let mut ical = match crate::cli::tcal::build_event(&fields) {
         Ok(v) => v,
         Err(e) => {
             if stay {
@@ -2110,6 +2423,35 @@ async fn create_event(
             return Redirect::to(&format!("/calendar?msg={msg}")).into_response();
         }
     };
+    let link_mb = form
+        .link_mail_mailbox
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let link_id = form.link_mail_id.as_deref().unwrap_or("").trim().to_string();
+    let link_acc = form
+        .link_mail_account
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let link_msgid = form
+        .link_mail_message_id
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let link_subj = form
+        .link_mail_subject
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !link_mb.is_empty() && !link_id.is_empty() {
+        let payload = encode_x_himaweb_mail(&link_acc, &link_mb, &link_id, &link_msgid);
+        ical = inject_x_himaweb_mail(&ical, &payload);
+    }
     let _permit = state.cli_limit.acquire().await.ok();
     let redirect = cal_redirect(
         redirect_calendar(form.filter.as_deref(), cal),
@@ -2119,21 +2461,32 @@ async fn create_event(
         form.day,
     );
     match client.create_event(cal, ical.as_bytes()).await {
-        Ok(_) => {
+        Ok(created_id) => {
+            let event_id = if created_id.trim().is_empty() {
+                String::new()
+            } else {
+                created_id
+            };
+            if !link_mb.is_empty() && !link_id.is_empty() && !event_id.is_empty() {
+                persist_mail_link(
+                    &state,
+                    cal,
+                    &event_id,
+                    &link_acc,
+                    &link_mb,
+                    &link_id,
+                    &link_msgid,
+                    &link_subj,
+                )
+                .await;
+            }
             let now = chrono::Local::now();
             let y = form.year.unwrap_or_else(|| now.year());
             let m = form.month.unwrap_or_else(|| now.month());
+            let _ = state.bump_cal_month(y, m).await;
             let _ = refresh_calendar_month(&state, y, m, false, true).await;
             if stay {
-                return Html(
-                    r##"<script>
-if (window.HimaWeb) {
-  window.HimaWeb.onQuickEventCreated();
-}
-</script>"##
-                        .to_string(),
-                )
-                .into_response();
+                return stay_ok_script().into_response();
             }
             Redirect::to(&format!("{redirect}&refresh=1&msg=Événement%20créé")).into_response()
         }
@@ -2176,18 +2529,39 @@ pub struct UpdateEventForm {
     pub day: Option<u32>,
     pub view: Option<String>,
     pub filter: Option<String>,
+    /// Widget latéral : rester sur la page (réponse HTMX + refresh widget).
+    pub stay: Option<String>,
+}
+
+fn stay_ok_script() -> Html<String> {
+    Html(
+        r##"<script>
+if (window.HimaWeb) {
+  window.HimaWeb.onQuickEventCreated();
+}
+</script>"##
+            .to_string(),
+    )
 }
 
 async fn update_event(
     State(state): State<Arc<AppState>>,
     Form(form): Form<UpdateEventForm>,
 ) -> impl IntoResponse {
+    let stay =
+        form.stay.as_deref() == Some("1") || form.stay.as_deref() == Some("true");
     let cal = form.calendar.trim();
     let id = form.id.trim();
     if cal.is_empty() || id.is_empty() {
+        if stay {
+            return stay_alert_html("Événement incomplet").into_response();
+        }
         return Redirect::to("/calendar?msg=Événement%20incomplet").into_response();
     }
     let Some(client) = &state.calendula else {
+        if stay {
+            return stay_alert_html("Calendula absent").into_response();
+        }
         return Redirect::to("/calendar?msg=Calendula%20absent").into_response();
     };
     let start = combine_dt(&form.start_date, &form.start_time);
@@ -2285,13 +2659,17 @@ async fn update_event(
         };
         return match client.create_event(cal, ical.as_bytes()).await {
             Ok(_) => {
-                if let (Some(y), Some(m)) = (form.year, form.month) {
-                    let _ = refresh_calendar_month(&state, y, m, false, true).await;
+                after_calendar_mutation(&state, cal, id, form.year, form.month, false).await;
+                if stay {
+                    return stay_ok_script().into_response();
                 }
                 Redirect::to(&format!("{redirect}&refresh=1&msg=Occurrence%20modifiée"))
                     .into_response()
             }
             Err(e) => {
+                if stay {
+                    return stay_alert_html(&format!("Erreur: {e}")).into_response();
+                }
                 let err_s = format!("Erreur: {e}");
                 let msg = urlencoding::encode(&err_s);
                 Redirect::to(&format!("{redirect}&msg={msg}")).into_response()
@@ -2331,6 +2709,9 @@ async fn update_event(
     let mut ical = match ical {
         Ok(v) => v,
         Err(e) => {
+            if stay {
+                return stay_alert_html(&format!("Erreur tcal: {e}")).into_response();
+            }
             let err_s = format!("Erreur tcal: {e}");
             let msg = urlencoding::encode(&err_s);
             return Redirect::to(&format!("/calendar?msg={msg}")).into_response();
@@ -2347,12 +2728,16 @@ async fn update_event(
         .await
     {
         Ok(()) => {
-            if let (Some(y), Some(m)) = (form.year, form.month) {
-                let _ = refresh_calendar_month(&state, y, m, false, true).await;
+            after_calendar_mutation(&state, cal, id, form.year, form.month, false).await;
+            if stay {
+                return stay_ok_script().into_response();
             }
             Redirect::to(&format!("{redirect}&refresh=1&msg=Événement%20modifié")).into_response()
         }
         Err(e) => {
+            if stay {
+                return stay_alert_html(&format!("Erreur: {e}")).into_response();
+            }
             let err_s = format!("Erreur: {e}");
             let msg = urlencoding::encode(&err_s);
             Redirect::to(&format!("{redirect}&msg={msg}")).into_response()
@@ -2383,16 +2768,25 @@ pub struct DeleteEventForm {
     pub day: Option<u32>,
     pub view: Option<String>,
     pub filter: Option<String>,
+    pub stay: Option<String>,
 }
 
 async fn delete_event(
     State(state): State<Arc<AppState>>,
     Form(form): Form<DeleteEventForm>,
 ) -> impl IntoResponse {
+    let stay =
+        form.stay.as_deref() == Some("1") || form.stay.as_deref() == Some("true");
     let Some(client) = &state.calendula else {
+        if stay {
+            return stay_alert_html("Calendula absent").into_response();
+        }
         return Redirect::to("/calendar?msg=Calendula%20absent").into_response();
     };
     if form.id.trim().is_empty() || form.calendar.trim().is_empty() {
+        if stay {
+            return stay_alert_html("Événement incomplet").into_response();
+        }
         return Redirect::to("/calendar?msg=Événement%20incomplet").into_response();
     }
     let _permit = state.cli_limit.acquire().await.ok();
@@ -2435,8 +2829,10 @@ async fn delete_event(
         };
         return match client.update_event(cal, id, master.as_bytes(), None).await {
             Ok(()) => {
-                if let (Some(y), Some(m)) = (form.year, form.month) {
-                    let _ = refresh_calendar_month(&state, y, m, false, true).await;
+                // Occurrence seule : ne pas supprimer le maître du cache.
+                after_calendar_mutation(&state, cal, id, form.year, form.month, false).await;
+                if stay {
+                    return stay_ok_script().into_response();
                 }
                 Redirect::to(&format!(
                     "{redirect}&refresh=1&msg=Occurrence%20supprimée"
@@ -2444,6 +2840,9 @@ async fn delete_event(
                 .into_response()
             }
             Err(e) => {
+                if stay {
+                    return stay_alert_html(&format!("Erreur: {e}")).into_response();
+                }
                 let err_s = format!("Erreur: {e}");
                 let msg = urlencoding::encode(&err_s);
                 Redirect::to(&format!("{redirect}&msg={msg}")).into_response()
@@ -2453,12 +2852,16 @@ async fn delete_event(
 
     match client.delete_event(cal, id).await {
         Ok(()) => {
-            if let (Some(y), Some(m)) = (form.year, form.month) {
-                let _ = refresh_calendar_month(&state, y, m, false, true).await;
+            after_calendar_mutation(&state, cal, id, form.year, form.month, true).await;
+            if stay {
+                return stay_ok_script().into_response();
             }
             Redirect::to(&format!("{redirect}&refresh=1&msg=Événement%20supprimé")).into_response()
         }
         Err(e) => {
+            if stay {
+                return stay_alert_html(&format!("Erreur: {e}")).into_response();
+            }
             let err_s = format!("Erreur: {e}");
             let msg = urlencoding::encode(&err_s);
             Redirect::to(&format!("{redirect}&msg={msg}")).into_response()

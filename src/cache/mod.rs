@@ -72,7 +72,112 @@ impl Cache {
         self.migrate_cal_events()?;
         self.migrate_contacts_photos()?;
         self.migrate_messages_cid()?;
+        self.migrate_event_mail_links()?;
         Ok(())
+    }
+
+    fn migrate_event_mail_links(&self) -> Result<(), CacheError> {
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS event_mail_links (
+                calendar_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                account TEXT NOT NULL DEFAULT '',
+                mailbox TEXT NOT NULL,
+                mail_id TEXT NOT NULL,
+                message_id TEXT NOT NULL DEFAULT '',
+                subject TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (calendar_id, event_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_event_mail_by_mail
+                ON event_mail_links(account, mailbox, mail_id);
+            "#,
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_event_mail_link(
+        &self,
+        calendar_id: &str,
+        event_id: &str,
+        account: &str,
+        mailbox: &str,
+        mail_id: &str,
+        message_id: &str,
+        subject: &str,
+    ) -> Result<(), CacheError> {
+        self.conn.execute(
+            "INSERT INTO event_mail_links(calendar_id, event_id, account, mailbox, mail_id, message_id, subject)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(calendar_id, event_id) DO UPDATE SET
+               account=excluded.account, mailbox=excluded.mailbox, mail_id=excluded.mail_id,
+               message_id=excluded.message_id, subject=excluded.subject",
+            params![
+                calendar_id,
+                event_id,
+                account,
+                mailbox,
+                mail_id,
+                message_id,
+                subject
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_event_mail_link(
+        &self,
+        calendar_id: &str,
+        event_id: &str,
+    ) -> Result<(), CacheError> {
+        self.conn.execute(
+            "DELETE FROM event_mail_links WHERE calendar_id = ?1 AND event_id = ?2",
+            params![calendar_id, event_id],
+        )?;
+        Ok(())
+    }
+
+    /// Lien pour un événement : (account, mailbox, mail_id, message_id, subject)
+    pub fn load_event_mail_link(
+        &self,
+        calendar_id: &str,
+        event_id: &str,
+    ) -> Result<Option<(String, String, String, String, String)>, CacheError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT account, mailbox, mail_id, message_id, subject
+                 FROM event_mail_links WHERE calendar_id = ?1 AND event_id = ?2",
+                params![calendar_id, event_id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Événements liés à un mail : (calendar_id, event_id, subject)
+    pub fn load_mail_event_links(
+        &self,
+        account: &str,
+        mailbox: &str,
+        mail_id: &str,
+    ) -> Result<Vec<(String, String, String)>, CacheError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT calendar_id, event_id, subject FROM event_mail_links
+             WHERE account = ?1 AND mailbox = ?2 AND mail_id = ?3",
+        )?;
+        let rows = stmt.query_map(params![account, mailbox, mail_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?;
+        Ok(rows.filter_map(Result::ok).collect())
     }
 
     /// Persiste `cid_map` (images inline MIME) pour que le cache ne perde pas les cid:.
@@ -369,6 +474,51 @@ impl Cache {
             })
         })?;
         Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    /// Retire des enveloppes du cache local (après delete / move IMAP).
+    pub fn remove_envelopes(
+        &self,
+        account: &str,
+        mailbox: &str,
+        ids: &[&str],
+    ) -> Result<(), CacheError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "DELETE FROM envelopes WHERE account = ?1 AND mailbox = ?2 AND id = ?3",
+            )?;
+            for id in ids {
+                if id.trim().is_empty() {
+                    continue;
+                }
+                stmt.execute(params![account, mailbox, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Retire des corps de messages du cache (après delete / move).
+    pub fn remove_messages(&self, mailbox: &str, ids: &[&str]) -> Result<(), CacheError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare("DELETE FROM messages WHERE mailbox = ?1 AND id = ?2")?;
+            for id in ids {
+                if id.trim().is_empty() {
+                    continue;
+                }
+                stmt.execute(params![mailbox, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn save_message(&self, mailbox: &str, msg: &MessageView) -> Result<(), CacheError> {
@@ -804,6 +954,19 @@ impl Cache {
     }
 
 
+    /// Purge locale d’un événement (après delete CalDAV, avant refresh).
+    pub fn remove_calendar_event(
+        &self,
+        calendar_id: &str,
+        event_id: &str,
+    ) -> Result<(), CacheError> {
+        self.conn.execute(
+            "DELETE FROM cal_events WHERE calendar_id = ?1 AND id = ?2",
+            params![calendar_id, event_id],
+        )?;
+        Ok(())
+    }
+
     /// Remplace uniquement les événements du mois indiqué (préserve les autres mois en cache).
     /// Tuple: (id, summary, start, end, description, location, rrule)
     pub fn replace_calendar_events_in_month(
@@ -972,16 +1135,18 @@ impl Cache {
     }
 
     /// Prochains événements (start_raw >= aujourd'hui, limite N).
+    /// Tuple: (id, summary, start_raw, end_raw, calendar_id, location, description)
     pub fn load_upcoming_events(
         &self,
         limit: usize,
-    ) -> Result<Vec<(String, String, String, String, String)>, CacheError> {
+    ) -> Result<Vec<(String, String, String, String, String, String, String)>, CacheError> {
         let now = chrono::Local::now().format("%Y-%m-%d").to_string();
         let now_compact = chrono::Local::now().format("%Y%m%d").to_string();
         // Pas de LIMIT avant filtre : sinon les vieux événements (anniversaires…)
         // saturent la fenêtre et masquent le mois suivant.
         let mut stmt = self.conn.prepare(
-            "SELECT id, summary, start_raw, calendar_id, location FROM cal_events
+            "SELECT id, summary, start_raw, end_raw, calendar_id, location, description
+             FROM cal_events
              ORDER BY start_raw ASC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -989,8 +1154,10 @@ impl Cache {
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4).unwrap_or_default(),
+                r.get::<_, String>(3).unwrap_or_default(),
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5).unwrap_or_default(),
+                r.get::<_, String>(6).unwrap_or_default(),
             ))
         })?;
         let mut out = Vec::new();

@@ -1655,6 +1655,7 @@ struct MessageTemplate {
     pub archive_readonly: bool,
     /// Replier les messages non focus
     pub thread_collapse: bool,
+    pub ai_enabled: bool,
 }
 
 pub struct ThreadPart {
@@ -2196,8 +2197,8 @@ async fn message(
                 }
             }
         }
-        for tid in missing {
-            if !state.himalaya_available {
+        if !missing.is_empty() && !state.himalaya_available {
+            for tid in missing {
                 loaded.push((
                     tid,
                     None,
@@ -2205,30 +2206,47 @@ async fn message(
                     Some("hors ligne — message non en cache".into()),
                 ));
                 offline_any = true;
-                continue;
             }
-            let _permit = state.cli_limit.acquire().await.ok();
-            match state
-                .himalaya
-                .read_message(&name, &tid, account_ref)
-                .await
-            {
-                Ok(msg) => {
-                    {
-                        let cache = state.cache.lock().await;
-                        let _ = cache.save_message(&name, &msg);
+        } else if !missing.is_empty() {
+            // Lecture parallèle bornée (sémaphore cli_limit) au lieu d’une boucle séquentielle.
+            let mut set = tokio::task::JoinSet::new();
+            for tid in missing {
+                let himalaya = state.himalaya.clone();
+                let cache = Arc::clone(&state.cache);
+                let cli_limit = Arc::clone(&state.cli_limit);
+                let mb = name.clone();
+                let acc = account.clone();
+                set.spawn(async move {
+                    let _permit = cli_limit.acquire().await.ok();
+                    match himalaya.read_message(&mb, &tid, acc.as_deref()).await {
+                        Ok(msg) => {
+                            {
+                                let cache = cache.lock().await;
+                                let _ = cache.save_message(&mb, &msg);
+                            }
+                            (tid, Some(msg), false, None::<String>)
+                        }
+                        Err(e) => {
+                            let cached = {
+                                let cache = cache.lock().await;
+                                cache.load_message(&mb, &tid).ok().flatten()
+                            };
+                            (tid, cached, true, Some(e.to_string()))
+                        }
                     }
-                    loaded.push((tid, Some(msg), false, None));
-                }
-                Err(e) => {
-                    let cached = {
-                        let cache = state.cache.lock().await;
-                        cache.load_message(&name, &tid).ok().flatten()
-                    };
-                    if cached.is_none() {
-                        offline_any = true;
+                });
+            }
+            while let Some(res) = set.join_next().await {
+                match res {
+                    Ok((tid, msg, off, err)) => {
+                        if off && msg.is_none() {
+                            offline_any = true;
+                        }
+                        loaded.push((tid, msg, off, err));
                     }
-                    loaded.push((tid, cached, true, Some(e.to_string())));
+                    Err(e) => {
+                        tracing::warn!("thread message join: {e}");
+                    }
                 }
             }
         }
@@ -2459,6 +2477,7 @@ async fn message(
         account: account.unwrap_or_default(),
         archive_readonly,
         thread_collapse: prefs_snap.thread_collapse && thread_count > 1,
+        ai_enabled: prefs_snap.ai_enabled,
     })
 }
 
@@ -2675,9 +2694,10 @@ async fn move_msg(
         .await
     {
         Ok(()) => {
+            let acc = account.as_deref().unwrap_or("");
+            invalidate_mail_cache(&state, acc, &form.mailbox, &form.id).await;
             let id_js = serde_json::to_string(&form.id).unwrap_or_else(|_| "\"\"".into());
             let mb_js = serde_json::to_string(&form.mailbox).unwrap_or_else(|_| "\"\"".into());
-            let acc = account.as_deref().unwrap_or("");
             let acc_js = serde_json::to_string(acc).unwrap_or_else(|_| "\"\"".into());
             let to_js = serde_json::to_string(&form.to).unwrap_or_else(|_| "\"\"".into());
             Html(format!(
@@ -2847,14 +2867,18 @@ async fn move_api(
             )
             .await
         {
-            Ok(()) => moved.push(MoveApiMoved {
-                id: item.id,
-                mailbox: item.mailbox,
-                account: from_acc.unwrap_or_default(),
-                message_id,
-                to_mailbox: to_mailbox.clone(),
-                permanent: false,
-            }),
+            Ok(()) => {
+                let acc_name = from_acc.clone().unwrap_or_default();
+                invalidate_mail_cache(&state, &acc_name, &item.mailbox, &item.id).await;
+                moved.push(MoveApiMoved {
+                    id: item.id,
+                    mailbox: item.mailbox,
+                    account: acc_name,
+                    message_id,
+                    to_mailbox: to_mailbox.clone(),
+                    permanent: false,
+                });
+            }
             Err(e) => errors.push(format!("{}: {e}", item.id)),
         }
     }
@@ -2945,14 +2969,17 @@ async fn delete_api(
             .delete_message(&item.mailbox, &item.id, account.as_deref())
             .await
         {
-            Ok(()) => deleted.push(MoveApiMoved {
-                id: item.id,
-                mailbox: item.mailbox,
-                account: acc_name,
-                message_id,
-                to_mailbox,
-                permanent,
-            }),
+            Ok(()) => {
+                invalidate_mail_cache(&state, &acc_name, &item.mailbox, &item.id).await;
+                deleted.push(MoveApiMoved {
+                    id: item.id,
+                    mailbox: item.mailbox,
+                    account: acc_name,
+                    message_id,
+                    to_mailbox,
+                    permanent,
+                });
+            }
             Err(e) => errors.push(format!("{}: {e}", item.id)),
         }
     }
@@ -3056,6 +3083,17 @@ async fn delete_ntfy_local(state: &AppState, id: &str) {
     let _ = prefs.save();
 }
 
+/// Purge enveloppe + corps du cache SQLite après delete/move (évite la réinjection stale).
+async fn invalidate_mail_cache(state: &AppState, account: &str, mailbox: &str, id: &str) {
+    if id.trim().is_empty() || mailbox.trim().is_empty() {
+        return;
+    }
+    let cache = state.cache.lock().await;
+    let ids = [id];
+    let _ = cache.remove_envelopes(account, mailbox, &ids);
+    let _ = cache.remove_messages(mailbox, &ids);
+}
+
 fn ntfy_delete_ok_html(id: &str, mailbox: &str, account: &str) -> axum::response::Response {
     let id_js = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".into());
     let mb_js = serde_json::to_string(mailbox).unwrap_or_else(|_| "\"\"".into());
@@ -3115,10 +3153,11 @@ async fn delete_msg(
         .await
     {
         Ok(()) => {
+            let acc = account.as_deref().unwrap_or("");
+            invalidate_mail_cache(&state, acc, &form.mailbox, &form.id).await;
             let id_js = serde_json::to_string(&form.id).unwrap_or_else(|_| "\"\"".into());
             let mb_js = serde_json::to_string(&form.mailbox).unwrap_or_else(|_| "\"\"".into());
-            let acc_js = serde_json::to_string(account.as_deref().unwrap_or(""))
-                .unwrap_or_else(|_| "\"\"".into());
+            let acc_js = serde_json::to_string(acc).unwrap_or_else(|_| "\"\"".into());
             Html(format!(
                 r##"<div class="empty-read" data-mail-event="deleted" data-id="{}" data-mailbox="{}" data-account="{}">
   <i data-lucide="mail-open"></i><p class="muted">Message supprimé</p>
@@ -3131,7 +3170,7 @@ if (window.lucide) lucide.createIcons();
 </script>"##,
                 html_escape(&form.id),
                 html_escape(&form.mailbox),
-                html_escape(account.as_deref().unwrap_or("")),
+                html_escape(acc),
             ))
             .into_response()
         }
@@ -3204,12 +3243,10 @@ async fn delete_batch(
             .await
         {
             Ok(()) => {
+                let acc_name = account.unwrap_or_default();
+                invalidate_mail_cache(&state, &acc_name, &it.mailbox, &it.id).await;
                 ok += 1;
-                last_ok = Some((
-                    it.id.clone(),
-                    it.mailbox.clone(),
-                    account.unwrap_or_default(),
-                ));
+                last_ok = Some((it.id.clone(), it.mailbox.clone(), acc_name));
             }
             Err(e) => errors.push(format!("{}: {e}", it.id)),
         }

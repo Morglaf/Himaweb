@@ -12,7 +12,7 @@ README.local.md
 *.local.md
 README.winget.md
 
-# Données / secrets utilisateur (ne jamais committer)
+# DonnÃ©es / secrets utilisateur (ne jamais committer)
 prefs.json
 **/config.toml
 !**/Cargo.toml
@@ -30,3 +30,7 @@ tokens/
 
 # Sortie Inno Setup
 dist/
+build.ps1
+deploy.ps1
+release.ps1
+old/

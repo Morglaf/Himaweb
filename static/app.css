@@ -3471,6 +3471,22 @@ input.toggle:checked::after {
   border-radius: var(--radius);
 }
 .side-event-list li:hover, .side-contact-list li:hover { background: var(--surface-2); }
+.side-event-list li.side-ev-click {
+  cursor: pointer;
+  border-left: 3px solid var(--cal-color, var(--accent));
+}
+.mail-event-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0 0.25rem 0.5rem;
+}
+.mail-link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
 .side-cta { margin-top: 0.35rem; font-size: 0.78rem; padding: 0.3rem 0.55rem; }
 .btn.sm { font-size: 0.78rem; padding: 0.3rem 0.55rem; }
 

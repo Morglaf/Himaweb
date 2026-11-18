@@ -1463,6 +1463,9 @@ function eventModal(opts) {
     pickedDays: [],
     location: '',
     description: '',
+    /** Lien mail optionnel { account, mailbox, mailId, messageId, subject } */
+    mailLink: null,
+    pendingMailLink: null,
     rrule: 'none',
     rruleFrequency: 'monthly',
     rruleInterval: '',
@@ -1575,6 +1578,7 @@ function eventModal(opts) {
       this.endTime = '11:00';
       this.location = '';
       this.description = '';
+      this.mailLink = this.pendingMailLink || null;
       this.rrule = 'none';
       this.resetRruleExtras();
       this.recurScope = 'all';
@@ -1586,6 +1590,37 @@ function eventModal(opts) {
       this.aiError = '';
       if (firstCal) this.calendar = firstCal;
       this._openModal();
+    },
+    setPendingMailLink(link) {
+      this.pendingMailLink = link || null;
+      this.mailLink = link || null;
+    },
+    clearMailLink() {
+      this.mailLink = null;
+      this.pendingMailLink = null;
+    },
+    async detachMailLink() {
+      if (!this.id || !this.calendar) {
+        this.clearMailLink();
+        return;
+      }
+      try {
+        await fetch('/calendar/mail-link', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ calendar_id: this.calendar, event_id: this.id }),
+        });
+      } catch (e) {
+        console.warn('detach mail link', e);
+      }
+      this.clearMailLink();
+    },
+    openLinkedMail() {
+      const l = this.mailLink;
+      if (!l || !l.mailbox || !l.mailId) return;
+      if (window.HimaWeb && HimaWeb.openMailMessage) {
+        HimaWeb.openMailMessage(l.mailbox, l.mailId, l.account || '');
+      }
     },
     isDayPicked(iso) {
       return Array.isArray(this.pickedDays) && this.pickedDays.includes(iso);
@@ -1755,6 +1790,8 @@ function eventModal(opts) {
       this.endTime = obj.endTime || '11:00';
       this.location = obj.location || '';
       this.description = obj.description || '';
+      this.mailLink = obj.mailLink || null;
+      this.pendingMailLink = null;
       this.rrule = obj.rrule || 'none';
       this.applyRruleExtras(obj);
       this.clampRecurringEndUi();
@@ -1906,6 +1943,7 @@ function eventModal(opts) {
         if (data.location != null) this.location = data.location;
         if (data.description != null) this.description = data.description;
         if (data.rrule) this.rrule = data.rrule;
+        if (data.mailLink) this.mailLink = data.mailLink;
         this.applyRruleExtras(data);
         this.clampRecurringEndUi();
         this._seriesRecurring = this.isRecurringSeries();
@@ -1947,7 +1985,7 @@ function eventModal(opts) {
         if (!scope) return;
         this.recurScope = scope;
         this.$nextTick(() => {
-          if (this.$refs.delForm) this.$refs.delForm.submit();
+          this.submitDelForm();
         });
         return;
       }
@@ -1958,7 +1996,14 @@ function eventModal(opts) {
       });
       if (!ok) return;
       this.recurScope = 'all';
-      if (this.$refs.delForm) this.$refs.delForm.submit();
+      this.submitDelForm();
+    },
+    submitDelForm() {
+      const form = this.$refs.delForm;
+      if (!form) return;
+      // requestSubmit respecte hx-post (stay widget) ; submit() navigue en plein page.
+      if (typeof form.requestSubmit === 'function') form.requestSubmit();
+      else form.submit();
     },
     async fillAi() {
       if (!this.ai || this.aiBusy) return;
@@ -3833,6 +3878,299 @@ window.HimaWeb = {
     this.refreshSideWidget();
   },
 
+  openMailMessage(mailbox, id, account) {
+    if (!mailbox || !id || !window.htmx) return;
+    let url =
+      '/partials/message?mailbox=' +
+      encodeURIComponent(mailbox) +
+      '&id=' +
+      encodeURIComponent(id);
+    if (account) url += '&account=' + encodeURIComponent(account);
+    const pane = document.getElementById('message-pane');
+    if (!pane) {
+      window.location.href =
+        '/?mailbox=' + encodeURIComponent(mailbox) + (account ? '&account=' + encodeURIComponent(account) : '');
+      return;
+    }
+    window.htmx.ajax('GET', url, { target: '#message-pane', swap: 'innerHTML' });
+  },
+
+  findEventModalData() {
+    const roots = [
+      document.querySelector('.side-widget-inner[x-data]'),
+      document.querySelector('section.cal-root[x-data], .cal-page[x-data]'),
+    ].filter(Boolean);
+    for (const el of roots) {
+      try {
+        const d =
+          (el._x_dataStack && el._x_dataStack[0]) ||
+          (window.Alpine && Alpine.$data(el));
+        if (d && typeof d.openEditObj === 'function') return d;
+      } catch (_) {}
+    }
+    return null;
+  },
+
+  async linkMailToEvent(btn) {
+    if (!btn) return;
+    const mailbox = btn.getAttribute('data-mailbox') || '';
+    const mailId = btn.getAttribute('data-message-id') || btn.getAttribute('data-id') || '';
+    const account = btn.getAttribute('data-account') || '';
+    const subject = btn.getAttribute('data-subject') || '';
+    const messageId = btn.getAttribute('data-msgid') || '';
+    if (!mailbox || !mailId) return;
+    let events = [];
+    try {
+      const res = await fetch('/calendar/upcoming.json', { headers: { Accept: 'application/json' } });
+      const data = await res.json();
+      events = (data && data.events) || [];
+    } catch (e) {
+      console.warn(e);
+    }
+    if (!events.length) {
+      await this.alertDialog(this.t('mail.link_event_none') || 'Aucun RDV à venir');
+      return;
+    }
+    const opts = events
+      .map(
+        (e) =>
+          `<option value="${String(e.calendarId).replace(/"/g, '&quot;')}::${String(e.id).replace(/"/g, '&quot;')}">${(e.summary || e.id).replace(/</g, '&lt;')} — ${(e.when || '').replace(/</g, '&lt;')}</option>`
+      )
+      .join('');
+    const val = await this.promptSelect(
+      this.t('mail.link_event_pick') || 'Choisir un événement',
+      opts,
+      { confirmLabel: this.t('mail.link_event') || 'Lier' }
+    );
+    if (!val) return;
+    const sep = val.indexOf('::');
+    if (sep < 0) return;
+    const calendarId = val.slice(0, sep);
+    const eventId = val.slice(sep + 2);
+    try {
+      const res = await fetch('/calendar/mail-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          calendar_id: calendarId,
+          event_id: eventId,
+          account,
+          mailbox,
+          mail_id: mailId,
+          message_id: messageId,
+          subject,
+        }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        await this.alertDialog(data.error || 'Erreur');
+        return;
+      }
+      await this.alertDialog(this.t('mail.link_event_ok') || 'Mail lié à l’événement');
+      this.refreshMailEventLinks(mailbox, mailId, account);
+    } catch (e) {
+      console.error(e);
+      await this.alertDialog('Échec du lien');
+    }
+  },
+
+  async createEventFromMailAi(btn) {
+    if (!btn) return;
+    const mailbox = btn.getAttribute('data-mailbox') || '';
+    const mailId = btn.getAttribute('data-message-id') || '';
+    const account = btn.getAttribute('data-account') || '';
+    const subject = btn.getAttribute('data-subject') || '';
+    const from = btn.getAttribute('data-from') || '';
+    const date = btn.getAttribute('data-date') || '';
+    if (!mailbox || !mailId) return;
+    HWProgress.begin();
+    btn.disabled = true;
+    try {
+      const now = (() => {
+        try {
+          const d = new Date();
+          const pad = (n) => String(n).padStart(2, '0');
+          const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+          return (
+            d.getFullYear() +
+            '-' +
+            pad(d.getMonth() + 1) +
+            '-' +
+            pad(d.getDate()) +
+            ' ' +
+            pad(d.getHours()) +
+            ':' +
+            pad(d.getMinutes()) +
+            (tz ? ' (' + tz + ')' : '')
+          );
+        } catch (_) {
+          return '';
+        }
+      })();
+      const res = await fetch('/ai/api/event-from-mail', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          mailbox,
+          id: mailId,
+          account: account || null,
+          subject,
+          from,
+          date,
+          now,
+        }),
+      });
+      const data = await res.json();
+      if (!data || !data.ok || !data.event) {
+        await this.alertDialog(
+          (data && data.error) || this.t('mail.ai_event_fail') || 'Impossible de générer le RDV'
+        );
+        return;
+      }
+      const ev = data.event || {};
+      const mail = data.mail || {};
+      let modal = this.findEventModalData();
+      if (!modal) {
+        this.toggleSideWidget(true);
+        await new Promise((r) => setTimeout(r, 400));
+        modal = this.findEventModalData();
+      }
+      if (!modal) {
+        await this.alertDialog('Ouvrez le panneau latéral pour créer le RDV');
+        return;
+      }
+      const link = {
+        account: mail.account || account || '',
+        mailbox: mail.mailbox || mailbox,
+        mailId: mail.mailId || mailId,
+        messageId: '',
+        subject: mail.subject || subject || '',
+      };
+      modal.setPendingMailLink(link);
+      modal.openCreate(ev.date || '', ev.end_date || ev.endDate || ev.date || '');
+      if (ev.summary) modal.summary = ev.summary;
+      if (ev.start_time || ev.startTime) modal.startTime = ev.start_time || ev.startTime;
+      if (ev.end_time || ev.endTime) modal.endTime = ev.end_time || ev.endTime;
+      if (ev.end_date || ev.endDate) modal.endDate = ev.end_date || ev.endDate;
+      if (ev.location != null) modal.location = ev.location;
+      if (ev.description != null) modal.description = ev.description;
+      if (ev.rrule) modal.rrule = ev.rrule;
+      modal.mailLink = link;
+      modal.aiPrompt = '';
+    } catch (e) {
+      console.error(e);
+      await this.alertDialog(this.t('mail.ai_event_fail') || 'Impossible de générer le RDV');
+    } finally {
+      btn.disabled = false;
+      HWProgress.end();
+    }
+  },
+
+  async openEventFromMail(btn) {
+    if (!btn) return;
+    const calendarId = btn.getAttribute('data-calendar-id') || '';
+    const eventId = btn.getAttribute('data-event-id') || '';
+    if (!calendarId || !eventId) return;
+    let modal = this.findEventModalData();
+    if (!modal) {
+      this.toggleSideWidget(true);
+      await new Promise((r) => setTimeout(r, 400));
+      modal = this.findEventModalData();
+    }
+    if (!modal) return;
+    try {
+      const res = await fetch(
+        '/calendar/event.json?calendar=' +
+          encodeURIComponent(calendarId) +
+          '&id=' +
+          encodeURIComponent(eventId)
+      );
+      const data = await res.json();
+      if (data.error) {
+        await this.alertDialog(data.error);
+        return;
+      }
+      modal.openEditObj({
+        id: eventId,
+        calendar: calendarId,
+        summary: data.summary || '',
+        date: data.date || '',
+        endDate: data.endDate || data.date || '',
+        startTime: data.startTime || '10:00',
+        endTime: data.endTime || '11:00',
+        location: data.location || '',
+        description: data.description || '',
+        rrule: data.rrule || 'none',
+        rruleFrequency: data.rruleFrequency,
+        rruleInterval: data.rruleInterval,
+        rruleCount: data.rruleCount,
+        rruleUntil: data.rruleUntil,
+        rruleByday: data.rruleByday,
+        mailLink: data.mailLink || null,
+      });
+    } catch (e) {
+      console.error(e);
+    }
+  },
+
+  async refreshMailEventLinks(mailbox, mailId, account) {
+    const bar = document.getElementById('mail-event-links');
+    if (!bar || !mailbox || !mailId) return;
+    try {
+      let url =
+        '/calendar/mail-link.json?mailbox=' +
+        encodeURIComponent(mailbox) +
+        '&mail_id=' +
+        encodeURIComponent(mailId);
+      if (account) url += '&account=' + encodeURIComponent(account);
+      const res = await fetch(url, { headers: { Accept: 'application/json' } });
+      const data = await res.json();
+      const links = (data && data.links) || [];
+      if (!links.length) {
+        bar.innerHTML = '';
+        bar.hidden = true;
+        return;
+      }
+      bar.hidden = false;
+      bar.innerHTML = links
+        .map(
+          (l) =>
+            `<button type="button" class="btn secondary sm" data-calendar-id="${String(l.calendarId).replace(/"/g, '&quot;')}" data-event-id="${String(l.eventId).replace(/"/g, '&quot;')}" onclick="HimaWeb.openEventFromMail(this)"><i data-lucide="calendar"></i> ${(l.subject || this.t('mail.view_event') || 'RDV').replace(/</g, '&lt;')}</button>`
+        )
+        .join(' ');
+      if (window.lucide) lucide.createIcons({ nodes: [...bar.querySelectorAll('[data-lucide]')] });
+    } catch (_) {}
+  },
+
+  promptSelect(title, optionsHtml, opts) {
+    opts = opts || {};
+    return new Promise((resolve) => {
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop confirm-backdrop';
+      backdrop.innerHTML = `<div class="modal-panel confirm-panel" role="dialog" aria-modal="true">
+        <div class="modal-head"><h2 class="font-display text-xl">${String(title || '').replace(/</g, '&lt;')}</h2></div>
+        <div class="confirm-body"><select id="hw-prompt-select" class="select w-full">${optionsHtml}</select></div>
+        <div class="btn-row compose-actions">
+          <button type="button" class="btn" data-ok>${(opts.confirmLabel || 'OK').replace(/</g, '&lt;')}</button>
+          <button type="button" class="btn ghost" data-cancel>${(this.t('common.cancel') || 'Annuler').replace(/</g, '&lt;')}</button>
+        </div>
+      </div>`;
+      const finish = (val) => {
+        backdrop.remove();
+        resolve(val);
+      };
+      backdrop.querySelector('[data-ok]').onclick = () => {
+        const sel = backdrop.querySelector('#hw-prompt-select');
+        finish(sel ? sel.value : '');
+      };
+      backdrop.querySelector('[data-cancel]').onclick = () => finish('');
+      backdrop.addEventListener('click', (ev) => {
+        if (ev.target === backdrop) finish('');
+      });
+      document.body.appendChild(backdrop);
+    });
+  },
+
   refreshSideWidget() {
     const body = document.querySelector('#side-widget .side-widget-body');
     if (body && window.htmx) {
@@ -4356,6 +4694,7 @@ window.HimaWeb = {
     if (this._prefetchBound) return;
     this._prefetchBound = true;
     this._prefetchSeen = new Set();
+    this._prefetchReady = new Set();
     this._prefetchInflight = 0;
     this._prefetchTimer = null;
     this._prefetchUrl = null;
@@ -4391,8 +4730,23 @@ window.HimaWeb = {
     });
   },
 
+  markMessagePrefetchReady(url) {
+    if (!url) return;
+    if (!this._prefetchReady) this._prefetchReady = new Set();
+    this._prefetchReady.add(url);
+    if (this._prefetchReady.size > 100) {
+      const first = this._prefetchReady.values().next().value;
+      this._prefetchReady.delete(first);
+    }
+  },
+
+  isMessagePrefetchReady(url) {
+    return !!(url && this._prefetchReady && this._prefetchReady.has(url));
+  },
+
   runMessagePrefetch(url) {
     if (!url || this._prefetchInflight >= 2) return;
+    if (this._prefetchReady && this._prefetchReady.has(url)) return;
     if (this._prefetchSeen.has(url)) return;
     this._prefetchSeen.add(url);
     if (this._prefetchSeen.size > 80) {
@@ -4402,12 +4756,30 @@ window.HimaWeb = {
     this._prefetchInflight += 1;
     const sep = url.includes('?') ? '&' : '?';
     fetch(`${url}${sep}prefetch=1`, { credentials: 'same-origin', headers: { Accept: 'text/plain' } })
+      .then((res) => {
+        if (res.ok || res.status === 204) this.markMessagePrefetchReady(url);
+        else this._prefetchSeen.delete(url);
+      })
       .catch(() => {
         this._prefetchSeen.delete(url);
       })
       .finally(() => {
         this._prefetchInflight = Math.max(0, this._prefetchInflight - 1);
       });
+  },
+
+  /** Précharge prev/next dans la liste après ouverture d’un message. */
+  prefetchNeighborMessages(env) {
+    if (!env || !env.parentElement) return;
+    const list = [...(env.closest('#envelope-list, #search-results') || document)
+      .querySelectorAll('.envelope[hx-get]')];
+    const idx = list.indexOf(env);
+    if (idx < 0) return;
+    for (const neighbor of [list[idx + 1], list[idx - 1], list[idx + 2], list[idx - 2]]) {
+      if (!neighbor) continue;
+      const url = neighbor.getAttribute('hx-get');
+      if (url) this.runMessagePrefetch(url);
+    }
   },
 
   reconnectAccount(account) {
@@ -5139,6 +5511,15 @@ window.HimaWeb = {
 
       if (nextGet && window.htmx) {
         window.htmx.ajax('GET', nextGet, { target: '#message-pane', swap: 'innerHTML' });
+        if (listEl && nextId) {
+          const match = [...listEl.querySelectorAll('.envelope')].find(
+            (e) => e.dataset.id === String(nextId) && (e.dataset.account || '') === nextAcc
+          );
+          if (match) {
+            listEl.querySelectorAll('.envelope').forEach((e) => e.classList.remove('is-selected'));
+            match.classList.add('is-selected');
+          }
+        }
       } else {
         const pane = document.getElementById('message-pane');
         if (pane) {
@@ -5148,44 +5529,10 @@ window.HimaWeb = {
         }
       }
 
-      const mb =
-        (last && last.mailbox) ||
-        (document.getElementById('current-mailbox') &&
-          document.getElementById('current-mailbox').value) ||
-        'Inbox';
-      const ac =
-        lastAcc ||
-        (document.getElementById('current-account') &&
-          document.getElementById('current-account').value) ||
-        '';
-      const sortEl = document.getElementById('mail-sort');
-      const sort = (sortEl && sortEl.value) || 'date_desc';
-      let url =
-        '/partials/envelopes?mailbox=' +
-        encodeURIComponent(mb) +
-        '&sort=' +
-        encodeURIComponent(sort) +
-        '&page=1';
-      if (ac) url += '&account=' + encodeURIComponent(ac);
-
-      if (window.htmx && listEl) {
-        const handler = (ev) => {
-          if (!ev.detail || ev.detail.target !== listEl) return;
-          document.removeEventListener('htmx:afterSwap', handler);
-          if (nextId) {
-            const match = [...listEl.querySelectorAll('.envelope')].find(
-              (e) => e.dataset.id === String(nextId) && (e.dataset.account || '') === nextAcc
-            );
-            if (match) {
-              listEl.querySelectorAll('.envelope').forEach((e) => e.classList.remove('is-selected'));
-              match.classList.add('is-selected');
-            }
-          }
-          if (window.lucide) lucide.createIcons();
-        };
-        document.addEventListener('htmx:afterSwap', handler);
-        window.htmx.ajax('GET', url, { target: '#envelope-list', swap: 'innerHTML' });
-      }
+      // Pas de reload HTMX de la liste : le DOM est déjà cohérent et le cache
+      // SQLite a été invalidé côté serveur. Un swap immédiat réinjectait les
+      // messages supprimés tant que fresh=1 n’avait pas terminé.
+      if (listEl) listEl.removeAttribute('data-stale');
       this.reloadSidebar();
       this.pollUnread();
     } finally {
@@ -5573,10 +5920,14 @@ window.HimaWeb = {
           this.openCompose(composeEdit);
           return;
         }
-        // Retour immédiat : l'ouverture d'un message passe par un appel CLI.
+        // Squelette seulement si le corps n’est pas déjà en cache (prefetch).
         if (env.hasAttribute('hx-get')) {
+          const url = env.getAttribute('hx-get');
           this.markEnvelopeOpening(env);
-          this.showMessageLoading();
+          if (!this.isMessagePrefetchReady(url)) {
+            this.showMessageLoading();
+          }
+          this.prefetchNeighborMessages(env);
         }
       },
       true
@@ -6232,7 +6583,23 @@ document.addEventListener('htmx:afterSwap', (ev) => {
     window.HimaWeb.setPaneBusy(t, false);
     hydrateMailAvatars(t, 0);
   }
-  if (t && t.id === 'message-pane') window.HimaWeb.clearEnvelopeOpening();
+  if (t && t.id === 'message-pane') {
+    window.HimaWeb.clearEnvelopeOpening();
+    const path =
+      (ev.detail && ev.detail.pathInfo && ev.detail.pathInfo.requestPath) ||
+      (ev.detail && ev.detail.xhr && ev.detail.xhr.responseURL) ||
+      '';
+    if (path && window.HimaWeb.markMessagePrefetchReady) {
+      try {
+        const u = path.startsWith('http') ? new URL(path).pathname + new URL(path).search : path;
+        const clean = u.replace(/([?&])prefetch=1&?/, '$1').replace(/[?&]$/, '');
+        window.HimaWeb.markMessagePrefetchReady(clean);
+        // Aussi la variante sans query noise pour matcher hx-get
+        const selected = document.querySelector('.envelope.is-selected[hx-get], .envelope.is-opening[hx-get]');
+        if (selected) window.HimaWeb.markMessagePrefetchReady(selected.getAttribute('hx-get'));
+      } catch (_) {}
+    }
+  }
   if (t && window.Alpine && typeof Alpine.initTree === 'function') {
     if (
       t.id === 'compose-layer' ||

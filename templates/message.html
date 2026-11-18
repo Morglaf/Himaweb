@@ -9,6 +9,20 @@
     <span class="thread-badge" title="Messages dans la conversation">{{ thread_count }}</span>
     {% endif %}
   </div>
+  <div id="mail-event-links" class="mail-event-links" hidden
+       data-mailbox="{{ mailbox }}" data-mail-id="{{ id }}" data-account="{{ account }}"></div>
+  <script>
+  (function () {
+    var el = document.getElementById('mail-event-links');
+    if (el && window.HimaWeb && HimaWeb.refreshMailEventLinks) {
+      HimaWeb.refreshMailEventLinks(
+        el.getAttribute('data-mailbox') || '',
+        el.getAttribute('data-mail-id') || '',
+        el.getAttribute('data-account') || ''
+      );
+    }
+  })();
+  </script>
 
   {% for m in thread %}
   <article class="message-view thread-item {% if m.is_focus %}is-focus{% endif %} {% if m.unread %}is-unread{% endif %}"
@@ -103,6 +117,17 @@
         <a class="icon-btn" title="Répondre" data-i18n-title="mail.reply" href="/compose?kind=reply&mailbox={{ mailbox_enc }}&id={{ m.id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="reply"></i></a>
         <a class="icon-btn" title="Répondre à tous" data-i18n-title="mail.reply_all" href="/compose?kind=reply-all&mailbox={{ mailbox_enc }}&id={{ m.id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="reply-all"></i></a>
         <a class="icon-btn" title="Transférer" data-i18n-title="mail.forward" href="/compose?kind=forward&mailbox={{ mailbox_enc }}&id={{ m.id }}{% if !account.is_empty() %}&account={{ account_enc }}{% endif %}"><i data-lucide="forward"></i></a>
+        <button type="button" class="icon-btn" title="Lier à un RDV" data-i18n-title="mail.link_event"
+                data-mailbox="{{ mailbox }}" data-message-id="{{ m.id }}" data-subject="{{ m.subject }}"
+                {% if !account.is_empty() %}data-account="{{ account }}"{% endif %}
+                onclick="HimaWeb.linkMailToEvent(this)"><i data-lucide="link"></i></button>
+        {% if ai_enabled %}
+        <button type="button" class="icon-btn" title="Créer un RDV (IA)" data-i18n-title="mail.ai_event"
+                data-mailbox="{{ mailbox }}" data-message-id="{{ m.id }}" data-subject="{{ m.subject }}"
+                data-from="{{ m.from }}" data-date="{{ m.date }}"
+                {% if !account.is_empty() %}data-account="{{ account }}"{% endif %}
+                onclick="HimaWeb.createEventFromMailAi(this)"><i data-lucide="sparkles"></i></button>
+        {% endif %}
         {% endif %}
         <button type="button" class="icon-btn no-print" title="Imprimer" data-i18n-title="mail.print"
                 onclick="window.print()"><i data-lucide="printer"></i></button>

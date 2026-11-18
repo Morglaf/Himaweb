@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::cache::Cache;
@@ -38,6 +39,9 @@ pub struct AppState {
     pub neverest_available: bool,
     pub mirador_available: bool,
     pub ortie_available: bool,
+    /// Génération par mois calendrier : un fetch démarré avant une mutation
+    /// ne doit plus écraser le cache si la génération a été bumpée depuis.
+    pub cal_month_gen: Arc<Mutex<HashMap<(i32, u32), u64>>>,
 }
 
 impl AppState {
@@ -150,7 +154,22 @@ impl AppState {
             neverest_available,
             mirador_available,
             ortie_available,
+            cal_month_gen: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// Lecture du token courant pour un mois (0 si absent).
+    pub async fn cal_month_token(&self, year: i32, month: u32) -> u64 {
+        let map = self.cal_month_gen.lock().await;
+        map.get(&(year, month)).copied().unwrap_or(0)
+    }
+
+    /// Invalide les fetches en cours pour ce mois (après delete/update).
+    pub async fn bump_cal_month(&self, year: i32, month: u32) -> u64 {
+        let mut map = self.cal_month_gen.lock().await;
+        let e = map.entry((year, month)).or_insert(0);
+        *e = e.saturating_add(1);
+        *e
     }
 
     /// Compte Himalaya pour les appels CLI (jamais `__all__`).

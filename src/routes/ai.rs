@@ -20,6 +20,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/ai/event", post(ai_event_draft))
         .route("/ai/api/mail", post(ai_api_mail))
         .route("/ai/api/event", post(ai_api_event))
+        .route("/ai/api/event-from-mail", post(ai_api_event_from_mail))
         .route("/ai/api/inbox-summary", post(ai_api_inbox_summary))
 }
 
@@ -212,6 +213,133 @@ async fn ai_api_event(
         Ok(v) => Json(json!({ "ok": true, "event": v })).into_response(),
         Err(e) => Json(json!({ "error": e })).into_response(),
     }
+}
+
+#[derive(Deserialize)]
+pub struct EventFromMailBody {
+    pub mailbox: String,
+    pub id: String,
+    pub account: Option<String>,
+    pub subject: Option<String>,
+    pub from: Option<String>,
+    pub date: Option<String>,
+    pub now: Option<String>,
+    /// Extrait optionnel déjà côté client (sinon lecture Himalaya / cache).
+    pub body_excerpt: Option<String>,
+}
+
+async fn ai_api_event_from_mail(
+    State(state): State<Arc<AppState>>,
+    axum::Json(body): axum::Json<EventFromMailBody>,
+) -> impl IntoResponse {
+    let prefs = state.prefs.lock().await.clone();
+    if !prefs.ai_enabled {
+        return Json(json!({ "error": "IA désactivée" })).into_response();
+    }
+    let mailbox = body.mailbox.trim();
+    let id = body.id.trim();
+    if mailbox.is_empty() || id.is_empty() {
+        return Json(json!({ "error": "Message incomplet" })).into_response();
+    }
+    let account = body
+        .account
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let mut excerpt = body
+        .body_excerpt
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if excerpt.is_empty() {
+        // Cache d’abord, sinon Himalaya.
+        let cached = {
+            let cache = state.cache.lock().await;
+            cache.load_message(mailbox, id).ok().flatten()
+        };
+        if let Some(msg) = cached {
+            excerpt = if !msg.body_text.trim().is_empty() {
+                msg.body_text
+            } else {
+                strip_html_rough(&msg.body_html)
+            };
+        } else if state.himalaya_available {
+            let _permit = state.cli_limit.acquire().await.ok();
+            if let Ok(msg) = state
+                .himalaya
+                .read_message(mailbox, id, account)
+                .await
+            {
+                {
+                    let cache = state.cache.lock().await;
+                    let _ = cache.save_message(mailbox, &msg);
+                }
+                excerpt = if !msg.body_text.trim().is_empty() {
+                    msg.body_text
+                } else {
+                    strip_html_rough(&msg.body_html)
+                };
+            }
+        }
+    }
+    // Borne le contexte pour l’API.
+    if excerpt.chars().count() > 4000 {
+        excerpt = excerpt.chars().take(4000).collect::<String>() + "…";
+    }
+
+    let subject = body.subject.as_deref().unwrap_or("").trim();
+    let from = body.from.as_deref().unwrap_or("").trim();
+    let date = body.date.as_deref().unwrap_or("").trim();
+    let mut prompt = String::from(
+        "À partir de ce mail, propose un rendez-vous calendrier (titre, dates/heures, lieu, notes). ",
+    );
+    prompt.push_str("Si aucune date claire n’est dans le mail, propose un créneau raisonnable prochain jour ouvré.\n\n");
+    if !from.is_empty() {
+        prompt.push_str(&format!("De: {from}\n"));
+    }
+    if !subject.is_empty() {
+        prompt.push_str(&format!("Sujet: {subject}\n"));
+    }
+    if !date.is_empty() {
+        prompt.push_str(&format!("Date du mail: {date}\n"));
+    }
+    prompt.push_str("\nCorps:\n");
+    prompt.push_str(if excerpt.is_empty() {
+        "(corps indisponible)"
+    } else {
+        &excerpt
+    });
+
+    match generate_event(&prefs, &prompt, body.now.as_deref(), None).await {
+        Ok(v) => Json(json!({
+            "ok": true,
+            "event": v,
+            "mail": {
+                "account": account.unwrap_or(""),
+                "mailbox": mailbox,
+                "mailId": id,
+                "subject": subject,
+            }
+        }))
+        .into_response(),
+        Err(e) => Json(json!({ "error": e })).into_response(),
+    }
+}
+
+fn strip_html_rough(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[derive(Deserialize)]

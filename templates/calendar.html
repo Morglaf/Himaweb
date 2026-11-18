@@ -280,6 +280,20 @@
         <input type="hidden" name="recur_scope" :value="recurScope" />
         <input type="hidden" name="occurrence_start" :value="occurrenceStart" />
         <input type="hidden" name="occ_n" :value="occN || ''" />
+        <input type="hidden" name="link_mail_account" :value="mailLink && mailLink.account || ''" />
+        <input type="hidden" name="link_mail_mailbox" :value="mailLink && mailLink.mailbox || ''" />
+        <input type="hidden" name="link_mail_id" :value="mailLink && (mailLink.mailId || mailLink.mail_id) || ''" />
+        <input type="hidden" name="link_mail_message_id" :value="mailLink && (mailLink.messageId || mailLink.message_id) || ''" />
+        <input type="hidden" name="link_mail_subject" :value="mailLink && mailLink.subject || ''" />
+
+        <div class="compose-inline-row mail-link-row" x-show="mailLink && mailLink.mailbox" x-cloak>
+          <span class="label" data-i18n="cal.mail_linked">Mail lié</span>
+          <div class="grow mail-link-actions">
+            <button type="button" class="btn secondary sm" @click="openLinkedMail()" data-i18n="cal.open_mail">Ouvrir le mail</button>
+            <button type="button" class="btn ghost sm" @click="detachMailLink()" data-i18n="cal.unlink_mail">Détacher</button>
+            <span class="muted tiny" x-text="mailLink && (mailLink.subject || mailLink.mailId || '')"></span>
+          </div>
+        </div>
 
         <template x-if="ai">
           <div class="compose-ai-row">

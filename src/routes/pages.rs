@@ -78,6 +78,7 @@ struct SidePluginPanel {
 }
 
 struct SideEventRow {
+    id: String,
     summary: String,
     when: String,
     location: String,
@@ -86,6 +87,8 @@ struct SideEventRow {
     calendar_id: String,
     calendar_name: String,
     color: String,
+    /// JSON pour Alpine `openEditJson` (échappé dans le template).
+    ev_json: String,
 }
 
 struct SideCalOpt {
@@ -162,8 +165,10 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             .load_upcoming_events(fetch_limit)
             .unwrap_or_default()
             .into_iter()
-            .filter(|(_id, _summary, _start, cal, _location)| !prefs.is_calendar_hidden(cal))
-            .map(|(_id, summary, start, cal, location)| {
+            .filter(|(_id, _summary, _start, _end, cal, _location, _desc)| {
+                !prefs.is_calendar_hidden(cal)
+            })
+            .map(|(id, summary, start, end, cal, location, description)| {
                 let maps_url = crate::routes::calendar::build_maps_url(
                     &prefs.maps_provider,
                     &prefs.home_address,
@@ -173,7 +178,18 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 // Nom d’apparence du compte (pas « Lea — Leaaa »)
                 let calendar_name = prefs.cal_account_label(&account);
                 let color = prefs.calendar_color(&cal);
+                let ev_json = crate::routes::calendar::upcoming_event_ev_json(
+                    &id,
+                    &cal,
+                    &summary,
+                    &start,
+                    &end,
+                    &location,
+                    &description,
+                    &color,
+                );
                 SideEventRow {
+                    id,
                     summary,
                     when: format_event_when(&start),
                     location,
@@ -182,6 +198,7 @@ async fn side_widget(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     calendar_id: cal,
                     calendar_name,
                     color,
+                    ev_json,
                 }
             })
             .collect::<Vec<_>>();
