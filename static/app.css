@@ -385,9 +385,9 @@ html[data-topbar="text"] .tab > i { display: none; }
 }
 .folder-more > summary {
   display: grid;
-  grid-template-columns: 18px 1fr;
+  grid-template-columns: 18px 1fr max-content;
   align-items: center;
-  gap: 0.65rem;
+  gap: 0.45rem 0.65rem;
   padding: 0.55rem 0.75rem;
   border-radius: 0 var(--radius) var(--radius) 0;
   cursor: pointer;
@@ -397,6 +397,7 @@ html[data-topbar="text"] .tab > i { display: none; }
 }
 .folder-more > summary::-webkit-details-marker { display: none; }
 .folder-more > summary i { width: 16px; height: 16px; }
+.folder-more-count { opacity: 0.75; font-variant-numeric: tabular-nums; }
 .folder-more-list { display: flex; flex-direction: column; gap: 0.1rem; padding-left: 0.25rem; }
 .folder-link {
   display: grid;
@@ -1268,6 +1269,42 @@ a.legend-item:hover {
   margin-bottom: 0.85rem;
 }
 .msg-from { font-weight: 650; }
+.msg-contact-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  flex-shrink: 0;
+  margin-left: 0.2rem;
+}
+.msg-in-book {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  opacity: 0.85;
+}
+.msg-in-book i,
+.msg-in-book svg {
+  width: 15px;
+  height: 15px;
+}
+.msg-add-contact {
+  width: 1.55rem;
+  height: 1.55rem;
+}
+.msg-add-contact i,
+.msg-add-contact svg {
+  width: 14px;
+  height: 14px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.add-contact-panel {
+  width: min(24rem, 96vw);
+}
 .msg-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2061,7 +2098,7 @@ a.legend-item:hover {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 80;
+  z-index: 220;
   display: grid;
   place-items: center;
   padding: 1rem;

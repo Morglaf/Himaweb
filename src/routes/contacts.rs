@@ -27,6 +27,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/contacts/avatars", get(avatars_batch_api))
         .route("/api/contacts/resolve", get(resolve_api))
         .route("/api/contacts/detail", get(detail_api))
+        .route("/api/contacts/books", get(books_api))
+        .route("/api/contacts/create", post(create_contact_api))
         .route("/contacts/create", post(create_contact))
         .route("/contacts/update", post(update_contact))
         .route("/contacts/delete", post(delete_contact))
@@ -1178,6 +1180,82 @@ async fn parse_contact_multipart(mut multipart: Multipart) -> Result<ContactForm
         }
     }
     Ok(form)
+}
+
+async fn books_api(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let Some(client) = &state.cardamum else {
+        return Json(json!({ "ok": false, "error": "Cardamum absent", "books": [] })).into_response();
+    };
+    let _permit = state.cli_limit.acquire().await.ok();
+    match client.list_all_addressbooks().await {
+        Ok(list) => {
+            let books: Vec<_> = list
+                .into_iter()
+                .map(|b| {
+                    let name = if b.name.trim().is_empty() {
+                        b.id.clone()
+                    } else {
+                        b.name
+                    };
+                    json!({ "id": b.id, "name": name })
+                })
+                .collect();
+            Json(json!({ "ok": true, "books": books })).into_response()
+        }
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string(), "books": [] })).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct QuickCreateForm {
+    book: String,
+    name: String,
+    email: String,
+}
+
+async fn create_contact_api(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<QuickCreateForm>,
+) -> impl IntoResponse {
+    let Some(client) = &state.cardamum else {
+        return Json(json!({ "ok": false, "error": "Cardamum absent" })).into_response();
+    };
+    let book = form.book.trim();
+    if book.is_empty() || book == "__all__" {
+        return Json(json!({ "ok": false, "error": "Choisissez un carnet" })).into_response();
+    }
+    let name = form.name.trim();
+    let email = form.email.trim();
+    if name.is_empty() {
+        return Json(json!({ "ok": false, "error": "Nom requis" })).into_response();
+    }
+    if email.is_empty() {
+        return Json(json!({ "ok": false, "error": "Email requis" })).into_response();
+    }
+    let fields = VcardFields {
+        fn_name: name.to_string(),
+        email: email.to_string(),
+        emails: vec![email.to_string()],
+        ..VcardFields::default()
+    };
+    let vcard = match tcard_bridge::build_vcard_with_photo(
+        &uuid::Uuid::new_v4().to_string(),
+        &fields,
+        PhotoEdit::Keep,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            return Json(json!({ "ok": false, "error": format!("tcard: {e}") })).into_response();
+        }
+    };
+    let _permit = state.cli_limit.acquire().await.ok();
+    match client.create_card(book, vcard.as_bytes()).await {
+        Ok(()) => {
+            let _ = refresh_contacts_into_cache(&state).await;
+            Json(json!({ "ok": true, "email": email, "name": name })).into_response()
+        }
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })).into_response(),
+    }
 }
 
 async fn create_contact(

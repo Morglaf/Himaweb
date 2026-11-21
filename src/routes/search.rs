@@ -146,6 +146,56 @@ fn match_mailbox(available: &[crate::cli::himalaya::Mailbox], wanted: &str) -> O
         .map(|m| m.name.clone())
 }
 
+/// Résout un libellé UI (Inbox, Archive, …) vers un nom IMAP réel.
+/// Pas de repli littéral : si rien ne matche, le dossier est omis (évite SELECT failed).
+fn resolve_search_folder(
+    available: &[crate::cli::himalaya::Mailbox],
+    wanted: &str,
+    default_archive: Option<&str>,
+) -> Option<String> {
+    let wl = wanted.to_ascii_lowercase();
+    if wl == "archive" || wl == "archives" {
+        if let Some(pref) = default_archive.map(str::trim).filter(|s| !s.is_empty()) {
+            if available.iter().any(|m| m.name == pref) {
+                return Some(pref.to_string());
+            }
+            if let Some(m) = match_mailbox(available, pref) {
+                return Some(m);
+            }
+        }
+        // Heuristiques alignées sur resolveSpecialFolder('archive') côté JS.
+        if let Some(m) = available.iter().find(|m| {
+            let n = m.name.to_ascii_lowercase();
+            n == "archive" || n == "archives"
+        }) {
+            return Some(m.name.clone());
+        }
+        if let Some(m) = available.iter().find(|m| {
+            let n = m.name.to_ascii_lowercase();
+            n.ends_with("/archive") || n.ends_with("/archives")
+        }) {
+            return Some(m.name.clone());
+        }
+        if let Some(m) = available.iter().find(|m| {
+            let n = m.name.to_ascii_lowercase();
+            n.contains("archive") && !n.contains("inbox")
+        }) {
+            return Some(m.name.clone());
+        }
+        return None;
+    }
+    match_mailbox(available, wanted)
+}
+
+fn is_benign_search_error(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("not found")
+        || m.contains("no such")
+        || m.contains("select failed")
+        || m.contains("no select")
+        || m.contains("noselect")
+}
+
 fn results_query_string(
     query: &str,
     accounts: &[AccountOpt],
@@ -458,6 +508,7 @@ async fn search_results(
         while let Some(joined) = set.join_next().await {
             match joined {
                 Ok((acc, color, label, icon, Ok(boxes), wanted)) => {
+                    let default_archive = prefs.default_move_for(&acc).map(str::to_string);
                     let mailboxes: Vec<String> = if all_folders {
                         boxes
                             .iter()
@@ -467,7 +518,13 @@ async fn search_results(
                     } else {
                         wanted
                             .iter()
-                            .filter_map(|w| match_mailbox(&boxes, w).or_else(|| Some(w.clone())))
+                            .filter_map(|w| {
+                                resolve_search_folder(
+                                    &boxes,
+                                    w,
+                                    default_archive.as_deref(),
+                                )
+                            })
                             .collect()
                     };
                     for mailbox in mailboxes {
@@ -522,9 +579,7 @@ async fn search_results(
             }
             Ok((acc, mailbox, _, _, _, Err(e))) => {
                 let msg = e.to_string();
-                if !msg.to_ascii_lowercase().contains("not found")
-                    && !msg.to_ascii_lowercase().contains("no such")
-                {
+                if !is_benign_search_error(&msg) {
                     errs.push(format!("{acc}/{mailbox}: {msg}"));
                 }
             }

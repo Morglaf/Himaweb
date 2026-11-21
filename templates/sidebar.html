@@ -93,65 +93,121 @@
     {% endfor %}
     {% endif %}
 
-    {% for m in mailboxes %}
-    <div class="folder-row{% if m.depth > 0 %} is-folded{% endif %}"
-         data-tree-id="{{ m.tree_id }}"
-         data-parent="{{ m.parent }}"
-         data-depth="{{ m.depth }}">
-      <div class="folder-item {% if m.active %}active{% endif %} {% if m.is_account_header %}folder-acct{% endif %}"
-           style="padding-left: {{ m.pad }};{% if !m.color.is_empty() %} border-left: 3px solid {{ m.color }};{% endif %}">
-        {% if m.is_account_header %}
-        <span class="folder-ico" style="color: {{ m.color }}"><i data-lucide="{{ m.icon }}"></i></span>
-        {% endif %}
-        {% if m.has_children %}
-        <button type="button" class="folder-twist" data-twist="{{ m.tree_id }}" data-i18n-aria="mail.expand" aria-label="Déplier" aria-expanded="false">
-          <i data-lucide="chevron-right"></i>
-        </button>
-        {% else if !m.is_account_header %}
-        <span class="folder-ico"><i data-lucide="{{ m.icon }}"></i></span>
-        {% endif %}
-        {% if m.is_account_header %}
-        <span class="folder-link-text folder-acct-label" data-label="{{ m.label }}" title="{{ m.account }}"
-              data-account="{{ m.account }}" data-account-header="1"
-              data-paused="{% if m.paused %}1{% else %}0{% endif %}"
-              data-disconnected="{% if m.disconnected %}1{% else %}0{% endif %}">
-          {% if m.disconnected %}
-          <button type="button" class="folder-disco-btn"
-                  data-account="{{ m.account }}"
-                  data-i18n-title="mail.reconnect_account"
-                  title="Compte déconnecté — cliquer pour réessayer">
-            <i data-lucide="unplug" class="folder-disco-ico"></i>
+    {% for sec in sections %}
+      {% if let Some(m) = sec.header %}
+      <div class="folder-row"
+           data-tree-id="{{ m.tree_id }}"
+           data-parent="{{ m.parent }}"
+           data-depth="{{ m.depth }}">
+        <div class="folder-item folder-acct"
+             style="padding-left: {{ m.pad }};{% if !m.color.is_empty() %} border-left: 3px solid {{ m.color }};{% endif %}">
+          <span class="folder-ico" style="color: {{ m.color }}"><i data-lucide="{{ m.icon }}"></i></span>
+          {% if m.has_children %}
+          <button type="button" class="folder-twist" data-twist="{{ m.tree_id }}" data-i18n-aria="mail.expand" aria-label="Déplier" aria-expanded="false">
+            <i data-lucide="chevron-right"></i>
           </button>
           {% endif %}
-          {% if m.paused %}<i data-lucide="pause" class="folder-pause-ico" title="En pause" data-i18n-title="mail.pause_account"></i>{% endif %}
-          <span class="folder-label">{{ m.label }}</span>
-        </span>
-        {% else %}
-        <a class="folder-link-text"
-           href="/?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
-           hx-get="/partials/envelopes?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
-           hx-target="#envelope-list"
-           hx-swap="innerHTML"
-           hx-include="#mail-sort"
-           hx-push-url="/?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
-           data-label="{{ m.label }}"
-           title="{{ m.label }}"
-           data-folder-icon="{{ m.icon }}"
-           data-folder-key="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}"
-           data-account="{{ m.account }}"
-           data-account-color="{{ m.color }}"
-           data-watched="{% if m.watched %}1{% else %}0{% endif %}">
-          <span class="folder-label" title="{{ m.name }}">{{ m.label }}</span>
-        </a>
-        {% endif %}
-        {% if !m.is_account_header %}
-        <span class="folder-trailing">
-          {% if m.watched %}<i data-lucide="eye" class="folder-watch-ico" title="Surveillé"></i>{% endif %}
-          {% if m.unread > 0 %}<span class="unread" data-unread-for="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}">{{ m.unread }}</span>{% endif %}
-        </span>
-        {% endif %}
+          <span class="folder-link-text folder-acct-label" data-label="{{ m.label }}" title="{{ m.account }}"
+                data-account="{{ m.account }}" data-account-header="1"
+                data-paused="{% if m.paused %}1{% else %}0{% endif %}"
+                data-disconnected="{% if m.disconnected %}1{% else %}0{% endif %}">
+            {% if m.disconnected %}
+            <button type="button" class="folder-disco-btn"
+                    data-account="{{ m.account }}"
+                    data-i18n-title="mail.reconnect_account"
+                    title="Compte déconnecté — cliquer pour réessayer">
+              <i data-lucide="unplug" class="folder-disco-ico"></i>
+            </button>
+            {% endif %}
+            {% if m.paused %}<i data-lucide="pause" class="folder-pause-ico" title="En pause" data-i18n-title="mail.pause_account"></i>{% endif %}
+            <span class="folder-label">{{ m.label }}</span>
+          </span>
+        </div>
       </div>
-    </div>
+      {% endif %}
+
+      {% for m in sec.folders %}
+      <div class="folder-row{% if m.depth > 0 %} is-folded{% endif %}"
+           data-tree-id="{{ m.tree_id }}"
+           data-parent="{{ m.parent }}"
+           data-depth="{{ m.depth }}">
+        <div class="folder-item {% if m.active %}active{% endif %}"
+             style="padding-left: {{ m.pad }};{% if !m.color.is_empty() %} border-left: 3px solid {{ m.color }};{% endif %}">
+          {% if m.has_children %}
+          <button type="button" class="folder-twist" data-twist="{{ m.tree_id }}" data-i18n-aria="mail.expand" aria-label="Déplier" aria-expanded="false">
+            <i data-lucide="chevron-right"></i>
+          </button>
+          {% else %}
+          <span class="folder-ico"><i data-lucide="{{ m.icon }}"></i></span>
+          {% endif %}
+          <a class="folder-link-text"
+             href="/?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+             hx-get="/partials/envelopes?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+             hx-target="#envelope-list"
+             hx-swap="innerHTML"
+             hx-include="#mail-sort"
+             hx-push-url="/?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+             data-label="{{ m.label }}"
+             title="{{ m.label }}"
+             data-folder-icon="{{ m.icon }}"
+             data-folder-key="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}"
+             data-account="{{ m.account }}"
+             data-account-color="{{ m.color }}"
+             data-watched="{% if m.watched %}1{% else %}0{% endif %}"
+             data-hidden="0">
+            <span class="folder-label" title="{{ m.name }}">{{ m.label }}</span>
+          </a>
+          <span class="folder-trailing">
+            {% if m.watched %}<i data-lucide="eye" class="folder-watch-ico" title="Surveillé"></i>{% endif %}
+            {% if m.unread > 0 %}<span class="unread" data-unread-for="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}">{{ m.unread }}</span>{% endif %}
+          </span>
+        </div>
+      </div>
+      {% endfor %}
+
+      {% if !sec.hidden.is_empty() %}
+      <details class="folder-more">
+        <summary>
+          <i data-lucide="more-horizontal"></i>
+          <span data-i18n="mail.folder_more">Plus</span>
+          <span class="folder-more-count">({{ sec.hidden.len() }})</span>
+        </summary>
+        <div class="folder-more-list">
+          {% for m in sec.hidden %}
+          <div class="folder-row"
+               data-tree-id="{{ m.tree_id }}"
+               data-parent=""
+               data-depth="0">
+            <div class="folder-item {% if m.active %}active{% endif %}"
+                 style="padding-left: 0.75rem;{% if !m.color.is_empty() %} border-left: 3px solid {{ m.color }};{% endif %}">
+              <span class="folder-ico"><i data-lucide="{{ m.icon }}"></i></span>
+              <a class="folder-link-text"
+                 href="/?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+                 hx-get="/partials/envelopes?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+                 hx-target="#envelope-list"
+                 hx-swap="innerHTML"
+                 hx-include="#mail-sort"
+                 hx-push-url="/?mailbox={{ m.name_enc }}{% if !m.account_enc.is_empty() %}&account={{ m.account_enc }}{% endif %}"
+                 data-label="{{ m.label }}"
+                 title="{{ m.label }}"
+                 data-folder-icon="{{ m.icon }}"
+                 data-folder-key="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}"
+                 data-account="{{ m.account }}"
+                 data-account-color="{{ m.color }}"
+                 data-watched="{% if m.watched %}1{% else %}0{% endif %}"
+                 data-hidden="1">
+                <span class="folder-label" title="{{ m.name }}">{{ m.label }}</span>
+              </a>
+              <span class="folder-trailing">
+                {% if m.watched %}<i data-lucide="eye" class="folder-watch-ico" title="Surveillé"></i>{% endif %}
+                {% if m.unread > 0 %}<span class="unread" data-unread-for="{% if !m.account.is_empty() %}{{ m.account }}::{% endif %}{{ m.name }}">{{ m.unread }}</span>{% endif %}
+              </span>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
     {% else %}
       {% if pinned.is_empty() %}
       <p class="muted tiny" data-i18n="mail.no_folders">Aucun dossier</p>

@@ -728,6 +728,19 @@ impl Prefs {
         self.hidden_folders.iter().any(|h| h == key)
     }
 
+    /// Bascule le masquage d’un dossier. Retourne le nouvel état (masqué ?).
+    pub fn toggle_hidden(&mut self, key: &str) -> bool {
+        if let Some(i) = self.hidden_folders.iter().position(|h| h == key) {
+            self.hidden_folders.remove(i);
+            false
+        } else {
+            self.hidden_folders.push(key.to_string());
+            // Un dossier masqué ne reste pas épinglé.
+            self.pinned_folders.retain(|p| p != key);
+            true
+        }
+    }
+
     pub fn is_watch_excluded(&self, key: &str, mailbox: &str) -> bool {
         self.watch_excluded.iter().any(|w| w == key)
             || self.watch_excluded.iter().any(|w| w == mailbox)

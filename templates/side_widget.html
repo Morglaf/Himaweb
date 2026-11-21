@@ -184,7 +184,7 @@
          @click.self="close()">
       <div class="modal-panel side-contact-modal" role="dialog" aria-modal="true" @click.stop>
         <div class="modal-head">
-          <h2 class="font-display text-xl" x-text="detail.name || selected.name || selected.email || ''"></h2>
+          <h2 class="font-display text-xl" x-text="(detail && detail.name) || selected.name || selected.email || ''"></h2>
           <button type="button" class="icon-btn" @click="close()" data-i18n-title="common.close" title="Fermer">
             <i data-lucide="x"></i>
           </button>
@@ -192,25 +192,25 @@
         <p class="muted tiny" x-show="busy" data-i18n="contacts.loading_detail">Chargement de la fiche…</p>
         <p class="muted tiny" x-show="error" x-text="error"></p>
         <dl class="contact-fields" x-show="!busy && detail">
-          <template x-for="(em, i) in (detail.emails || [])" :key="'e'+i">
+          <template x-for="(em, i) in ((detail && detail.emails) || [])" :key="'e'+i">
             <div class="contact-field">
               <dt data-i18n="contacts.email">Email</dt>
               <dd><a :href="'mailto:' + em" x-text="em"></a></dd>
             </div>
           </template>
-          <template x-for="(tel, i) in (detail.tels || [])" :key="'t'+i">
+          <template x-for="(tel, i) in ((detail && detail.tels) || [])" :key="'t'+i">
             <div class="contact-field">
               <dt data-i18n="contacts.phone">Téléphone</dt>
               <dd><a :href="'tel:' + tel" x-text="tel"></a></dd>
             </div>
           </template>
-          <div class="contact-field" x-show="detail.org">
+          <div class="contact-field" x-show="detail && detail.org">
             <dt data-i18n="contacts.org">Organisation</dt>
-            <dd x-text="detail.org"></dd>
+            <dd x-text="detail && detail.org"></dd>
           </div>
-          <div class="contact-field" x-show="detail.address">
+          <div class="contact-field" x-show="detail && detail.address">
             <dt data-i18n="contacts.address">Adresse</dt>
-            <dd class="contact-pre" x-text="detail.address"></dd>
+            <dd class="contact-pre" x-text="detail && detail.address"></dd>
           </div>
         </dl>
       </div>

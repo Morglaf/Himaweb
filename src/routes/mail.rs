@@ -31,6 +31,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/mail/undo", post(undo_api))
         .route("/api/mail/folder/mark-read", post(folder_mark_read))
         .route("/api/mail/folder/watch", post(folder_toggle_watch))
+        .route("/api/mail/folder/hide", post(folder_toggle_hide))
         .route("/api/mail/account/pause", post(account_toggle_pause))
         .route("/api/mail/account/reconnect", post(account_reconnect))
         .route("/api/mail/export/md", get(export_message_md))
@@ -57,10 +58,16 @@ struct SidebarTemplate {
     pub default_label: String,
     pub no_account_label: String,
     pub pinned: Vec<MailboxRow>,
-    pub mailboxes: Vec<MailboxRow>,
+    pub sections: Vec<FolderSection>,
     pub current: String,
     pub offline: bool,
     pub archive_readonly: bool,
+}
+
+pub struct FolderSection {
+    pub header: Option<MailboxRow>,
+    pub folders: Vec<MailboxRow>,
+    pub hidden: Vec<MailboxRow>,
 }
 
 pub struct AccountRow {
@@ -81,6 +88,7 @@ pub struct MailboxRow {
     pub active: bool,
     pub pinned: bool,
     pub watched: bool,
+    pub hidden: bool,
     pub depth: u8,
     pub pad: String,
     pub has_children: bool,
@@ -304,6 +312,7 @@ async fn sidebar(
                 active: false,
                 pinned: false,
                 watched: false,
+                hidden: false,
                 depth: 0,
                 pad: "0.75rem".into(),
                 has_children: !boxes.is_empty(),
@@ -320,9 +329,7 @@ async fn sidebar(
 
             for m in boxes {
                 let key = Prefs::folder_key(Some(acc_name), &m.name);
-                if prefs_snap.is_hidden(&key) {
-                    continue;
-                }
+                let hidden = prefs_snap.is_hidden(&key);
                 let depth = (1 + m.name.matches('/').count().min(7)) as u8;
                 let pad = format!("{:.2}rem", 0.75 + f32::from(depth) * 0.85);
                 let parent = if let Some((p, _)) = m.name.rsplit_once('/') {
@@ -347,6 +354,7 @@ async fn sidebar(
                     name_enc: urlencoding::encode(&m.name).into_owned(),
                     pinned: prefs_snap.is_pinned(&key),
                     watched: prefs_snap.is_watched(&key, &m.name),
+                    hidden,
                     name: m.name.clone(),
                     unread,
                     active,
@@ -433,9 +441,7 @@ async fn sidebar(
 
         for m in boxes {
             let key = Prefs::folder_key(account_ref, &m.name);
-            if prefs_snap.is_hidden(&key) {
-                continue;
-            }
+            let hidden = prefs_snap.is_hidden(&key);
             let active = m.name.eq_ignore_ascii_case(&current_resolved);
             let (depth, parent) = if archive_mode {
                 (
@@ -472,6 +478,7 @@ async fn sidebar(
                 name_enc: urlencoding::encode(&m.name).into_owned(),
                 pinned: prefs_snap.is_pinned(&key),
                 watched: prefs_snap.is_watched(&key, &m.name),
+                hidden,
                 tree_id: m.name.clone(),
                 name: m.name,
                 unread,
@@ -534,9 +541,13 @@ async fn sidebar(
         }
     }
 
-    // Marquer les parents qui ont des enfants (via parent == tree_id)
-    let parents_with_kids: std::collections::HashSet<String> =
-        rows.iter().map(|r| r.parent.clone()).filter(|p| !p.is_empty()).collect();
+    // Marquer les parents qui ont des enfants visibles (via parent == tree_id)
+    let parents_with_kids: std::collections::HashSet<String> = rows
+        .iter()
+        .filter(|r| !r.hidden && !r.is_account_header)
+        .map(|r| r.parent.clone())
+        .filter(|p| !p.is_empty())
+        .collect();
     for r in &mut rows {
         r.has_children = parents_with_kids.contains(&r.tree_id);
     }
@@ -603,6 +614,7 @@ async fn sidebar(
         rows.iter()
             .filter(|r| {
                 !r.is_account_header
+                    && !r.hidden
                     && !Prefs::is_ntfy_key(&r.name)
                     && (r.name.eq_ignore_ascii_case("inbox")
                         || r.name.to_ascii_lowercase().ends_with("/inbox"))
@@ -614,14 +626,16 @@ async fn sidebar(
     };
 
     let mut pinned = Vec::new();
-    let mut mailboxes = Vec::new();
+    let mut rest = Vec::new();
     for r in rows {
-        if r.pinned && !r.is_account_header {
+        if r.pinned && !r.is_account_header && !r.hidden {
             pinned.push(r);
         } else {
-            mailboxes.push(r);
+            rest.push(r);
         }
     }
+
+    let sections = build_folder_sections(rest, all_selected);
 
     let loc = crate::i18n::normalize_locale(&prefs_snap.locale);
     let archive_readonly =
@@ -637,18 +651,68 @@ async fn sidebar(
         default_label: crate::i18n::t(loc, "mail.default"),
         no_account_label: crate::i18n::t(loc, "mail.no_account"),
         pinned,
-        mailboxes,
+        sections,
         current,
         offline,
         archive_readonly,
     })
 }
 
+fn build_folder_sections(rows: Vec<MailboxRow>, multi_account: bool) -> Vec<FolderSection> {
+    if !multi_account {
+        let mut folders = Vec::new();
+        let mut hidden = Vec::new();
+        for r in rows {
+            if r.is_account_header {
+                continue;
+            }
+            if r.hidden {
+                hidden.push(r);
+            } else {
+                folders.push(r);
+            }
+        }
+        return vec![FolderSection {
+            header: None,
+            folders,
+            hidden,
+        }];
+    }
+
+    let mut sections: Vec<FolderSection> = Vec::new();
+    let mut cur: Option<FolderSection> = None;
+    for r in rows {
+        if r.is_account_header {
+            if let Some(sec) = cur.take() {
+                sections.push(sec);
+            }
+            cur = Some(FolderSection {
+                header: Some(r),
+                folders: Vec::new(),
+                hidden: Vec::new(),
+            });
+            continue;
+        }
+        let sec = cur.get_or_insert_with(|| FolderSection {
+            header: None,
+            folders: Vec::new(),
+            hidden: Vec::new(),
+        });
+        if r.hidden {
+            sec.hidden.push(r);
+        } else {
+            sec.folders.push(r);
+        }
+    }
+    if let Some(sec) = cur {
+        sections.push(sec);
+    }
+    sections
+}
+
 fn ntfy_sidebar_row(prefs: &Prefs, key: &str, current: &str) -> Option<MailboxRow> {
     let folder_key = Prefs::ntfy_folder_key(key);
-    if prefs.is_hidden(&folder_key) {
-        return None;
-    }
+    let hidden = prefs.is_hidden(&folder_key);
     Some(MailboxRow {
         name: key.to_string(),
         name_enc: urlencoding::encode(key).into_owned(),
@@ -657,6 +721,7 @@ fn ntfy_sidebar_row(prefs: &Prefs, key: &str, current: &str) -> Option<MailboxRo
         icon: prefs.account_icon(key),
         active: current == key,
         pinned: prefs.is_pinned(&folder_key),
+        hidden,
         watched: prefs.is_watched(&folder_key, key),
         depth: 0,
         pad: "0.75rem".into(),
@@ -1665,6 +1730,7 @@ pub struct ThreadPart {
     pub from_email: String,
     pub from_initial: String,
     pub avatar_url: String,
+    pub in_address_book: bool,
     pub to: String,
     pub cc: String,
     pub date: String,
@@ -2284,6 +2350,7 @@ async fn message(
                 subject: String::new(),
                 from_initial: "?".into(),
                 avatar_url: String::new(),
+                in_address_book: false,
                 from: String::new(),
                 from_email: String::new(),
                 to: String::new(),
@@ -2389,6 +2456,7 @@ async fn message(
                 .to_uppercase()
                 .to_string(),
             avatar_url: String::new(),
+            in_address_book: false,
             from: msg.from,
             from_email,
             to: msg.to,
@@ -2412,11 +2480,27 @@ async fn message(
             .map(|e| e.to_ascii_lowercase())
             .collect();
         let urls = crate::routes::contacts::avatar_urls_for(&state, &emails).await;
+        let in_book: std::collections::HashSet<String> = {
+            let cache = state.cache.lock().await;
+            emails
+                .iter()
+                .filter(|e| {
+                    cache
+                        .contact_by_email(e)
+                        .ok()
+                        .flatten()
+                        .is_some()
+                })
+                .cloned()
+                .collect()
+        };
         for part in thread_parts.iter_mut() {
             if let Some(email) = extract_email_addr(&part.from) {
-                if let Some(url) = urls.get(&email.to_ascii_lowercase()) {
+                let key = email.to_ascii_lowercase();
+                if let Some(url) = urls.get(&key) {
                     part.avatar_url = url.clone();
                 }
+                part.in_address_book = in_book.contains(&key);
             }
         }
         let missing: Vec<String> = emails
@@ -3423,6 +3507,26 @@ async fn folder_toggle_watch(
         w
     };
     axum::Json(serde_json::json!({ "ok": true, "watched": watched, "key": key })).into_response()
+}
+
+async fn folder_toggle_hide(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<FolderActionForm>,
+) -> impl IntoResponse {
+    let mailbox = form.mailbox.trim();
+    if mailbox.is_empty() {
+        return axum::Json(serde_json::json!({ "ok": false, "error": "dossier invalide" }))
+            .into_response();
+    }
+    let account = form.account.filter(|s| !s.is_empty());
+    let key = Prefs::folder_key(account.as_deref(), mailbox);
+    let hidden = {
+        let mut prefs = state.prefs.lock().await;
+        let h = prefs.toggle_hidden(&key);
+        let _ = prefs.save();
+        h
+    };
+    axum::Json(serde_json::json!({ "ok": true, "hidden": hidden, "key": key })).into_response()
 }
 
 #[derive(Deserialize)]

@@ -82,6 +82,43 @@ struct ShellTemplate {
     pub content: String,
 }
 
+fn build_forward_draft(msg: &crate::cli::himalaya::MessageView) -> crate::cli::himalaya::ComposeDraft {
+    let subject = crate::cli::himalaya::decode_rfc2047(&msg.subject);
+    let from = crate::cli::himalaya::decode_rfc2047(&msg.from);
+    let to = crate::cli::himalaya::normalize_addr_header(&msg.to);
+    let cc = crate::cli::himalaya::normalize_addr_header(&msg.cc);
+    let body_src = if msg.body_text.is_empty() {
+        if msg.body_html.trim().is_empty() {
+            String::new()
+        } else {
+            "(voir HTML)".to_string()
+        }
+    } else {
+        crate::cli::himalaya::decode_quoted_printable(&msg.body_text)
+    };
+    let mut header = String::from("\n\n----- Message transféré -----\n");
+    header.push_str(&format!("De: {from}\n"));
+    if !to.is_empty() {
+        header.push_str(&format!("À: {to}\n"));
+    }
+    if !cc.is_empty() {
+        header.push_str(&format!("Cc: {cc}\n"));
+    }
+    header.push_str(&format!("Date: {}\n", msg.date));
+    header.push_str(&format!("Sujet: {subject}\n\n"));
+    header.push_str(&body_src);
+    crate::cli::himalaya::ComposeDraft {
+        to: String::new(),
+        cc: String::new(),
+        bcc: String::new(),
+        subject: format!("Fwd: {subject}"),
+        body: header,
+        body_html: String::new(),
+        in_reply_to: String::new(),
+        references: String::new(),
+    }
+}
+
 async fn compose_get(
     State(state): State<Arc<AppState>>,
     Query(q): Query<ComposeQuery>,
@@ -181,6 +218,28 @@ async fn compose_get(
                 }
             }
         }
+    } else if matches!(kind, ComposeKind::Forward) {
+        // Forward : corps construit ici (pas le style « réponse » Himalaya) + PJ préchargées.
+        if let Some(id) = q.id.as_deref() {
+            let account_ref = if preferred.is_empty() {
+                None
+            } else {
+                Some(preferred.as_str())
+            };
+            let _permit = state.cli_limit.acquire().await.ok();
+            match state
+                .himalaya
+                .read_message(&mailbox, id, account_ref)
+                .await
+            {
+                Ok(msg) => {
+                    draft = build_forward_draft(&msg);
+                }
+                Err(e) => {
+                    error = Some(e.to_string());
+                }
+            }
+        }
     } else if !matches!(kind, ComposeKind::New) {
         if let Some(id) = q.id.as_deref() {
             let account_ref = if preferred.is_empty() {
@@ -216,12 +275,8 @@ async fn compose_get(
                         .read_message(&mailbox, id, account_ref)
                         .await
                     {
-                        draft.subject = match kind {
-                            ComposeKind::Forward => {
-                                format!("Fwd: {}", crate::cli::himalaya::decode_rfc2047(&msg.subject))
-                            }
-                            _ => format!("Re: {}", crate::cli::himalaya::decode_rfc2047(&msg.subject)),
-                        };
+                        draft.subject =
+                            format!("Re: {}", crate::cli::himalaya::decode_rfc2047(&msg.subject));
                         if matches!(kind, ComposeKind::ReplyAll) {
                             let (to, cc) = crate::cli::himalaya::reply_all_recipients(
                                 &msg.from,
@@ -232,7 +287,7 @@ async fn compose_get(
                             );
                             draft.to = to;
                             draft.cc = cc;
-                        } else if !matches!(kind, ComposeKind::Forward) {
+                        } else {
                             draft.to = crate::cli::himalaya::normalize_addr_header(&msg.from);
                         }
                         let body_src = if msg.body_text.is_empty() {
@@ -291,6 +346,7 @@ async fn compose_get(
 
     let is_reply = matches!(kind, ComposeKind::Reply | ComposeKind::ReplyAll);
     let is_edit = matches!(kind, ComposeKind::Edit);
+    let is_forward = matches!(kind, ComposeKind::Forward);
     let source_mailbox = if is_reply || is_edit {
         mailbox.clone()
     } else {
@@ -310,9 +366,71 @@ async fn compose_get(
         "reply"
     } else if is_edit {
         "edit"
+    } else if is_forward {
+        "forward"
     } else {
         "compose"
     };
+
+    // Forward : pas d’en-têtes de fil de réponse.
+    if is_forward {
+        draft.in_reply_to.clear();
+        draft.references.clear();
+    }
+
+    let forward_attachments = if is_forward {
+        if let Some(id) = q.id.as_deref() {
+            let account_ref = if selected_account.is_empty() {
+                None
+            } else {
+                Some(selected_account.as_str())
+            };
+            let _permit = state.cli_limit.acquire().await.ok();
+            match state
+                .himalaya
+                .list_attachments(&mailbox, id, account_ref)
+                .await
+            {
+                Ok(list) => list
+                    .into_iter()
+                    .filter(|a| {
+                        !crate::attachments_class::is_accessory_attachment(
+                            &a.filename, &a.mime, a.size,
+                        )
+                    })
+                    .map(|a| {
+                        let mut url = format!(
+                            "/attachments?mailbox={}&message_id={}&attachment_id={}",
+                            urlencoding::encode(&mailbox),
+                            urlencoding::encode(id),
+                            urlencoding::encode(&a.id),
+                        );
+                        if !selected_account.is_empty() {
+                            url.push_str(&format!(
+                                "&account={}",
+                                urlencoding::encode(&selected_account)
+                            ));
+                        }
+                        json!({
+                            "filename": a.filename,
+                            "mime": a.mime,
+                            "size": a.size,
+                            "url": url,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "forward: list_attachments failed");
+                    vec![]
+                }
+            }
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
+
     let compose_boot = serde_json::json!({
         "cardamum": state.cardamum_available,
         "ai": prefs_snap.ai_enabled,
@@ -333,6 +451,7 @@ async fn compose_get(
         "sourceAccount": source_account,
         "inReplyTo": draft.in_reply_to,
         "references": draft.references,
+        "forwardAttachments": forward_attachments,
         "accounts": accounts.iter().map(|a| serde_json::json!({
             "name": a.name,
             "email": a.email,

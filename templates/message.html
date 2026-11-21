@@ -28,7 +28,7 @@
   <article class="message-view thread-item {% if m.is_focus %}is-focus{% endif %} {% if m.unread %}is-unread{% endif %}"
            id="thread-msg-{{ m.id }}" data-msg-id="{{ m.id }}" data-from-email="{{ m.from_email }}"
            :class="{ 'is-collapsed': collapsed }"
-           x-data="window.HimaWeb.messageView({ hasRemote: {% if m.has_remote_content %}true{% else %}false{% endif %}, hasAccessory: {% if !m.accessory_attachments.is_empty() %}true{% else %}false{% endif %}, hasAttachments: {% if !m.attachments.is_empty() %}true{% else %}false{% endif %}, collapse: {% if thread_collapse && !m.is_focus %}true{% else %}false{% endif %} })">
+           x-data="window.HimaWeb.messageView({ hasRemote: {% if m.has_remote_content %}true{% else %}false{% endif %}, hasAccessory: {% if !m.accessory_attachments.is_empty() %}true{% else %}false{% endif %}, hasAttachments: {% if !m.attachments.is_empty() %}true{% else %}false{% endif %}, collapse: {% if thread_collapse && !m.is_focus %}true{% else %}false{% endif %}, inAddressBook: {% if m.in_address_book %}true{% else %}false{% endif %} })">
     <header class="msg-header" {% if thread_collapse %}@click="toggleCollapse($event)"{% endif %}>
       {% if thread_count > 1 %}
       <h2 class="thread-item-subject">{{ m.subject }}</h2>
@@ -50,6 +50,23 @@
             </button>
             {% endif %}
             <span>{{ m.from }}</span>
+            {% if !m.from_email.is_empty() %}
+            <span class="msg-contact-mark">
+              <span class="msg-in-book"
+                    {% if m.in_address_book %}x-show="inAddressBook"{% else %}x-show="inAddressBook" x-cloak{% endif %}
+                    title="Dans le carnet d’adresses" data-i18n-title="mail.in_address_book">
+                <i data-lucide="contact"></i>
+              </span>
+              <button type="button" class="icon-btn msg-add-contact"
+                      {% if m.in_address_book %}x-show="!inAddressBook" x-cloak{% else %}x-show="!inAddressBook"{% endif %}
+                      title="Ajouter au carnet" data-i18n-title="mail.add_to_address_book"
+                      data-add-email="{{ m.from_email }}"
+                      data-add-display="{{ m.from }}"
+                      onclick="event.preventDefault(); event.stopPropagation(); window.HimaWeb &amp;&amp; HimaWeb.openAddContactFromBtn &amp;&amp; HimaWeb.openAddContactFromBtn(this);">
+                <i data-lucide="user-plus"></i>
+              </button>
+            </span>
+            {% endif %}
           </div>
           <div class="msg-to muted tiny"{% if thread_collapse %} x-show="!collapsed"{% endif %}>À {{ m.to }}{% if !m.cc.is_empty() %} · Cc {{ m.cc }}{% endif %}</div>
           <div class="msg-date muted tiny">{{ m.date }}</div>

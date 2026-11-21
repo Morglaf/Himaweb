@@ -700,6 +700,9 @@ function composeForm() {
           this.showBcc = !!this.bcc;
           this.showReplyTo = !!this.replyTo;
           if (opts.bodyHtml) this.bodyHtml = opts.bodyHtml;
+          this._forwardAttachments = Array.isArray(opts.forwardAttachments)
+            ? opts.forwardAttachments
+            : [];
         }
       } catch (_) {}
       const seed = document.getElementById('compose-body-seed');
@@ -723,6 +726,30 @@ function composeForm() {
       this.$nextTick(() => {
         if (window.lucide) lucide.createIcons();
         if (this.bodyMode === 'html') this.initQuill();
+      });
+      if (this._forwardAttachments && this._forwardAttachments.length) {
+        this.loadForwardAttachments(this._forwardAttachments);
+      }
+    },
+    async loadForwardAttachments(list) {
+      for (const att of list || []) {
+        if (!att || !att.url) continue;
+        try {
+          const res = await fetch(att.url);
+          if (!res.ok) continue;
+          const blob = await res.blob();
+          const name = att.filename || 'attachment';
+          const mime = att.mime || blob.type || 'application/octet-stream';
+          const file = new File([blob], name, { type: mime });
+          const exists = this.attachFiles.some(
+            (f) => f.name === file.name && f.size === file.size
+          );
+          if (!exists) this.attachFiles.push(file);
+        } catch (_) {}
+      }
+      this.attachNames = this.attachFiles.map((f) => f.name);
+      this.$nextTick(() => {
+        if (window.lucide) lucide.createIcons();
       });
     },
     pickAccount(a) {
@@ -836,6 +863,7 @@ function composeForm() {
         /(?:^|\n)Le .+ a écrit\s*:\s*\n/i,
         /(?:^|\n)-{2,}\s*Original Message\s*-{2,}\s*\n/i,
         /(?:^|\n)-{2,}\s*Message original\s*-{2,}\s*\n/i,
+        /(?:^|\n)-{2,}\s*Message transféré\s*-{2,}\s*\n/i,
         /(?:^|\n)_{2,}\s*\nFrom:\s/i,
       ];
       let cut = -1;
@@ -2382,6 +2410,42 @@ function messageView(opts) {
     hasAccessory: !!(opts && opts.hasAccessory),
     hasAttachments,
     collapsed: !!(opts && opts.collapse),
+    inAddressBook: !!(opts && opts.inAddressBook),
+    addToAddressBook(ev) {
+      const btn =
+        (ev && ev.currentTarget) ||
+        (ev && ev.target && ev.target.closest && ev.target.closest('[data-add-email]'));
+      const root = this.$el;
+      let email = (btn && btn.dataset && btn.dataset.addEmail) || '';
+      let display = (btn && btn.dataset && btn.dataset.addDisplay) || '';
+      if (!email && root && root.dataset) {
+        email = root.dataset.fromEmail || '';
+      }
+      email = String(email || '').trim();
+      if (!email) {
+        console.warn('addToAddressBook: email manquant');
+        return;
+      }
+      if (!display) {
+        const fromEl = root && root.querySelector('.msg-from > span:not(.msg-contact-mark)');
+        display = (fromEl && fromEl.textContent) || email;
+      }
+      const self = this;
+      if (!window.HimaWeb || typeof window.HimaWeb.openAddContactModal !== 'function') {
+        console.warn('openAddContactModal indisponible');
+        return;
+      }
+      window.HimaWeb.openAddContactModal({
+        email,
+        display,
+        onDone() {
+          self.inAddressBook = true;
+          self.$nextTick(() => {
+            if (window.lucide) lucide.createIcons();
+          });
+        },
+      });
+    },
     toggleCollapse(ev) {
       if (!ev) {
         this.collapsed = !this.collapsed;
@@ -6159,6 +6223,7 @@ window.HimaWeb = {
         if (!mailbox || mailbox.startsWith('__ntfy__')) return;
         ev.preventDefault();
         const watched = folderEl.dataset.watched === '1';
+        const hidden = folderEl.dataset.hidden === '1';
         const payload = JSON.stringify({ mailbox, account, key });
         const pausePayload = JSON.stringify({ account });
         let html = `<button type="button" data-ctx-action="folder-mark-read" data-ctx-payload='${payload}'><i data-lucide="mail-open"></i> ${this.t(
@@ -6168,6 +6233,11 @@ window.HimaWeb = {
           watched ? 'eye-off' : 'eye'
         }"></i> ${
           watched ? this.t('mail.unwatch_folder') : this.t('mail.watch_folder')
+        }</button>
+           <button type="button" data-ctx-action="folder-hide" data-ctx-payload='${payload}'><i data-lucide="${
+          hidden ? 'folder-plus' : 'folder-minus'
+        }"></i> ${
+          hidden ? this.t('mail.show_folder') : this.t('mail.hide_folder')
         }</button>`;
         if (account) {
           const sel = document.getElementById('account-select');
@@ -6463,6 +6533,24 @@ window.HimaWeb = {
         .catch((e) => console.warn(e));
       return;
     }
+    if (action === 'folder-hide') {
+      const body = new URLSearchParams();
+      body.set('mailbox', p.mailbox || mb);
+      body.set('account', p.account || acc);
+      fetch('/api/mail/folder/hide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data && data.ok) {
+            this.reloadSidebar && this.reloadSidebar();
+          }
+        })
+        .catch((e) => console.warn(e));
+      return;
+    }
     if (action === 'account-pause') {
       const body = new URLSearchParams();
       body.set('account', p.account || acc);
@@ -6509,6 +6597,167 @@ window.HimaWeb = {
         form.submit();
       });
     }
+  },
+
+  displayNameFromFrom(display, email) {
+    let name = String(display || '').trim();
+    const em = String(email || '').trim();
+    if (!name) return em;
+    const lt = name.indexOf('<');
+    if (lt >= 0) name = name.slice(0, lt).trim();
+    name = name.replace(/^["']|["']$/g, '').trim();
+    if (!name || (em && name.toLowerCase() === em.toLowerCase())) {
+      return em.split('@')[0] || em;
+    }
+    return name;
+  },
+
+  openAddContactFromBtn(btn) {
+    if (!btn) return;
+    const email = String((btn.dataset && btn.dataset.addEmail) || '').trim();
+    const display = String((btn.dataset && btn.dataset.addDisplay) || email).trim();
+    if (!email) {
+      console.warn('openAddContactFromBtn: email manquant');
+      return;
+    }
+    const article = btn.closest && btn.closest('article.message-view, article.thread-item');
+    this.openAddContactModal({
+      email,
+      display,
+      onDone() {
+        try {
+          if (article && article._x_dataStack && article._x_dataStack[0]) {
+            article._x_dataStack[0].inAddressBook = true;
+          }
+        } catch (_) {}
+        btn.hidden = true;
+        const mark = btn.parentElement && btn.parentElement.querySelector('.msg-in-book');
+        if (mark) {
+          mark.removeAttribute('x-cloak');
+          mark.style.display = '';
+        }
+        if (window.lucide) lucide.createIcons();
+      },
+    });
+  },
+
+  openAddContactModal({ email, display, onDone } = {}) {
+    const em = String(email || '').trim();
+    if (!em) return;
+    const nameGuess = this.displayNameFromFrom(display, em);
+    let existing = document.getElementById('add-contact-modal');
+    if (existing) existing.remove();
+    const backdrop = document.createElement('div');
+    backdrop.id = 'add-contact-modal';
+    backdrop.className = 'modal-backdrop is-open';
+    backdrop.innerHTML = `
+      <div class="modal-panel contact-form-panel add-contact-panel" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <h2 class="font-display text-xl">${this.t('mail.add_to_address_book') || 'Ajouter au carnet'}</h2>
+          <button type="button" class="icon-btn" data-add-close><i data-lucide="x"></i></button>
+        </div>
+        <form class="space-y-3 contact-form-grid" data-add-form>
+          <label class="block">
+            <span class="label">${this.t('contacts.book') || 'Carnet'}</span>
+            <select name="book" class="select w-full" required data-add-book>
+              <option value="">…</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="label">${this.t('contacts.name') || 'Nom'}</span>
+            <input class="input w-full" name="name" required value="${nameGuess.replace(/"/g, '&quot;')}" />
+          </label>
+          <label class="block">
+            <span class="label">${this.t('contacts.email') || 'Email'}</span>
+            <input class="input w-full" type="email" name="email" required value="${em.replace(/"/g, '&quot;')}" />
+          </label>
+          <p class="muted tiny" data-add-error hidden></p>
+          <div class="modal-actions">
+            <button type="button" class="btn secondary" data-add-close>${this.t('common.cancel') || 'Annuler'}</button>
+            <button type="submit" class="btn" data-add-submit>${this.t('common.save') || 'Enregistrer'}</button>
+          </div>
+        </form>
+      </div>`;
+    document.body.appendChild(backdrop);
+    if (window.lucide) lucide.createIcons();
+    const close = () => backdrop.remove();
+    backdrop.querySelectorAll('[data-add-close]').forEach((btn) =>
+      btn.addEventListener('click', close)
+    );
+    backdrop.addEventListener('click', (ev) => {
+      if (ev.target === backdrop) close();
+    });
+    const bookSel = backdrop.querySelector('[data-add-book]');
+    const errEl = backdrop.querySelector('[data-add-error]');
+    const form = backdrop.querySelector('[data-add-form]');
+    fetch('/api/contacts/books')
+      .then((r) => r.json())
+      .then((data) => {
+        const books = (data && data.books) || [];
+        if (!books.length) {
+          if (errEl) {
+            errEl.hidden = false;
+            errEl.textContent =
+              (data && data.error) ||
+              this.t('mail.no_address_book') ||
+              'Aucun carnet disponible';
+          }
+          return;
+        }
+        bookSel.innerHTML = books
+          .map(
+            (b) =>
+              `<option value="${String(b.id).replace(/"/g, '&quot;')}">${String(
+                b.name || b.id
+              ).replace(/</g, '&lt;')}</option>`
+          )
+          .join('');
+      })
+      .catch((e) => {
+        if (errEl) {
+          errEl.hidden = false;
+          errEl.textContent = e.message || String(e);
+        }
+      });
+    form.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const fd = new FormData(form);
+      const body = new URLSearchParams();
+      body.set('book', fd.get('book') || '');
+      body.set('name', fd.get('name') || '');
+      body.set('email', fd.get('email') || '');
+      const submitBtn = backdrop.querySelector('[data-add-submit]');
+      if (submitBtn) submitBtn.disabled = true;
+      if (errEl) {
+        errEl.hidden = true;
+        errEl.textContent = '';
+      }
+      fetch('/api/contacts/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data && data.ok) {
+            close();
+            if (typeof onDone === 'function') onDone(data);
+            return;
+          }
+          if (errEl) {
+            errEl.hidden = false;
+            errEl.textContent = (data && data.error) || 'Erreur';
+          }
+          if (submitBtn) submitBtn.disabled = false;
+        })
+        .catch((e) => {
+          if (errEl) {
+            errEl.hidden = false;
+            errEl.textContent = e.message || String(e);
+          }
+          if (submitBtn) submitBtn.disabled = false;
+        });
+    });
   },
 };
 
